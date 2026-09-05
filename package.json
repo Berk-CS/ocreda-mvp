@@ -9,7 +9,10 @@
     "start": "next start",
     "start:isolated": "NEXT_DIST_DIR=.next-build next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:functions": "tsc supabase/functions/_shared/relevance.ts supabase/functions/_shared/gemini.ts --outDir .relevance-build --module commonjs --target es2020 --skipLibCheck",
+    "try:relevance": "npm run build:functions && node scripts/try-relevance.cjs",
+    "test:relevance": "npm run build:functions && node scripts/relevance.test.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

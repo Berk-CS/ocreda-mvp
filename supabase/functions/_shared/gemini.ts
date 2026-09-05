@@ -4,7 +4,7 @@ export const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const DEFAULT_MODEL = "gemini-flash-lite-latest";
+const DEFAULT_MODEL = "gemini-3.6-flash";
 
 export interface GeminiMessage {
   role: "user" | "model";

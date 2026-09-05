@@ -163,6 +163,81 @@ export interface AgentOutcome {
   results: RelevanceResult[] | null;
 }
 
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let cursor = 0;
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      try {
+        results[index] = { status: "fulfilled", value: await worker(items[index]) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
+
+export interface RunAgentsOptions {
+  draft: string;
+  notes: NoteLike[];
+  agentCount: number;
+  concurrency: number;
+  /** Injected so this module stays free of any particular model client. */
+  generate: (prompt: string) => Promise<string>;
+  /** Decides whether a thrown error is worth a second attempt. */
+  isRetryable: (error: unknown) => boolean;
+  onAgentSettled?: (index: number, outcome: AgentOutcome) => void;
+}
+
+/**
+ * Fans the corpus out across agents and collects their verdicts. An agent that
+ * fails both attempts yields a null result rather than throwing, so one bad
+ * chunk degrades coverage instead of failing the whole search.
+ */
+export async function runRelevanceAgents(
+  options: RunAgentsOptions
+): Promise<{ chunks: NoteLike[][]; outcomes: AgentOutcome[] }> {
+  const { draft, notes, agentCount, concurrency, generate, isRetryable, onAgentSettled } = options;
+  const chunks = dealIntoChunks(notes, agentCount);
+
+  const settled = await runWithConcurrency(chunks, concurrency, async (chunk) => {
+    const prompt = buildPrompt(draft, chunk);
+    const allowedIds = new Set(chunk.map((n) => n.id));
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return parseAgentResponse(await generate(prompt), allowedIds);
+      } catch (error) {
+        if (attempt === 1 || !isRetryable(error)) throw error;
+        // Backoff with jitter so the agents don't all retry in lockstep.
+        await new Promise((resolve) => setTimeout(resolve, 500 + Math.random() * 700));
+      }
+    }
+    return [];
+  });
+
+  const outcomes: AgentOutcome[] = settled.map((outcome, index) => {
+    const result: AgentOutcome = {
+      chunkSize: chunks[index].length,
+      results: outcome.status === "fulfilled" ? outcome.value : null,
+    };
+    onAgentSettled?.(index, result);
+    return result;
+  });
+
+  return { chunks, outcomes };
+}
+
 /**
  * Combines the agents' verdicts into one ranked list, and reports how many
  * notes were actually read. A failed agent contributes nothing to the count,

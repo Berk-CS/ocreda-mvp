@@ -2,15 +2,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders, generateWithGemini, isRetryableGeminiError } from "../_shared/gemini.ts";
 import {
-  buildPrompt,
   condenseDraft,
-  dealIntoChunks,
   mergeAgentResults,
-  parseAgentResponse,
+  runRelevanceAgents,
   MIN_DRAFT_CHARS,
-  type AgentOutcome,
   type NoteLike,
-  type RelevanceResult,
 } from "../_shared/relevance.ts";
 
 /**
@@ -27,60 +23,14 @@ const AGENT_CONCURRENCY = 5;
 const MAX_NOTES = 1000;
 const MAX_RESULTS = 50;
 
+const AGENT_SYSTEM_PROMPT =
+  "You identify meaningful relationships between a person's notes. You respond with a JSON array and nothing else.";
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
-}
-
-async function runWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  worker: (item: T) => Promise<R>
-): Promise<PromiseSettledResult<R>[]> {
-  const results = new Array<PromiseSettledResult<R>>(items.length);
-  let cursor = 0;
-
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    for (;;) {
-      const index = cursor++;
-      if (index >= items.length) return;
-      try {
-        results[index] = { status: "fulfilled", value: await worker(items[index]) };
-      } catch (reason) {
-        results[index] = { status: "rejected", reason };
-      }
-    }
-  });
-
-  await Promise.all(runners);
-  return results;
-}
-
-/** One agent: prompt, one retry on a transient upstream failure, then give up. */
-async function runAgent(draft: string, notes: NoteLike[], apiKey: string): Promise<RelevanceResult[]> {
-  const prompt = buildPrompt(draft, notes);
-  const allowedIds = new Set(notes.map((note) => note.id));
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const raw = await generateWithGemini(
-        "You identify meaningful relationships between a person's notes. You respond with a JSON array and nothing else.",
-        [{ role: "user", content: prompt }],
-        apiKey,
-        undefined,
-        { responseMimeType: "application/json", temperature: 0.2 }
-      );
-      return parseAgentResponse(raw, allowedIds);
-    } catch (error) {
-      if (attempt === 1 || !isRetryableGeminiError(error)) throw error;
-      // Backoff with jitter so the agents don't all retry in lockstep.
-      await new Promise((resolve) => setTimeout(resolve, 500 + Math.random() * 700));
-    }
-  }
-
-  return [];
 }
 
 Deno.serve(async (req: Request) => {
@@ -135,23 +85,24 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const draft = condenseDraft(draftText);
-    const chunks = dealIntoChunks(notes, AGENT_COUNT);
-
-    const settled = await runWithConcurrency(chunks, AGENT_CONCURRENCY, (chunk) =>
-      runAgent(draft, chunk, apiKey)
-    );
-
-    // A chunk that failed both attempts is reported as missing coverage rather
-    // than silently dropped: the notes it held may have been the best ones.
-    const outcomes: AgentOutcome[] = settled.map((outcome, index) => ({
-      chunkSize: chunks[index].length,
-      results: outcome.status === "fulfilled" ? outcome.value : null,
-    }));
+    const { outcomes } = await runRelevanceAgents({
+      draft: condenseDraft(draftText),
+      notes,
+      agentCount: AGENT_COUNT,
+      concurrency: AGENT_CONCURRENCY,
+      isRetryable: isRetryableGeminiError,
+      generate: (prompt) =>
+        generateWithGemini(AGENT_SYSTEM_PROMPT, [{ role: "user", content: prompt }], apiKey, undefined, {
+          responseMimeType: "application/json",
+          temperature: 0.2,
+        }),
+    });
 
     const createdAtById = new Map(notes.map((note) => [note.id, note.created_at]));
     const { results, notesSearched } = mergeAgentResults(outcomes, createdAtById, MAX_RESULTS);
 
+    // Every agent failed: report an outage rather than an empty result set,
+    // which would read as "nothing in your notes is related".
     if (notesSearched === 0) {
       return json({ error: "Relevance search is unavailable right now. Please try again." }, 502);
     }
