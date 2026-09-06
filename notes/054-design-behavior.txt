@@ -1,0 +1,5 @@
+Design & Behavior
+
+Important rule, a good design is one that changes the customer behavior for the better.
+
+Example: the self driving of the Tesla is so well built for the regular driver that people not only buy it for that, but use it so much while driving instead of driving themselves.
