@@ -1,6 +1,16 @@
 import { supabase } from './supabase';
 import { getOwnerId } from './user';
 import {
+  IS_LOCAL_MODE,
+  localCreateNote,
+  localDeleteNote,
+  localFindRelevantNotes,
+  localGetNotes,
+  localImportNotes,
+  localMoveNotesToCategory,
+  localUpdateNote,
+} from '@/dev/local-mode';  // DEV-LOCAL-MODE
+import {
   Note,
   Question,
   ConversationMessage,
@@ -122,6 +132,7 @@ export function getLocalDateString(date: Date = new Date()): string {
 }
 
 export async function getNotes(): Promise<Note[]> {
+  if (IS_LOCAL_MODE) return localGetNotes();  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
   if (categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').select(CATEGORY_NOTE_FIELDS).eq('user_id', ownerId).order('created_at', { ascending: false });
@@ -140,6 +151,7 @@ export async function getNotes(): Promise<Note[]> {
 
 /** Save from the dedicated note editor without running question/note classification. */
 export async function createNote(rawText: string, category: string | null = null): Promise<Note> {
+  if (IS_LOCAL_MODE) return localCreateNote(rawText, category);  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
   if (categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').insert({
@@ -173,6 +185,7 @@ export async function importNotes(
   onProgress?: (completed: number, total: number) => void
 ): Promise<Note[]> {
   if (rawTexts.length === 0) return [];
+  if (IS_LOCAL_MODE) return localImportNotes(rawTexts, onProgress);  // DEV-LOCAL-MODE
 
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData.user) {
@@ -281,6 +294,7 @@ export async function updateNote(
   rawText: string,
   category?: string | null
 ): Promise<Note> {
+  if (IS_LOCAL_MODE) return localUpdateNote(noteId, rawText, category);  // DEV-LOCAL-MODE
   if (category !== undefined && categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').update({
       raw_text: rawText,
@@ -305,6 +319,7 @@ export async function moveNotesToCategory(
   category: string | null
 ): Promise<Note[]> {
   if (noteIds.length === 0) return [];
+  if (IS_LOCAL_MODE) return localMoveNotesToCategory(noteIds, category);  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
   if (categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').update({ category, category_updated_at: new Date().toISOString() }).in('id', noteIds).eq('user_id', ownerId).select(CATEGORY_NOTE_FIELDS);
@@ -322,12 +337,15 @@ export async function moveNotesToCategory(
 }
 
 export async function deleteNote(noteId: string): Promise<void> {
+  if (IS_LOCAL_MODE) { localDeleteNote(noteId); return; }  // DEV-LOCAL-MODE
   const { error } = await supabase.from('notes').delete().eq('id', noteId);
   if (error) throw error;
 }
 
 /** Fire-and-forget after a note is saved: finds related notes. */
 export async function processNote(noteId: string): Promise<{ relations_count: number }> {
+  // Background relation-building needs the Edge Function; local mode skips it.
+  if (IS_LOCAL_MODE) return { relations_count: 0 };  // DEV-LOCAL-MODE
   const response = await fetch(`${SUPABASE_URL}/functions/v1/process-note`, {
     method: 'POST',
     headers: {
@@ -352,6 +370,7 @@ export async function findRelevantNotes(
   draftText: string,
   excludeNoteId?: string | null
 ): Promise<RelevantNotesResponse> {
+  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId);  // DEV-LOCAL-MODE
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (sessionError || !accessToken) {
@@ -425,6 +444,7 @@ export async function handleMessage(rawText: string): Promise<
 export async function getNoteRelations(
   noteId: string
 ): Promise<Array<{ id: string; related_note_id: string; reason: string | null; confidence?: number; weight?: number; related_note: { id: string; summary: string | null; raw_text: string } }>> {
+  if (IS_LOCAL_MODE) return [];  // DEV-LOCAL-MODE
   // Query only columns available in both the current preview schema and the
   // connection-learning migration. Requesting newer columns against an older
   // preview database creates noisy 400 responses before a fallback can run.

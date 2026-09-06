@@ -7,6 +7,7 @@ import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
 import { useAuth } from '@/lib/auth-context';
 import { createNote, deleteNote, findRelevantNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
 import { supabase } from '@/lib/supabase';
+import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 import { Note, NoteRelationType, RelevanceCoverage, RelevanceResult } from '@/lib/types';
 
 type MuseMeta = { title: string; description: string; createdAt: string };
@@ -179,10 +180,14 @@ export default function OcredaHome() {
       setProjects(migrated);
       localStorage.setItem(projectKey, JSON.stringify(migrated));
     }
-    supabase.from('user_settings').select('full_name').eq('user_id', user.id).maybeSingle().then(({ data }) => {
-      const authName = String(user.user_metadata?.full_name ?? user.user_metadata?.name ?? '').trim();
-      setDisplayName(data?.full_name?.trim() || authName || user.email?.split('@')[0] || 'you');
-    });
+    if (IS_LOCAL_MODE) {  // DEV-LOCAL-MODE
+      setDisplayName('you');
+    } else {
+      supabase.from('user_settings').select('full_name').eq('user_id', user.id).maybeSingle().then(({ data }) => {
+        const authName = String(user.user_metadata?.full_name ?? user.user_metadata?.name ?? '').trim();
+        setDisplayName(data?.full_name?.trim() || authName || user.email?.split('@')[0] || 'you');
+      });
+    }
   }, [user]);
 
   const persistMuseMeta = useCallback((next: MuseMeta[]) => {
@@ -1236,7 +1241,9 @@ function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onP
         )}
       </div>
 
-      {!loading && !error && relevance && <footer className="shrink-0 space-y-2 border-t border-[#eee] px-4 py-3">
+      {/* Only render the footer when it has something to say, otherwise it
+          shows as an empty bordered strip under the results. */}
+      {!loading && !error && relevance && (stale || coverage?.complete === false || results.length > RELEVANCE_PAGE_SIZE) && <footer className="shrink-0 space-y-2 border-t border-[#eee] px-4 py-3">
         {stale && <p className="text-[11px] leading-relaxed text-[#a06a00]">Your draft changed since this search. Run it again to refresh.</p>}
         {coverage && !coverage.complete && <p className="text-[11px] leading-relaxed text-[#a06a00]">Searched {coverage.notes_searched} of {coverage.notes_total} notes — the rest couldn’t be read. <button type="button" onClick={onRetry} className="underline">Search again</button></p>}
         {results.length > RELEVANCE_PAGE_SIZE && <div className="flex items-center justify-between">

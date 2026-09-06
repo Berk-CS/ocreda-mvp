@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+import { IS_LOCAL_MODE, LOCAL_USER } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 
 interface AuthContextType {
   user: User | null;
@@ -23,11 +24,15 @@ const AuthContext = createContext<AuthContextType>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  // Local mode starts already "signed in" as a fake user, which is what lets
+  // AppChrome render instead of redirecting to /auth.
+  const [user, setUser] = useState<User | null>(IS_LOCAL_MODE ? (LOCAL_USER as unknown as User) : null);  // DEV-LOCAL-MODE
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!IS_LOCAL_MODE);  // DEV-LOCAL-MODE
 
   useEffect(() => {
+    if (IS_LOCAL_MODE) return;  // DEV-LOCAL-MODE
+
     let mounted = true;
     supabase.auth.getSession()
       .then(({ data: { session } }) => {
@@ -77,6 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    if (IS_LOCAL_MODE) return;  // DEV-LOCAL-MODE
     await supabase.auth.signOut();
   };
 
