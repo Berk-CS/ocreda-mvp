@@ -20,6 +20,7 @@ interface RpcCandidate {
   token_count: number;
   raw_text: string;
   embedding_text: string;
+  is_near_duplicate: boolean;
 }
 
 function json(body: Record<string, unknown>, status = 200): Response {
@@ -55,6 +56,7 @@ Deno.serve(async (req: Request) => {
       query_embedding: queryEmbedding,
       candidate_limit: candidateLimit,
       similarity_floor: similarityFloor,
+      duplicate_threshold: duplicateThreshold,
     });
     if (error) throw error;
 

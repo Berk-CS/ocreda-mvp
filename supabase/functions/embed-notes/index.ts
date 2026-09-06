@@ -6,7 +6,7 @@ import {
   EMBEDDING_MODEL,
   EMBEDDING_PROVIDER,
   EMBEDDING_VERSION,
-  generateSemanticEmbedding,
+  generateSemanticEmbeddingResult,
   noteTitle,
   sha256,
 } from "../_shared/embeddings.ts";
@@ -67,10 +67,19 @@ Deno.serve(async (req: Request) => {
     if (requestedIds.length) {
       query = query.in("id", requestedIds);
     } else {
-      const statuses = ["pending"];
-      if (body.retry_failed === true) statuses.push("failed");
-      if (body.retry_stale_processing === true) statuses.push("processing");
-      query = query.in("embedding_status", statuses);
+      const queueConditions = [
+        "embedding_status.eq.pending",
+        `and(embedding_status.eq.ready,embedding_version.neq.${EMBEDDING_VERSION})`,
+        `and(embedding_status.eq.failed,embedding_version.neq.${EMBEDDING_VERSION})`,
+      ];
+      if (body.retry_failed === true) queueConditions.push("embedding_status.eq.failed");
+      if (body.retry_stale_processing === true) {
+        const staleBefore = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+        queueConditions.push(
+          `and(embedding_status.eq.processing,embedding_started_at.lt.${staleBefore})`,
+        );
+      }
+      query = query.or(queueConditions.join(","));
     }
     const { data, error } = await query;
     if (error) throw error;
@@ -125,7 +134,7 @@ Deno.serve(async (req: Request) => {
 
       try {
         const sourceHash = await sha256(note.raw_text);
-        const embedding = await generateSemanticEmbedding(
+        const embeddingResult = await generateSemanticEmbeddingResult(
           note.raw_text,
           apiKey,
           "RETRIEVAL_DOCUMENT",
@@ -134,7 +143,7 @@ Deno.serve(async (req: Request) => {
         const { data: saved, error: saveError } = await service
           .from("notes")
           .update({
-            semantic_embedding: embedding,
+            semantic_embedding: embeddingResult.values,
             embedding_provider: EMBEDDING_PROVIDER,
             embedding_model: EMBEDDING_MODEL,
             embedding_dimension: EMBEDDING_DIMENSION,
@@ -144,6 +153,12 @@ Deno.serve(async (req: Request) => {
             embedding_started_at: null,
             embedded_at: new Date().toISOString(),
             embedding_source_hash: sourceHash,
+            ...(embeddingResult.tokenCount === null
+              ? {}
+              : {
+                token_count: embeddingResult.tokenCount,
+                token_count_method: "gemini-prompt-v2",
+              }),
           })
           .eq("id", note.id)
           .eq("user_id", user.id)

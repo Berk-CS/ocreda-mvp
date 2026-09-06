@@ -6,6 +6,11 @@ import {
   lengthBucket,
   scoreDistribution,
 } from "./stage1.ts";
+import {
+  buildEmbeddingRequest,
+  EMBEDDING_VERSION,
+  prepareEmbeddingText,
+} from "./embeddings.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -74,7 +79,7 @@ Deno.test("Q1 creates a deterministic 50-note subset containing every target", (
 });
 
 Deno.test("embedding lifecycle is idempotent and retries only explicit states", () => {
-  const version = "google:gemini-embedding-2:768:v1";
+  const version = EMBEDDING_VERSION;
   const now = Date.parse("2026-08-31T12:00:00Z");
   const recent = "2026-08-31T11:55:00Z";
   const stale = "2026-08-31T11:30:00Z";
@@ -148,6 +153,33 @@ Deno.test("embedding lifecycle is idempotent and retries only explicit states", 
       now,
     ),
     "Stale claims must be recoverable",
+  );
+});
+
+Deno.test("Gemini Embedding 2 uses documented retrieval prefixes without legacy task fields", () => {
+  assertEquals(
+    prepareEmbeddingText("Find the Alaska idea", "RETRIEVAL_QUERY"),
+    "task: search result | query: Find the Alaska idea",
+    "Query embeddings need the asymmetric retrieval prefix",
+  );
+  assertEquals(
+    prepareEmbeddingText("Complete source text", "RETRIEVAL_DOCUMENT", "Alaska"),
+    "title: Alaska | text: Complete source text",
+    "Document embeddings need the matching title/text structure",
+  );
+
+  const request = buildEmbeddingRequest(
+    "Complete source text",
+    "RETRIEVAL_DOCUMENT",
+    "Alaska",
+  ) as Record<string, unknown>;
+  assert(!("taskType" in request), "Embedding 2 must not receive taskType");
+  assert(!("title" in request), "Embedding 2 must not receive a legacy title field");
+  assert(!("outputDimensionality" in request), "Deprecated top-level config must not be used");
+  assertEquals(
+    request.embedContentConfig,
+    { outputDimensionality: 768, autoTruncate: false },
+    "Embedding requests must preserve full notes and return 768 dimensions",
   );
 });
 

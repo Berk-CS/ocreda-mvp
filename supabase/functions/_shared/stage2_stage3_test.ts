@@ -32,6 +32,14 @@ Deno.test('Stage 3 separates near-duplicates instead of using them as resonance 
   assertEquals(result.candidates.map((item) => item.note_id), ['connection']);
 });
 
+Deno.test('near-duplicates do not reduce the normal candidate capacity', () => {
+  const duplicates = Array.from({ length: 10 }, (_, index) => candidate(`duplicate-${index}`, 0.99 - index * 0.001, [1, 0], index + 1));
+  const normal = Array.from({ length: 60 }, (_, index) => candidate(`normal-${index}`, 0.94 - index * 0.001, [0.7, 0.3], index + 11));
+  const result = partitionNearDuplicates([...duplicates, ...normal], 0.95);
+  assertEquals(result.nearDuplicates.length, 10);
+  assertEquals(result.candidates.length, 60);
+});
+
 Deno.test('MMR preserves a lower-ranked opposing pole over a redundant result', () => {
   const input = [
     candidate('position-a', 0.90, [1, 0], 1),
@@ -62,12 +70,15 @@ Deno.test('Stage 2 schema has ownership RLS, junction ownership, and no prematur
 });
 
 Deno.test('Stage 3 RPC derives ownership from auth context and has no free-form user id', async () => {
-  const migration = await Deno.readTextFile(new URL('../../migrations/20260904091000_add_stage3_wide_semantic_retrieval.sql', import.meta.url));
+  const migration = await Deno.readTextFile(new URL('../../migrations/20260906120000_fix_embedding_v2_and_stage3_capacity.sql', import.meta.url));
   assert(migration.includes('note.user_id = auth.uid()'));
   assert(!migration.includes('filter_user_id'));
   assert(migration.includes('similarity_floor'));
   assert(migration.includes('candidate_limit'));
   assert(migration.includes('note.raw_text'));
+  assert(migration.includes('near_duplicates as'));
+  assert(migration.includes('normal_candidates as'));
+  assert(migration.includes('cross join duplicate_total'));
 });
 
 Deno.test('production semantic endpoint does not use behavioral weights or generated summaries', async () => {
@@ -81,5 +92,6 @@ Deno.test('live page surfacing and Instant Retrieval have no word-overlap fallba
   const page = await Deno.readTextFile(new URL('../../../app/page.tsx', import.meta.url));
   assert(!page.includes('sharedWordScore'));
   assert(!page.includes('keywordScore'));
+  assert(!page.includes('processNote('));
   assert(page.match(/retrieveSemanticNotes\(/g)?.length === 2);
 });

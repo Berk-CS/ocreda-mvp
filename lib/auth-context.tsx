@@ -4,6 +4,8 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 
+const SESSION_BOOT_TIMEOUT_MS = 5_000;
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
@@ -29,7 +31,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession()
+    let timeoutId: number | undefined;
+    const sessionTimeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(
+        () => reject(new Error('Session initialization timed out')),
+        SESSION_BOOT_TIMEOUT_MS,
+      );
+    });
+
+    Promise.race([supabase.auth.getSession(), sessionTimeout])
       .then(({ data: { session } }) => {
         if (!mounted) return;
         setSession(session);
@@ -41,6 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
       })
       .finally(() => {
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
         if (mounted) setLoading(false);
       });
 
@@ -52,6 +63,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mounted = false;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       subscription.unsubscribe();
     };
   }, []);
