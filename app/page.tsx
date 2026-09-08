@@ -41,7 +41,14 @@ function splitNote(note: Note): { title: string; body: string } {
 
 function notePreview(note: Note): string {
   const { body } = splitNote(note);
-  return (body || note.raw_text).replace(/[#*_>`~-]/g, '').replace(/\s+/g, ' ').trim();
+  return (body || note.raw_text)
+    // Bullet and heading markers, which only carry meaning at the start of a
+    // line. Stripping "-" everywhere turned "per-seat" into "perseat".
+    .replace(/^[\s>]*[#>\-*+]+[ \t]*/gm, '')
+    // Inline emphasis, which always wraps text rather than sitting inside it.
+    .replace(/[*_`~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function formatDate(value: string): string {
@@ -1169,11 +1176,18 @@ function InstantRetrievalOverlay({ notes, projects, initialQuery = '', saving, o
 
 type RelevanceSearch = { results: RelevanceResult[]; coverage: RelevanceCoverage };
 
-const RELEVANCE_PAGE_SIZE = 10;
+// Five per page rather than ten, so each card has room to preview the note's
+// own text under the explanation instead of only its title.
+const RELEVANCE_PAGE_SIZE = 5;
 
-const RELATION_BADGES: Record<NoteRelationType, { label: string; className: string }> = {
-  supports: { label: 'Supports', className: 'bg-[#e6f4ea] text-[#1e7a3c]' },
-  extends: { label: 'Adds to', className: 'bg-[#e8f0fe] text-[#2b5fd9]' },
+/**
+ * Only relationships worth interrupting the reader for get a badge. A relevant
+ * note that supports or extends the draft is the default expectation, so saying
+ * so adds noise — whereas a note that contradicts the draft, or raises a
+ * question it leaves open, is exactly what someone would miss on their own. The
+ * full taxonomy still comes back from the API for filtering later.
+ */
+const RELATION_BADGES: Partial<Record<NoteRelationType, { label: string; className: string }>> = {
   contradicts: { label: 'Contradicts', className: 'bg-[#fdecea] text-[#c0392b]' },
   question: { label: 'Open question', className: 'bg-[#f1eafc] text-[#6b3fc0]' },
 };
@@ -1222,15 +1236,31 @@ function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onP
               const content = splitNote(note);
               const badge = RELATION_BADGES[result.relation_type];
               const expanded = expandedId === result.note_id;
+              // splitNote treats the first line as a title. For a note written
+              // as one block that "title" is just its opening words, which the
+              // preview underneath already shows — so only head the card when
+              // the note really has a separate heading.
+              const hasHeading = content.body.length > 0 && content.body !== note.raw_text.trim();
               return (
                 <button key={result.note_id} type="button" onClick={() => setExpandedId(expanded ? null : result.note_id)} aria-expanded={expanded} className="block w-full rounded-lg border border-[#e4e4e4] bg-[#fafafb] p-3 text-left transition hover:border-[#8fb1ff]">
-                  <div className="flex items-start justify-between gap-2">
-                    <strong className="min-w-0 flex-1 truncate text-sm text-[#222]">{content.title}</strong>
-                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>{badge.label}</span>
+                  {(hasHeading || badge) && <div className="mb-2 flex items-start justify-between gap-2">
+                    {hasHeading && <strong className="min-w-0 flex-1 truncate text-sm text-[#222]">{content.title}</strong>}
+                    {badge && <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>{badge.label}</span>}
+                  </div>}
+                  {/* The note's own words lead, and are the largest, darkest
+                      text on the card. line-clamp trails them with an ellipsis
+                      until it is clicked open. */}
+                  <p className={`text-[13px] leading-relaxed text-[#333] ${expanded ? 'max-h-64 overflow-y-auto whitespace-pre-wrap' : 'line-clamp-3'}`}>
+                    {expanded ? (content.body || note.raw_text) : notePreview(note)}
+                  </p>
+                  {/* Set on its own tinted panel, smaller and cooler in tone, so
+                      it reads as annotation about the note rather than more of
+                      the note. */}
+                  <div className="mt-2.5 rounded-md bg-[#f4f7ff] px-2.5 py-2">
+                    <p className="text-[9px] font-semibold uppercase tracking-[0.09em] text-[#8ba0d8]">How this relates</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-[#5d6b85]">{result.explanation}</p>
                   </div>
-                  <p className="mt-2 text-xs leading-relaxed text-[#555]">{result.explanation}</p>
-                  {expanded && <p className="mt-3 max-h-56 overflow-y-auto whitespace-pre-wrap border-t border-[#e8e8e8] pt-3 text-xs leading-relaxed text-[#666]">{content.body || note.raw_text}</p>}
-                  <div className="mt-2 flex items-center justify-between text-[11px] text-[#aaa]">
+                  <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#aaa]">
                     <span>{Math.round(result.relevance_score * 100)}% match</span>
                     <span>{formatDate(note.created_at)}</span>
                   </div>
