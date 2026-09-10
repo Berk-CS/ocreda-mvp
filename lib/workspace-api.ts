@@ -135,7 +135,8 @@ export async function updateDomain(id: string, title: string, description: strin
 }
 
 export async function deleteDomain(id: string): Promise<void> {
-  const { error } = await supabase.from('domains').delete().eq('id', id);
+  const userId = await ownerId();
+  const { error } = await supabase.from('domains').delete().eq('id', id).eq('user_id', userId);
   if (error) throw error;
 }
 
@@ -162,7 +163,8 @@ export async function updateProject(id: string, title: string, description: stri
 }
 
 export async function deleteProject(id: string): Promise<void> {
-  const { error } = await supabase.from('projects').delete().eq('id', id);
+  const userId = await ownerId();
+  const { error } = await supabase.from('projects').delete().eq('id', id).eq('user_id', userId);
   if (error) throw error;
 }
 
@@ -184,6 +186,7 @@ export async function updateProjectPage(projectId: string, page: ProjectPage): P
 }
 
 export async function deleteProjectPage(id: string): Promise<void> {
-  const { error } = await supabase.from('project_pages').delete().eq('id', id);
+  const userId = await ownerId();
+  const { error } = await supabase.from('project_pages').delete().eq('id', id).eq('user_id', userId);
   if (error) throw error;
 }

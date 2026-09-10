@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Plus, Rows3, ScanSearch, Search, Trash2, Upload, X } from 'lucide-react';
 import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
 import { useAuth } from '@/lib/auth-context';
-import { backfillSemanticEmbeddings, createNote, deleteNote, getNotes, importNotes, moveNotesToCategory, processNote, retrieveSemanticNotes, updateNote } from '@/lib/notes-api';
+import { backfillSemanticEmbeddings, createNote, deleteNote, getNotes, importNotes, moveNotesToCategory, retrieveSemanticNotes, updateNote } from '@/lib/notes-api';
 import { supabase } from '@/lib/supabase';
 import { Note } from '@/lib/types';
 import {
@@ -31,7 +31,7 @@ type ProjectEditorState = { project: CortexProject | null; title: string; descri
 type SpeechRecognitionLike = {
   lang: string; continuous: boolean; interimResults: boolean;
   start: () => void; stop: () => void;
-  onresult: ((event: { results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
+  onresult: ((event: { resultIndex?: number; results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
   onerror: (() => void) | null; onend: (() => void) | null;
 };
 
@@ -183,7 +183,6 @@ export default function OcredaHome() {
         const created = await createNote(rawText, category);
         await setNotesDomain([created.id], domain?.id ?? null);
         setNotes((current) => [{ ...created, category }, ...current]);
-        processNote(created.id).catch(() => {});
       }
       setNoteEditor(null); flashSaved();
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this note.')); }
@@ -355,7 +354,7 @@ export default function OcredaHome() {
     setImportError('');
     try {
       const imported = await importNotes(drafts.map((draft) => draft.rawText), (completed, total) => setImportProgress({ completed, total }));
-      setNotes((current) => [...imported, ...current]); imported.forEach((note) => processNote(note.id).catch(() => {}));
+      setNotes((current) => [...imported, ...current]);
       setImportProgress(null); flashSaved();
     } catch (err) { setImportProgress(null); setImportError(safeErrorMessage(err, 'Your notes could not be imported.')); throw err; }
   };
@@ -626,6 +625,14 @@ function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onAddNot
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
 
   useEffect(() => {
+    const availableTitles = new Set(muses.map((muse) => muse.title));
+    setSelectedMuses((current) => {
+      const next = new Set(Array.from(current).filter((title) => availableTitles.has(title)));
+      return next.size === current.size ? current : next;
+    });
+  }, [muses]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || searchOpen || sortOpen || musesOpen || instantRetrievalOpen) return;
       if (document.querySelector('[aria-modal="true"], [role="status"]')) return;
@@ -768,6 +775,113 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   return <>{text.split(expression).map((part, index) => termSet.has(part.toLowerCase()) ? <mark key={`${part}-${index}`} className="rounded-sm bg-[#eaf1ff] px-0.5 text-[#477bea]">{part}</mark> : part)}</>;
 }
 
+function getSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
+  if (typeof window === 'undefined') return null;
+  const speechWindow = window as typeof window & {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  };
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
+function useSpeechDictation(onTranscript: (transcript: string) => void) {
+  const speechRef = useRef<SpeechRecognitionLike | null>(null);
+  const transcriptRef = useRef(onTranscript);
+  const [dictating, setDictating] = useState(false);
+  const [supported, setSupported] = useState(false);
+  transcriptRef.current = onTranscript;
+
+  useEffect(() => {
+    setSupported(Boolean(getSpeechRecognition()));
+    return () => {
+      try { speechRef.current?.stop(); } catch { /* already stopped */ }
+      speechRef.current = null;
+    };
+  }, []);
+
+  const toggleDictation = useCallback(() => {
+    if (speechRef.current && dictating) {
+      speechRef.current.stop();
+      return;
+    }
+    const Recognition = getSpeechRecognition();
+    if (!Recognition) return;
+    const recognition = new Recognition();
+    recognition.lang = 'en-US';
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.onresult = (event) => {
+      const start = Math.max(event.resultIndex ?? 0, 0);
+      const transcript = Array.from(event.results).slice(start).map((result) => result[0].transcript).join(' ').trim();
+      if (transcript) transcriptRef.current(transcript);
+    };
+    recognition.onerror = () => setDictating(false);
+    recognition.onend = () => {
+      speechRef.current = null;
+      setDictating(false);
+    };
+    speechRef.current = recognition;
+    setDictating(true);
+    recognition.start();
+  }, [dictating]);
+
+  return { dictating, supported, toggleDictation };
+}
+
+function useNoteAutosave({ noteId, rawText, originalText, enabled, onSave }: {
+  noteId: string;
+  rawText: string;
+  originalText: string;
+  enabled: boolean;
+  onSave: (noteId: string, rawText: string) => Promise<void>;
+}) {
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const timerRef = useRef<number | null>(null);
+  const requestRef = useRef(0);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current === null) return;
+    window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }, []);
+
+  const persist = useCallback(async (text: string) => {
+    const request = ++requestRef.current;
+    setSaveState('saving');
+    try {
+      await onSaveRef.current(noteId, text);
+      if (requestRef.current === request) setSaveState('saved');
+    } catch (error) {
+      if (requestRef.current === request) setSaveState('error');
+      throw error;
+    }
+  }, [noteId]);
+
+  useEffect(() => {
+    clearTimer();
+    if (!enabled || !rawText || rawText === originalText.trim()) return;
+    setSaveState('saving');
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      void persist(rawText).catch(() => {});
+    }, 850);
+    return clearTimer;
+  }, [clearTimer, enabled, originalText, persist, rawText]);
+
+  const flushSave = useCallback(async () => {
+    clearTimer();
+    if (!rawText || rawText === originalText.trim()) {
+      setSaveState('idle');
+      return;
+    }
+    await persist(rawText);
+  }, [clearTimer, originalText, persist, rawText]);
+
+  return { saveState, flushSave };
+}
+
 function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack, onAddNote, onOpenNote, onOpenPage, onUpdate, onDelete, onSaveRetrieval }: {
   note: Note; allNotes: Note[]; muses: MuseMeta[]; projects: CortexProject[]; saving: boolean;
   onBack: () => void; onAddNote: () => void; onOpenNote: (note: Note) => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void;
@@ -781,21 +895,19 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchRequest, setSearchRequest] = useState<KnowledgeSearchRequest | null>(null);
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
-  const latestSaveRef = useRef(onUpdate);
-  latestSaveRef.current = onUpdate;
   const muse = cleanCategory(note.category) || 'Instant retrieval';
   const rawText = title.trim() && body.trim() ? `${title.trim()}\n\n${body.trim()}` : title.trim() || body.trim();
-
-  useEffect(() => {
-    if (!editing || !rawText || rawText === note.raw_text.trim()) return;
-    setSaveState('saving');
-    const timeout = window.setTimeout(() => {
-      latestSaveRef.current(note.id, rawText).then(() => setSaveState('saved')).catch(() => setSaveState('error'));
-    }, 850);
-    return () => window.clearTimeout(timeout);
-  }, [body, editing, note.id, note.raw_text, rawText, title]);
+  const { dictating, supported: dictationSupported, toggleDictation } = useSpeechDictation((transcript) => {
+    setBody((current) => `${current}${current ? ' ' : ''}${transcript}`);
+  });
+  const { saveState, flushSave } = useNoteAutosave({
+    noteId: note.id,
+    rawText,
+    originalText: note.raw_text,
+    enabled: editing,
+    onSave: onUpdate,
+  });
 
   const orderedNotes = useMemo(() => [...allNotes].sort((a, b) => b.created_at.localeCompare(a.created_at)), [allNotes]);
   const noteIndex = orderedNotes.findIndex((item) => item.id === note.id);
@@ -810,11 +922,15 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
 
   const leaveWorkspace = async (next?: Note | null) => {
     if (rawText && rawText !== note.raw_text.trim()) {
-      setSaveState('saving');
-      try { await latestSaveRef.current(note.id, rawText); setSaveState('saved'); }
-      catch { setSaveState('error'); return; }
+      try { await flushSave(); }
+      catch { return; }
     }
     if (next) onOpenNote(next); else onBack();
+  };
+
+  const finishEditing = () => {
+    setEditing(false);
+    void flushSave().catch(() => {});
   };
 
   const applyReadingFormat = (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => {
@@ -857,7 +973,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
           <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-28 pt-12 sm:px-16 lg:px-[11%] lg:pt-20">
             {editing ? <div className="mx-auto max-w-4xl"><input autoFocus maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" className="w-full bg-transparent text-2xl font-semibold outline-none" /><textarea ref={bodyRef} maxLength={4000} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-8 min-h-[560px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="mx-auto max-w-4xl"><button type="button" onClick={() => setEditing(true)} className="block w-full rounded-md px-2 py-1 text-left outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><h1 className="text-2xl font-semibold">{title}</h1></button><button type="button" onClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="mt-8 block w-full rounded-md px-2 py-2 text-left text-base leading-[1.7] outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><span className="whitespace-pre-wrap">{body || note.raw_text || 'Tap to start writing.'}</span></button></article>}
           </div>
-          <ReadingFormatBar onFormat={applyReadingFormat} onDone={() => setEditing(false)} editing={editing} />
+          <ReadingFormatBar onFormat={applyReadingFormat} onDone={finishEditing} editing={editing} dictating={dictating} dictationSupported={dictationSupported} onVoiceInput={toggleDictation} />
           <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
         </section>
 
@@ -891,23 +1007,29 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
   const [body, setBody] = useState(initial.body);
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const rawText = title.trim() && body.trim() ? `${title.trim()}\n\n${body.trim()}` : title.trim() || body.trim();
   const muse = cleanCategory(note.category) || 'Instant retrieval';
+  const { dictating, supported: dictationSupported, toggleDictation } = useSpeechDictation((transcript) => {
+    setBody((current) => `${current}${current ? ' ' : ''}${transcript}`);
+  });
   const usedMuses = useMemo(() => {
     const direct = muses.filter((item) => item.title.toLowerCase() === muse.toLowerCase());
     return (direct.length ? direct : muses).slice(0, 4);
   }, [muses, muse]);
 
-  useEffect(() => {
-    if (!editing || !rawText || rawText === note.raw_text.trim()) return;
-    setSaveState('saving');
-    const timeout = window.setTimeout(() => {
-      onUpdate(note.id, rawText).then(() => setSaveState('saved')).catch(() => setSaveState('error'));
-    }, 850);
-    return () => window.clearTimeout(timeout);
-  }, [body, editing, note.id, note.raw_text, onUpdate, rawText, title]);
+  const { saveState, flushSave } = useNoteAutosave({
+    noteId: note.id,
+    rawText,
+    originalText: note.raw_text,
+    enabled: editing,
+    onSave: onUpdate,
+  });
+
+  const finishEditing = () => {
+    setEditing(false);
+    void flushSave().catch(() => {});
+  };
 
   const applyFormat = (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => {
     setEditing(true);
@@ -946,7 +1068,7 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
               <input value={title} readOnly={!editing} onClick={() => setEditing(true)} onChange={(event) => setTitle(event.target.value)} aria-label="Retrieved note title" className={`w-full bg-transparent text-2xl font-semibold outline-none ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
               <textarea ref={bodyRef} value={body} readOnly={!editing} onClick={() => setEditing(true)} onChange={(event) => setBody(event.target.value)} aria-label="Retrieved note text" className={`mt-8 min-h-[540px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
             </div>
-            <ReadingFormatBar onFormat={applyFormat} onDone={() => setEditing(false)} editing={editing} />
+            <ReadingFormatBar onFormat={applyFormat} onDone={finishEditing} editing={editing} dictating={dictating} dictationSupported={dictationSupported} onVoiceInput={toggleDictation} />
             <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
           </section>
           <aside className="relative min-h-0 overflow-y-auto bg-[#f7f7f9] px-6 pb-8 pt-16">
@@ -966,9 +1088,16 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
   );
 }
 
-function ReadingFormatBar({ onFormat, onDone, editing }: { onFormat: (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => void; onDone: () => void; editing: boolean }) {
+function ReadingFormatBar({ onFormat, onDone, editing, dictating, dictationSupported, onVoiceInput }: {
+  onFormat: (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => void;
+  onDone: () => void;
+  editing: boolean;
+  dictating: boolean;
+  dictationSupported: boolean;
+  onVoiceInput: () => void;
+}) {
   if (!editing) return null;
-  return <div className="absolute bottom-5 left-1/2 z-20 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-1 rounded-xl bg-[#f7f7f9] px-3 py-2 text-sm text-[#555] shadow-sm"><button type="button" aria-label="Voice input" className="flex h-8 w-8 items-center justify-center rounded hover:bg-white"><Mic className="h-4 w-4" /></button><span className="mx-1 h-7 w-px bg-[#ddd]" /><button type="button" onClick={() => onFormat('bold')} className="h-8 w-8 rounded font-bold hover:bg-white">B</button><button type="button" onClick={() => onFormat('italic')} className="h-8 w-8 rounded italic hover:bg-white">I</button><span className="mx-1 h-7 w-px bg-[#ddd]" />{(['h1', 'h2', 'h3'] as const).map((kind) => <button key={kind} type="button" onClick={() => onFormat(kind)} className="hidden h-8 rounded px-2 font-semibold hover:bg-white sm:block">{kind.toUpperCase()}</button>)}<button type="button" onClick={() => onFormat('body')} className="hidden h-8 rounded px-2 hover:bg-white md:block">Body</button><span className="mx-1 hidden h-7 w-px bg-[#ddd] md:block" /><button type="button" onClick={() => onFormat('bullet')} className="hidden h-8 items-center gap-1 rounded px-2 hover:bg-white lg:flex"><List className="h-4 w-4" /> Bullet list</button><button type="button" onClick={() => onFormat('number')} className="hidden h-8 items-center gap-1 rounded px-2 hover:bg-white xl:flex"><ListOrdered className="h-4 w-4" /> Numbered list</button><button type="button" onClick={onDone} className="ml-2 h-8 rounded-md bg-[#477bea] px-3 text-white hover:bg-[#3d6ed7]">Done</button></div>;
+  return <div className="absolute bottom-5 left-1/2 z-20 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-1 rounded-xl bg-[#f7f7f9] px-3 py-2 text-sm text-[#555] shadow-sm"><button type="button" onClick={onVoiceInput} disabled={!dictationSupported} aria-label={dictationSupported ? (dictating ? 'Stop dictation' : 'Start dictation') : 'Voice input is not supported in this browser'} title={dictationSupported ? (dictating ? 'Stop dictation' : 'Start dictation') : 'Voice input is not supported in this browser'} className={`flex h-8 w-8 items-center justify-center rounded hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 ${dictating ? 'text-red-600' : ''}`}><Mic className="h-4 w-4" /></button><span className="mx-1 h-7 w-px bg-[#ddd]" /><button type="button" onClick={() => onFormat('bold')} className="h-8 w-8 rounded font-bold hover:bg-white">B</button><button type="button" onClick={() => onFormat('italic')} className="h-8 w-8 rounded italic hover:bg-white">I</button><span className="mx-1 h-7 w-px bg-[#ddd]" />{(['h1', 'h2', 'h3'] as const).map((kind) => <button key={kind} type="button" onClick={() => onFormat(kind)} className="hidden h-8 rounded px-2 font-semibold hover:bg-white sm:block">{kind.toUpperCase()}</button>)}<button type="button" onClick={() => onFormat('body')} className="hidden h-8 rounded px-2 hover:bg-white md:block">Body</button><span className="mx-1 hidden h-7 w-px bg-[#ddd] md:block" /><button type="button" onClick={() => onFormat('bullet')} className="hidden h-8 items-center gap-1 rounded px-2 hover:bg-white lg:flex"><List className="h-4 w-4" /> Bullet list</button><button type="button" onClick={() => onFormat('number')} className="hidden h-8 items-center gap-1 rounded px-2 hover:bg-white xl:flex"><ListOrdered className="h-4 w-4" /> Numbered list</button><button type="button" onClick={onDone} className="ml-2 h-8 rounded-md bg-[#477bea] px-3 text-white hover:bg-[#3d6ed7]">Done</button></div>;
 }
 
 function InstantRetrievalCard({ onClick, tall = false }: { onClick: () => void; tall?: boolean }) {
@@ -1118,11 +1247,12 @@ function NoteEditor({ state, muses, saving, error, onChange, onCreateMuse, onClo
   onClose: () => void; onSave: () => void; onDelete?: () => void;
 }) {
   const bodyRef = useRef<HTMLTextAreaElement>(null);
-  const speechRef = useRef<SpeechRecognitionLike | null>(null);
-  const [dictating, setDictating] = useState(false);
   const [museOpen, setMuseOpen] = useState(false);
   const [newMuse, setNewMuse] = useState('');
   const [editingStarted, setEditingStarted] = useState(Boolean(state.note || state.title || state.body));
+  const { dictating, supported: dictationSupported, toggleDictation } = useSpeechDictation((transcript) => {
+    onChange({ ...state, body: `${state.body}${state.body ? ' ' : ''}${transcript}` });
+  });
 
   const applyFormat = (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => {
     const field = bodyRef.current;
@@ -1142,21 +1272,6 @@ function NoteEditor({ state, muses, saving, error, onChange, onCreateMuse, onClo
     requestAnimationFrame(() => { field.focus(); field.setSelectionRange(start, start + replacement.length); });
   };
 
-  const toggleDictation = () => {
-    if (speechRef.current && dictating) { speechRef.current.stop(); return; }
-    const speechWindow = window as typeof window & { SpeechRecognition?: new () => SpeechRecognitionLike; webkitSpeechRecognition?: new () => SpeechRecognitionLike };
-    const Recognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
-    if (!Recognition) return;
-    const recognition = new Recognition();
-    recognition.lang = 'en-US'; recognition.continuous = true; recognition.interimResults = false;
-    recognition.onresult = (event) => {
-      const transcript = Array.from(event.results).map((result) => result[0].transcript).join(' ').trim();
-      if (transcript) onChange({ ...state, body: `${state.body}${state.body ? ' ' : ''}${transcript}` });
-    };
-    recognition.onerror = () => setDictating(false); recognition.onend = () => setDictating(false);
-    speechRef.current = recognition; setDictating(true); recognition.start();
-  };
-
   const museLabel = state.muse === AUTOMATIC_MUSE ? 'Automatically organize' : state.muse;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 p-4 backdrop-blur-[5px]" role="dialog" aria-modal="true" aria-label={state.note ? 'Edit note' : 'Create note'} onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
@@ -1167,7 +1282,7 @@ function NoteEditor({ state, muses, saving, error, onChange, onCreateMuse, onClo
           <textarea ref={bodyRef} maxLength={2000} value={state.body} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, body: event.target.value })} placeholder={editingStarted ? '' : "For example: Someone made the point that we mostly don't choose our beliefs, we absorb them and backfill reasons after. Uncomfortable but I can't argue with it. Makes me wonder how much of what I think is actually mine."} aria-label="Note body" className="mt-5 h-[calc(100%-64px)] w-full resize-none bg-transparent text-base leading-relaxed outline-none placeholder:text-[#8a8a8a]" />
         </div>
         <div className="relative flex min-h-[58px] flex-wrap items-center gap-1 border-t border-[#eee] bg-[#f8f8fa] px-3 py-2 text-sm text-[#555] sm:px-5">
-          <button type="button" onClick={toggleDictation} aria-label={dictating ? 'Stop dictation' : 'Start dictation'} className={`mr-3 rounded p-2 hover:bg-white ${dictating ? 'text-red-600' : ''}`}><Mic className="h-4 w-4" /></button><span className="mr-3 h-7 w-px bg-[#ddd]" />
+          <button type="button" onClick={toggleDictation} disabled={!dictationSupported} aria-label={dictationSupported ? (dictating ? 'Stop dictation' : 'Start dictation') : 'Voice input is not supported in this browser'} title={dictationSupported ? (dictating ? 'Stop dictation' : 'Start dictation') : 'Voice input is not supported in this browser'} className={`mr-3 rounded p-2 hover:bg-white disabled:cursor-not-allowed disabled:opacity-35 ${dictating ? 'text-red-600' : ''}`}><Mic className="h-4 w-4" /></button><span className="mr-3 h-7 w-px bg-[#ddd]" />
           <button type="button" onClick={() => applyFormat('bold')} aria-label="Bold" className="rounded p-2 font-bold hover:bg-white"><Bold className="h-4 w-4" /></button>
           <button type="button" onClick={() => applyFormat('italic')} aria-label="Italic" className="rounded p-2 italic hover:bg-white"><Italic className="h-4 w-4" /></button><span className="mx-2 h-7 w-px bg-[#ddd]" />
           <button type="button" onClick={() => applyFormat('h1')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H1</button><button type="button" onClick={() => applyFormat('h2')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H2</button><button type="button" onClick={() => applyFormat('h3')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H3</button><button type="button" onClick={() => applyFormat('body')} className="rounded px-2 py-1.5 hover:bg-white">Body</button><span className="mx-2 hidden h-7 w-px bg-[#ddd] lg:block" />
@@ -1230,5 +1345,5 @@ function ProjectEditor({ state, error, onChange, onClose, onSave }: {
 }
 
 function SavedConfirmation() {
-  return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/25 backdrop-blur-[5px]" role="status" aria-live="polite"><div className="flex h-[260px] w-[min(88vw,680px)] items-center justify-center rounded-lg bg-[#477bea] text-xl text-white shadow-2xl sm:text-2xl">Saved to you for you</div></div>;
+  return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/25 backdrop-blur-[5px]" role="status" aria-live="polite"><div className="flex h-[260px] w-[min(88vw,680px)] items-center justify-center rounded-lg bg-[#477bea] text-xl text-white shadow-2xl sm:text-2xl">Saved to your Ocreda</div></div>;
 }

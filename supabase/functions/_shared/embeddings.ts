@@ -1,8 +1,9 @@
 export const EMBEDDING_PROVIDER = "google";
 export const EMBEDDING_MODEL = "gemini-embedding-2";
 export const EMBEDDING_DIMENSION = 768;
+export const EMBEDDING_TOKEN_LIMIT = 8_192;
 export const EMBEDDING_VERSION =
-  `${EMBEDDING_PROVIDER}:${EMBEDDING_MODEL}:${EMBEDDING_DIMENSION}:v1`;
+  `${EMBEDDING_PROVIDER}:${EMBEDDING_MODEL}:${EMBEDDING_DIMENSION}:retrieval-prefix-v2`;
 
 export type EmbeddingTaskType =
   | "RETRIEVAL_DOCUMENT"
@@ -12,6 +13,47 @@ export type EmbeddingTaskType =
 interface GeminiEmbeddingResponse {
   embedding?: { values?: number[] };
   embeddings?: Array<{ values?: number[] }>;
+  usageMetadata?: { promptTokenCount?: number };
+}
+
+export interface SemanticEmbeddingResult {
+  values: number[];
+  tokenCount: number | null;
+}
+
+export function prepareEmbeddingText(
+  text: string,
+  taskType: EmbeddingTaskType,
+  title?: string,
+): string {
+  const cleanText = text.trim();
+  if (!cleanText) throw new Error("Cannot embed empty text");
+
+  if (taskType === "RETRIEVAL_QUERY") {
+    return `task: search result | query: ${cleanText}`;
+  }
+  if (taskType === "RETRIEVAL_DOCUMENT") {
+    const cleanTitle = title?.trim().slice(0, 200) || "none";
+    return `title: ${cleanTitle} | text: ${cleanText}`;
+  }
+  return `task: sentence similarity | query: ${cleanText}`;
+}
+
+export function buildEmbeddingRequest(
+  text: string,
+  taskType: EmbeddingTaskType,
+  title?: string,
+): Record<string, unknown> {
+  return {
+    model: `models/${EMBEDDING_MODEL}`,
+    content: { parts: [{ text: prepareEmbeddingText(text, taskType, title) }] },
+    embedContentConfig: {
+      outputDimensionality: EMBEDDING_DIMENSION,
+      // A complete note is authoritative. Fail explicitly instead of allowing
+      // Gemini to silently truncate content beyond the model limit.
+      autoTruncate: false,
+    },
+  };
 }
 
 export async function generateSemanticEmbedding(
@@ -20,9 +62,15 @@ export async function generateSemanticEmbedding(
   taskType: EmbeddingTaskType,
   title?: string,
 ): Promise<number[]> {
-  const cleanText = text.trim();
-  if (!cleanText) throw new Error("Cannot embed empty text");
+  return (await generateSemanticEmbeddingResult(text, apiKey, taskType, title)).values;
+}
 
+export async function generateSemanticEmbeddingResult(
+  text: string,
+  apiKey: string,
+  taskType: EmbeddingTaskType,
+  title?: string,
+): Promise<SemanticEmbeddingResult> {
   const result = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent`,
     {
@@ -31,15 +79,7 @@ export async function generateSemanticEmbedding(
         "Content-Type": "application/json",
         "x-goog-api-key": apiKey,
       },
-      body: JSON.stringify({
-        model: `models/${EMBEDDING_MODEL}`,
-        content: { parts: [{ text: cleanText }] },
-        taskType,
-        ...(title?.trim() && taskType === "RETRIEVAL_DOCUMENT"
-          ? { title: title.trim().slice(0, 200) }
-          : {}),
-        outputDimensionality: EMBEDDING_DIMENSION,
-      }),
+      body: JSON.stringify(buildEmbeddingRequest(text, taskType, title)),
     },
   );
 
@@ -60,7 +100,13 @@ export async function generateSemanticEmbedding(
       }-dimension vector`,
     );
   }
-  return values;
+  const tokenCount = Number(payload.usageMetadata?.promptTokenCount);
+  return {
+    values,
+    tokenCount: Number.isSafeInteger(tokenCount) && tokenCount >= 0
+      ? tokenCount
+      : null,
+  };
 }
 
 export async function sha256(value: string): Promise<string> {
