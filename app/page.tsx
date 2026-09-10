@@ -625,6 +625,14 @@ function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onAddNot
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
 
   useEffect(() => {
+    const availableTitles = new Set(muses.map((muse) => muse.title));
+    setSelectedMuses((current) => {
+      const next = new Set(Array.from(current).filter((title) => availableTitles.has(title)));
+      return next.size === current.size ? current : next;
+    });
+  }, [muses]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || searchOpen || sortOpen || musesOpen || instantRetrievalOpen) return;
       if (document.querySelector('[aria-modal="true"], [role="status"]')) return;
