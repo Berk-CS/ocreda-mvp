@@ -4,13 +4,14 @@
  * and network calls so it can be exercised directly by tests.
  */
 
-export const RELATION_TYPES = ["supports", "extends", "contradicts", "question"] as const;
+export const RELATION_TYPES = ["supports", "extends", "contradicts", "question", "parallel"] as const;
 export type RelationType = (typeof RELATION_TYPES)[number];
 
 export const MAX_NOTE_CHARS = 800;
 export const MAX_DRAFT_CHARS = 6000;
 export const MIN_DRAFT_CHARS = 20;
-export const MAX_EXPLANATION_CHARS = 200;
+/** Two plain sentences rather than one clipped clause, so this is roomier. */
+export const MAX_EXPLANATION_CHARS = 320;
 export const SCORE_FLOOR = 0.5;
 
 export interface NoteLike {
@@ -69,32 +70,43 @@ ${candidates}
 
 Decide which of these candidate notes are genuinely relevant to what the user is writing, and score each one on its own merits.
 
+A draft is not always an argument. It may be a claim, a decision, a plan, a memory, a worry, or a half-formed reflection. Judge relevance against whatever the draft is actually doing, not against whether it makes a provable point.
+
 SCORING - judge each note against the draft in absolute terms. Do NOT score a note relative to the other candidates you were given. If every candidate here is irrelevant, return an empty array; that is a normal and correct outcome.
 
-0.90-1.00 - The note is about the same specific claim, decision, or problem as the draft. Reading it would change what the user writes next.
-0.70-0.89 - The note is on the same specific topic and contributes a concrete fact, example, or counterpoint the draft does not already contain.
-0.50-0.69 - The note is adjacent: it shares a subject with the draft, or rests on the same underlying principle, and is useful as background.
-Below 0.50 - Not relevant enough. Leave it out of your response entirely.
+Score the strength of the connection, NOT how similar the subject matter is. A note about something else entirely can score high if the link it reveals is strong and specific.
+
+0.90-1.00 - Reading this note would change what the user writes next. It speaks straight to what the draft is working out, or shows them something about it they had not seen.
+0.70-0.89 - A clear, specific connection that adds something real: evidence, a concrete example, a counterweight, an unresolved snag, or a pattern the draft turns out to be an instance of.
+0.50-0.69 - A real but looser connection: it shares the draft's underlying concern or stance and is worth having nearby, without changing anything.
+Below 0.50 - Leave it out of your response entirely.
 
 RELATION TYPE - pick exactly one:
-"supports" - the note backs up a claim in the draft with evidence, reasoning, or a confirming example.
-"extends" - the note is on the draft's topic and adds information the draft does not have.
-"contradicts" - the note asserts something incompatible with the draft, or records a position the draft reverses.
-"question" - the note raises an open problem or unresolved question that the draft touches but does not settle.
+"supports" - the note gives grounds for what the draft says or feels: evidence, an example, a lived experience, or reasoning that makes it sturdier.
+"extends" - the note stands on the same ground and carries it further: more detail, a consequence, a next step, or a fuller version of the same thought.
+"contradicts" - the note pulls against the draft: it states something incompatible, names a cost the draft ignores, or records a position the draft is reversing.
+"question" - the note raises something the draft leaves open: an obstacle, a tension, or a question it brushes past without settling.
+"parallel" - the note is about something else entirely, but the same shape shows up in it: the same pattern, tension, or way of seeing, appearing in a different part of the person's life. The link is structural, not topical.
 
-EXPLANATION - one sentence, under 25 words, naming the specific shared idea, tension, or claim. Never restate the note's summary. Never say "both are about X" without saying what about X connects them.
+EXPLANATION - exactly two short sentences, in plain language, written to the person who wrote the draft.
+First sentence: what the note actually says, in your own words.
+Second sentence: how it bears on the draft, naming the specific thing in the draft it touches.
+Write the way you would explain it to a friend. Address them as "you" and call the draft "your draft". No jargon, no academic register, and never open with "This note highlights/underscores/demonstrates".
+Do the thinking for them: spell the connection out rather than gesturing at it. Never say two things are "both about X" without saying what about X ties them together.
 
 CRITICAL RULES:
-- Most candidate notes will be irrelevant. Returning [] is common and correct. Do not pad your response.
+- Many candidate notes will be irrelevant. Returning [] is correct when nothing connects. Do not pad your response.
 - Never include a note merely because it shares words, names, or a broad category with the draft. The connection must be about substance.
+- A "parallel" must name the specific shared structure. An abstraction that both notes merely belong to - "both are about time", "both express awe" - is not a parallel. If the same explanation could be written about a dozen other pairs of notes, leave the note out.
 - Use the exact ID string as given. Never invent an ID, and never return one that is not listed above.
 
 Worked examples:
-- Draft: "Charging per seat punishes teams for adding people, so we should move to usage-based pricing." Candidate note: "Talked to Maya - she stopped adding teammates to the tool because each one cost another $12/mo." Score 0.94, relation_type "supports", because it is direct evidence for the exact mechanism the draft claims.
-- Draft: the same one. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted entirely: it shares the word "pricing" but has nothing to do with the draft's argument.
+- Draft: "Charging per seat punishes teams for adding people, so we should move to usage-based pricing." Candidate note: "Talked to Maya - she stopped adding teammates to the tool because each one cost another $12/mo." Score 0.94, relation_type "supports", explanation: "This note is about a customer who stopped adding teammates because every seat cost her more. That is the exact thing your draft argues, already happening to someone real - the problem with per-seat pricing isn't theoretical, she felt it and acted on it."
+- Draft: "I'm always running late, however early I start." Candidate note: "I'm the last one in my friend group to get married. Good things seem to reach me last." Score 0.84, relation_type "parallel", explanation: "This note is about arriving last to a life milestone, not about punctuality at all. It's the same shape as your draft though - being behind turns up in two different corners of your life, one you cause and one you don't, which is worth sitting with."
+- Draft: the pricing one again. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted entirely: it shares the word "pricing" but has nothing to do with the draft's argument.
 
 Respond with ONLY a JSON array, no prose before or after:
-[{"note_id": "<exact id>", "relevance_score": <number>, "relation_type": "<supports|extends|contradicts|question>", "explanation": "<one sentence>"}]`;
+[{"note_id": "<exact id>", "relevance_score": <number>, "relation_type": "<supports|extends|contradicts|question|parallel>", "explanation": "<two short sentences>"}]`;
 }
 
 /**

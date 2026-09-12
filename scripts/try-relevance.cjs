@@ -32,7 +32,7 @@ const DEFAULT_CORPUS = path.join(ROOT, 'notes/all-notes.json');
 const DEFAULT_DRAFT = path.join(ROOT, 'notes/test-notes/entry.txt');
 const DEFAULT_TRUTH = path.join(ROOT, 'notes/test-notes/test-notes.json');
 
-const RELATION_SHORT = { supports: 'supports ', extends: 'adds to  ', contradicts: 'contra.  ', question: 'question ' };
+const RELATION_SHORT = { supports: 'supports ', extends: 'adds to  ', contradicts: 'contra.  ', question: 'question ', parallel: 'parallel ' };
 
 /*
  * The original synthetic corpus, kept available behind --sample. Unlike the

@@ -1190,6 +1190,7 @@ const RELEVANCE_PAGE_SIZE = 5;
 const RELATION_BADGES: Partial<Record<NoteRelationType, { label: string; className: string }>> = {
   contradicts: { label: 'Contradicts', className: 'bg-[#fdecea] text-[#c0392b]' },
   question: { label: 'Open question', className: 'bg-[#f1eafc] text-[#6b3fc0]' },
+  parallel: { label: 'Parallel', className: 'bg-[#e3f4f1] text-[#1b7a6e]' },
 };
 
 function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onPageChange, onRetry, onClose }: {

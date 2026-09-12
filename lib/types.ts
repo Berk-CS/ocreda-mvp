@@ -31,8 +31,12 @@ export interface ConversationMessage {
   created_at: string;
 }
 
-/** How a related note stands in relation to the draft it was matched against. */
-export type NoteRelationType = 'supports' | 'extends' | 'contradicts' | 'question';
+/**
+ * How a related note stands in relation to the draft it was matched against.
+ * "parallel" is the one that is not topical: the same pattern or way of seeing
+ * turning up somewhere else in the person's life.
+ */
+export type NoteRelationType = 'supports' | 'extends' | 'contradicts' | 'question' | 'parallel';
 
 export interface RelevanceResult {
   note_id: string;
