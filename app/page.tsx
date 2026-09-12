@@ -1206,8 +1206,11 @@ function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onP
   const visible = results.slice(currentPage * RELEVANCE_PAGE_SIZE, (currentPage + 1) * RELEVANCE_PAGE_SIZE);
   const coverage = relevance?.coverage;
 
+  // On a narrow screen this is a bottom sheet rather than a full overlay, so the
+  // draft stays visible and editable while the search runs — a wait you can keep
+  // writing through is not really a wait. From lg up it becomes the side column.
   return (
-    <aside className="absolute inset-0 z-20 flex flex-col border-[#eee] bg-white lg:static lg:z-auto lg:w-[370px] lg:shrink-0 lg:border-l" aria-label="Relevant notes">
+    <aside className="absolute inset-x-0 bottom-0 z-20 flex max-h-[58%] flex-col rounded-t-xl border-t border-[#e4e4e4] bg-white shadow-[0_-8px_24px_rgba(0,0,0,0.10)] lg:static lg:z-auto lg:max-h-none lg:w-[370px] lg:shrink-0 lg:rounded-none lg:border-l lg:border-t-0 lg:border-[#eee] lg:shadow-none" aria-label="Relevant notes">
       <header className="flex shrink-0 items-center justify-between border-b border-[#eee] px-5 py-3">
         <h2 className="text-sm font-medium text-[#333]">Relevant notes</h2>
         <button type="button" onClick={onClose} aria-label="Close relevant notes" className="rounded p-1 text-[#888] hover:bg-[#f4f4f4]"><X className="h-4 w-4" /></button>
@@ -1215,10 +1218,33 @@ function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onP
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {loading ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <Loader2 className="h-6 w-6 animate-spin text-[#477bea]" />
-            <p className="text-sm text-[#555]">Reading your notes</p>
-            <p className="text-xs leading-relaxed text-[#999]">Ten readers are going through your library at once. This usually takes 5–15 seconds.</p>
+          /* Skeletons shaped like the real cards, so the layout is already
+             built when results land and nothing jumps. */
+          <div>
+            <p className="mb-3 flex items-center gap-2 text-xs text-[#888]">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[#477bea]" />
+              Reading {notes.length} {notes.length === 1 ? 'note' : 'notes'} across ten readers at once
+            </p>
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, index) => (
+                <div key={index} className="animate-pulse rounded-lg border border-[#e4e4e4] bg-[#fafafb] p-3" style={{ animationDelay: `${index * 140}ms` }}>
+                  <div className="space-y-1.5">
+                    <div className="h-2.5 w-full rounded bg-[#e6e6e9]" />
+                    <div className="h-2.5 w-[94%] rounded bg-[#e6e6e9]" />
+                    <div className="h-2.5 w-[58%] rounded bg-[#e6e6e9]" />
+                  </div>
+                  <div className="mt-2.5 rounded-md bg-[#f4f7ff] px-2.5 py-2">
+                    <div className="h-1.5 w-20 rounded bg-[#d9e3f8]" />
+                    <div className="mt-2 h-2 w-full rounded bg-[#e7edfc]" />
+                    <div className="mt-1.5 h-2 w-[72%] rounded bg-[#e7edfc]" />
+                  </div>
+                  <div className="mt-2.5 flex items-center justify-between">
+                    <div className="h-2 w-14 rounded bg-[#ebebed]" />
+                    <div className="h-2 w-10 rounded bg-[#ebebed]" />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : error ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
