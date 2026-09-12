@@ -7,6 +7,29 @@
 export const RELATION_TYPES = ["supports", "extends", "contradicts", "question", "parallel"] as const;
 export type RelationType = (typeof RELATION_TYPES)[number];
 
+/**
+ * Chunking policy, shared by the Edge Function, the local dev route, and the
+ * try:relevance harness so none of them can drift from the others.
+ *
+ * Count and concurrency are equal so every agent runs in one wave; raising the
+ * count alone just adds a second wave.
+ *
+ * These numbers are measured, not reasoned. On a 100-note corpus:
+ *   10 agents x 10 notes, concurrency 10 -> 14.3s
+ *    5 agents x 20 notes, concurrency  5 -> 17.8s
+ * Fewer, larger chunks lose, because latency here is dominated by *output*
+ * generation, which is serial within a call. Concentrating the hits into fewer
+ * calls makes each one generate more text; spreading them across more parallel
+ * calls is what actually helps. Anything that only shrinks input — prefix
+ * caching, a smaller MAX_NOTE_CHARS — barely moves the number.
+ *
+ * Concurrency 10 means a burst of 10 requests per click, which fits a single
+ * user on Gemini's free tier (~15 RPM) but will start returning 429s with
+ * several users at once. Lower it if you see rate limiting.
+ */
+export const DEFAULT_AGENT_COUNT = 10;
+export const DEFAULT_AGENT_CONCURRENCY = 10;
+
 export const MAX_NOTE_CHARS = 800;
 export const MAX_DRAFT_CHARS = 6000;
 export const MIN_DRAFT_CHARS = 20;
@@ -54,21 +77,18 @@ export function dealIntoChunks<T>(items: T[], chunkCount: number): T[][] {
   return chunks;
 }
 
+/**
+ * The instructions come first and the draft and notes last, so that every agent
+ * in a fan-out sends an identical multi-thousand-character prefix. That is what
+ * makes the provider's implicit prefix caching usable; putting the variable
+ * content first would give the calls nothing in common to cache.
+ */
 export function buildPrompt(draft: string, notes: NoteLike[]): string {
   const candidates = notes
     .map((note) => `ID: ${note.id}\n${truncate((note.summary || note.raw_text).trim(), MAX_NOTE_CHARS)}`)
     .join("\n\n---\n\n");
 
-  return `The user is writing this new note:
-<draft>
-${draft}
-</draft>
-
-Here are some notes from their existing knowledge base:
-
-${candidates}
-
-Decide which of these candidate notes are genuinely relevant to what the user is writing, and score each one on its own merits.
+  return `You will be given a draft that someone is writing, followed by a set of notes from their knowledge base. Decide which of those notes are genuinely relevant to the draft, and score each one on its own merits.
 
 A draft is not always an argument. It may be a claim, a decision, a plan, a memory, a worry, or a half-formed reflection. Judge relevance against whatever the draft is actually doing, not against whether it makes a provable point.
 
@@ -105,8 +125,21 @@ Worked examples:
 - Draft: "I'm always running late, however early I start." Candidate note: "I'm the last one in my friend group to get married. Good things seem to reach me last." Score 0.84, relation_type "parallel", explanation: "This note is about arriving last to a life milestone, not about punctuality at all. It's the same shape as your draft though - being behind turns up in two different corners of your life, one you cause and one you don't, which is worth sitting with."
 - Draft: the pricing one again. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted entirely: it shares the word "pricing" but has nothing to do with the draft's argument.
 
-Respond with ONLY a JSON array, no prose before or after:
-[{"note_id": "<exact id>", "relevance_score": <number>, "relation_type": "<supports|extends|contradicts|question|parallel>", "explanation": "<two short sentences>"}]`;
+OUTPUT - a JSON array and nothing else, in this shape:
+[{"note_id": "<exact id>", "relevance_score": <number>, "relation_type": "<supports|extends|contradicts|question|parallel>", "explanation": "<two short sentences>"}]
+
+========================================
+
+Here is the draft:
+<draft>
+${draft}
+</draft>
+
+Here are the candidate notes:
+
+${candidates}
+
+Now respond with ONLY the JSON array described above, no prose before or after it.`;
 }
 
 /**

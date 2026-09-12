@@ -5,20 +5,11 @@ import {
   condenseDraft,
   mergeAgentResults,
   runRelevanceAgents,
+  DEFAULT_AGENT_CONCURRENCY,
+  DEFAULT_AGENT_COUNT,
   MIN_DRAFT_CHARS,
   type NoteLike,
 } from "../_shared/relevance.ts";
-
-/**
- * How many agents the corpus is split across. Chunk size is corpus/AGENT_COUNT,
- * which holds up while a user has a few hundred notes. Past roughly 1500 the
- * chunks grow large enough to hurt recall, and this should become a chunk-size
- * target with a variable agent count instead.
- */
-const AGENT_COUNT = 10;
-
-/** Gemini's free tier rate-limits aggressively; don't fire all ten at once. */
-const AGENT_CONCURRENCY = 5;
 
 const MAX_NOTES = 1000;
 const MAX_RESULTS = 50;
@@ -88,8 +79,8 @@ Deno.serve(async (req: Request) => {
     const { outcomes } = await runRelevanceAgents({
       draft: condenseDraft(draftText),
       notes,
-      agentCount: AGENT_COUNT,
-      concurrency: AGENT_CONCURRENCY,
+      agentCount: DEFAULT_AGENT_COUNT,
+      concurrency: DEFAULT_AGENT_CONCURRENCY,
       isRetryable: isRetryableGeminiError,
       generate: (prompt) =>
         generateWithGemini(AGENT_SYSTEM_PROMPT, [{ role: "user", content: prompt }], apiKey, undefined, {

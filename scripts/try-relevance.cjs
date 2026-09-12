@@ -18,11 +18,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const { condenseDraft, mergeAgentResults, runRelevanceAgents } = require('../.relevance-build/relevance.js');
+const {
+  condenseDraft, mergeAgentResults, runRelevanceAgents,
+  DEFAULT_AGENT_COUNT: AGENT_COUNT,
+  DEFAULT_AGENT_CONCURRENCY: AGENT_CONCURRENCY,
+} = require('../.relevance-build/relevance.js');
 const { generateWithGemini, isRetryableGeminiError } = require('../.relevance-build/gemini.js');
 
-const AGENT_COUNT = 10;
-const AGENT_CONCURRENCY = 5;
 const MAX_RESULTS = 50;
 const AGENT_SYSTEM_PROMPT =
   "You identify meaningful relationships between a person's notes. You respond with a JSON array and nothing else.";

@@ -3,6 +3,8 @@ import {
   condenseDraft,
   mergeAgentResults,
   runRelevanceAgents,
+  DEFAULT_AGENT_CONCURRENCY,
+  DEFAULT_AGENT_COUNT,
   MIN_DRAFT_CHARS,
   type NoteLike,
 } from '@/supabase/functions/_shared/relevance';
@@ -21,8 +23,6 @@ import { generateWithGemini, isRetryableGeminiError } from '@/supabase/functions
  */
 
 
-const AGENT_COUNT = 10;
-const AGENT_CONCURRENCY = 5;
 const MAX_RESULTS = 50;
 const MAX_NOTES = 1000;
 
@@ -75,8 +75,8 @@ export async function POST(request: Request) {
     const { outcomes } = await runRelevanceAgents({
       draft: condenseDraft(draftText),
       notes,
-      agentCount: AGENT_COUNT,
-      concurrency: AGENT_CONCURRENCY,
+      agentCount: DEFAULT_AGENT_COUNT,
+      concurrency: DEFAULT_AGENT_CONCURRENCY,
       isRetryable: isRetryableGeminiError,
       generate: (prompt) =>
         generateWithGemini(AGENT_SYSTEM_PROMPT, [{ role: 'user', content: prompt }], apiKey, undefined, {
