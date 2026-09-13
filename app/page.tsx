@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Plus, Rows3, ScanSearch, Search, Trash2, Upload, X } from 'lucide-react';
+import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Plus, RefreshCw, Rows3, ScanSearch, Search, Trash2, Upload, X } from 'lucide-react';
 import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
 import { useAuth } from '@/lib/auth-context';
 import { createNote, deleteNote, findRelevantNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
@@ -1193,11 +1193,52 @@ const RELATION_BADGES: Partial<Record<NoteRelationType, { label: string; classNa
   parallel: { label: 'Parallel', className: 'bg-[#e3f4f1] text-[#1b7a6e]' },
 };
 
+/**
+ * The tinted annotation under a relevant note, with the summary on its front
+ * and why-it's-relevant on its back. Both faces share one grid cell, so the
+ * panel is as tall as the longer of the two and nothing below it jumps when it
+ * turns over.
+ */
+function AnnotationFlip({ summary, relevance, flipped, onFlip }: {
+  summary: string; relevance: string; flipped: boolean; onFlip: () => void;
+}) {
+  const faces = [
+    { key: 'summary', label: 'Summary', text: summary, action: 'Why it’s relevant', hidden: flipped, back: false },
+    { key: 'relevance', label: 'Why it’s relevant', text: relevance, action: 'Summary', hidden: !flipped, back: true },
+  ];
+  return (
+    <div className="mt-2.5 [perspective:900px]">
+      <div className={`grid transition-transform duration-500 ease-out [transform-style:preserve-3d] motion-reduce:transition-none ${flipped ? '[transform:rotateY(180deg)]' : ''}`}>
+        {faces.map((face) => (
+          <div
+            key={face.key}
+            aria-hidden={face.hidden}
+            className={`flex flex-col rounded-md bg-[#f4f7ff] px-2.5 py-2 [backface-visibility:hidden] [grid-area:1/1] ${face.back ? '[transform:rotateY(180deg)]' : ''}`}
+          >
+            <p className="text-[9px] font-semibold uppercase tracking-[0.09em] text-[#8ba0d8]">{face.label}</p>
+            <p className="mt-1 flex-1 text-[11px] leading-relaxed text-[#5d6b85]">{face.text}</p>
+            <button
+              type="button"
+              tabIndex={face.hidden ? -1 : 0}
+              onClick={(event) => { event.stopPropagation(); onFlip(); }}
+              className="mt-1.5 flex items-center gap-1 self-end rounded text-[10px] font-medium text-[#477bea] hover:text-[#2f5fcc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8fb1ff]"
+            >
+              {face.action} <RefreshCw className="h-2.5 w-2.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onPageChange, onRetry, onClose }: {
   notes: Note[]; relevance: RelevanceSearch | null; loading: boolean; error: string; stale: boolean;
   page: number; onPageChange: (page: number) => void; onRetry: () => void; onClose: () => void;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Cards whose annotation has been flipped from the summary to "why it's relevant".
+  const [flippedById, setFlippedById] = useState<Record<string, boolean>>({});
   const noteById = useMemo(() => new Map(notes.map((note) => [note.id, note])), [notes]);
 
   const results = relevance?.results ?? [];
@@ -1263,13 +1304,16 @@ function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onP
               const content = splitNote(note);
               const badge = RELATION_BADGES[result.relation_type];
               const expanded = expandedId === result.note_id;
+              const flipped = Boolean(flippedById[result.note_id]);
               // splitNote treats the first line as a title. For a note written
               // as one block that "title" is just its opening words, which the
               // preview underneath already shows — so only head the card when
               // the note really has a separate heading.
               const hasHeading = content.body.length > 0 && content.body !== note.raw_text.trim();
               return (
-                <button key={result.note_id} type="button" onClick={() => setExpandedId(expanded ? null : result.note_id)} aria-expanded={expanded} className="block w-full rounded-lg border border-[#e4e4e4] bg-[#fafafb] p-3 text-left transition hover:border-[#8fb1ff]">
+                // A div rather than a <button>, because the flip link inside
+                // it is itself a button.
+                <div key={result.note_id} role="button" tabIndex={0} onClick={() => setExpandedId(expanded ? null : result.note_id)} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setExpandedId(expanded ? null : result.note_id); } }} aria-expanded={expanded} className="block w-full cursor-pointer rounded-lg border border-[#e4e4e4] bg-[#fafafb] p-3 text-left transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8fb1ff]">
                   {(hasHeading || badge) && <div className="mb-2 flex items-start justify-between gap-2">
                     {hasHeading && <strong className="min-w-0 flex-1 truncate text-sm text-[#222]">{content.title}</strong>}
                     {badge && <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>{badge.label}</span>}
@@ -1283,15 +1327,24 @@ function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onP
                   {/* Set on its own tinted panel, smaller and cooler in tone, so
                       it reads as annotation about the note rather than more of
                       the note. */}
-                  <div className="mt-2.5 rounded-md bg-[#f4f7ff] px-2.5 py-2">
-                    <p className="text-[9px] font-semibold uppercase tracking-[0.09em] text-[#8ba0d8]">How this relates</p>
-                    <p className="mt-1 text-[11px] leading-relaxed text-[#5d6b85]">{result.explanation}</p>
-                  </div>
+                  {result.gist ? (
+                    <AnnotationFlip
+                      summary={result.gist}
+                      relevance={result.explanation}
+                      flipped={flipped}
+                      onFlip={() => setFlippedById((current) => ({ ...current, [result.note_id]: !flipped }))}
+                    />
+                  ) : (
+                    <div className="mt-2.5 rounded-md bg-[#f4f7ff] px-2.5 py-2">
+                      <p className="text-[9px] font-semibold uppercase tracking-[0.09em] text-[#8ba0d8]">Why it’s relevant</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-[#5d6b85]">{result.explanation}</p>
+                    </div>
+                  )}
                   <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#aaa]">
                     <span>{Math.round(result.relevance_score * 100)}% match</span>
                     <span>{formatDate(note.created_at)}</span>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>

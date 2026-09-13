@@ -42,6 +42,9 @@ export interface RelevanceResult {
   note_id: string;
   relevance_score: number;
   relation_type: NoteRelationType;
+  /** One-sentence summary of the note itself. Empty when the model omitted it. */
+  gist: string;
+  /** How the note bears on the draft. */
   explanation: string;
 }
 

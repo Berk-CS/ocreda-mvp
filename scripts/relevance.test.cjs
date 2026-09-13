@@ -103,6 +103,18 @@ test('drops a row with no explanation', () => {
   assert.deepStrictEqual(parseAgentResponse(row({ explanation: '   ' }), allowed), []);
 });
 
+test('keeps the gist alongside the explanation', () => {
+  const out = parseAgentResponse(row({ gist: '  what the note says  ' }), allowed);
+  assert.strictEqual(out[0].gist, 'what the note says');
+  assert.strictEqual(out[0].explanation, 'because');
+});
+
+test('keeps a row with no gist, leaving it empty', () => {
+  const out = parseAgentResponse(row({ gist: 42 }), allowed);
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].gist, '');
+});
+
 test('survives a ```json fence', () => {
   assert.strictEqual(parseAgentResponse('```json\n' + row() + '\n```', allowed).length, 1);
 });
