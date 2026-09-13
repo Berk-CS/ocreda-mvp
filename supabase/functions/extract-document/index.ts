@@ -72,7 +72,7 @@ async function generateTranscription(
   apiKey: string,
   parts: Array<Record<string, unknown>>
 ): Promise<string> {
-  const model = Deno.env.get("GEMINI_DOCUMENT_MODEL") || "gemini-2.5-flash";
+  const model = Deno.env.get("GEMINI_DOCUMENT_MODEL") || "gemini-3.6-flash";
   const result = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
@@ -129,8 +129,6 @@ async function uploadGeminiFile(
   const uploadUrl = start.headers.get("x-goog-upload-url");
   if (!uploadUrl) throw new Error("Gemini did not return a document upload URL.");
 
-  const uploadBody = new Uint8Array(bytes.byteLength);
-  uploadBody.set(bytes);
   const upload = await fetch(uploadUrl, {
     method: "POST",
     headers: {
@@ -138,7 +136,7 @@ async function uploadGeminiFile(
       "X-Goog-Upload-Offset": "0",
       "X-Goog-Upload-Command": "upload, finalize",
     },
-    body: uploadBody,
+    body: bytes,
   });
   if (!upload.ok) throw new Error(`Document upload failed (${upload.status}).`);
 

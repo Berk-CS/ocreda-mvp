@@ -1,0 +1,3 @@
+MVP Pivots
+
+A pivot will require an MVP to test its hypothesis.

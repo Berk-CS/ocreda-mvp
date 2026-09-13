@@ -4,18 +4,45 @@ export const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const DEFAULT_MODEL = "gemini-flash-lite-latest";
+const DEFAULT_MODEL = "gemini-3.6-flash";
 
 export interface GeminiMessage {
   role: "user" | "model";
   content: string;
 }
 
+/** The subset of Gemini's generationConfig this app uses. */
+export interface GeminiGenerationConfig {
+  responseMimeType?: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+}
+
+/**
+ * Carries the HTTP status through so callers can tell a rate limit or a
+ * transient upstream fault (worth retrying) from a malformed request (not).
+ */
+export class GeminiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "GeminiError";
+    this.status = status;
+  }
+}
+
+/** 429 plus the 5xx family are transient; everything else is our own fault. */
+export function isRetryableGeminiError(error: unknown): boolean {
+  if (!(error instanceof GeminiError)) return false;
+  return error.status === 429 || error.status >= 500;
+}
+
 export async function generateWithGemini(
   systemPrompt: string,
   messages: GeminiMessage[],
   apiKey: string,
-  model: string = DEFAULT_MODEL
+  model: string = DEFAULT_MODEL,
+  generationConfig?: GeminiGenerationConfig
 ): Promise<string> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -25,13 +52,14 @@ export async function generateWithGemini(
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemPrompt }] },
         contents: messages.map((m) => ({ role: m.role, parts: [{ text: m.content }] })),
+        ...(generationConfig ? { generationConfig } : {}),
       }),
     }
   );
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Gemini API error (${res.status}): ${err}`);
+    throw new GeminiError(res.status, `Gemini API error (${res.status}): ${err}`);
   }
 
   const data = await res.json();
