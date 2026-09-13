@@ -8,7 +8,8 @@
  * file runs unless the flag is set.
  */
 
-import { Note, RelevantNotesResponse, RelevanceCoverage, RelevanceResult } from '@/lib/types';
+import { Note, RelevanceProgress, RelevantNotesResponse } from '@/lib/types';
+import { readRelevanceResponse } from '@/lib/relevance-stream';
 
 export const IS_LOCAL_MODE = process.env.NEXT_PUBLIC_LOCAL_MODE === '1';
 
@@ -115,7 +116,8 @@ export function localMoveNotesToCategory(noteIds: string[], category: string | n
  */
 export async function localFindRelevantNotes(
   draftText: string,
-  excludeNoteId?: string | null
+  excludeNoteId?: string | null,
+  onProgress?: (progress: RelevanceProgress) => void
 ): Promise<RelevantNotesResponse> {
   const notes = localGetNotes()
     .filter((note) => note.id !== excludeNoteId)
@@ -129,23 +131,14 @@ export async function localFindRelevantNotes(
   const response = await fetch('/api/find-relevant-notes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ draft_text: draftText, notes }),
+    body: JSON.stringify({ draft_text: draftText, notes, stream: true }),
   });
 
-  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     const message = typeof payload?.error === 'string' ? payload.error : null;
     throw new Error(message ?? "We couldn't search your notes right now. Please try again.");
   }
 
-  const results = payload && Array.isArray(payload.results) ? (payload.results as RelevanceResult[]) : [];
-  const rawCoverage = payload?.coverage as Partial<RelevanceCoverage> | undefined;
-  return {
-    results,
-    coverage: {
-      notes_searched: Number(rawCoverage?.notes_searched ?? 0),
-      notes_total: Number(rawCoverage?.notes_total ?? 0),
-      complete: rawCoverage?.complete !== false,
-    },
-  };
+  return readRelevanceResponse(response, "We couldn't search your notes right now. Please try again.", onProgress);
 }

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Plus, RefreshCw, Rows3, ScanSearch, Search, Trash2, Upload, X } from 'lucide-react';
+import type { RelevanceProgress } from '@/lib/types';
 import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
 import { useAuth } from '@/lib/auth-context';
 import { createNote, deleteNote, findRelevantNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
@@ -1232,8 +1233,53 @@ function AnnotationFlip({ summary, relevance, flipped, onFlip }: {
   );
 }
 
-function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onPageChange, onRetry, onClose }: {
-  notes: Note[]; relevance: RelevanceSearch | null; loading: boolean; error: string; stale: boolean;
+/**
+ * What the relevance panel shows while the readers run. The bar and counts come
+ * from real progress events, one per reader as it finishes. The title ticker
+ * underneath is a glimpse of the notes being searched, not a claim about which
+ * one is being read at this instant — the readers work through them in parallel.
+ */
+function SearchProgress({ notes, progress }: { notes: Note[]; progress: RelevanceProgress | null }) {
+  const titles = useMemo(() => notes.map((note) => splitNote(note).title.trim()).filter(Boolean), [notes]);
+  const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000));
+
+  useEffect(() => {
+    if (titles.length < 2) return;
+    const timer = window.setInterval(() => setTick((value) => value + 1), 1100);
+    return () => window.clearInterval(timer);
+  }, [titles.length]);
+
+  const done = progress?.agents_done ?? 0;
+  const total = progress?.agents_total ?? 0;
+  const matches = progress?.matches ?? 0;
+  // A sliver of bar before the first reader finishes, so it reads as started.
+  const percent = total ? Math.max(4, Math.round((done / total) * 100)) : 2;
+  const title = titles.length ? titles[tick % titles.length] : '';
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="flex items-center gap-2 text-[#555]">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-[#477bea]" />
+          {total ? `${done} of ${total} readers done` : 'Starting readers…'}
+        </span>
+        <span className={matches ? 'font-medium text-[#477bea]' : 'text-[#aaa]'}>
+          {matches ? `${matches} ${matches === 1 ? 'match' : 'matches'} so far` : 'No matches yet'}
+        </span>
+      </div>
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-[#eceef3]" role="progressbar" aria-label="Search progress" aria-valuemin={0} aria-valuemax={total || 1} aria-valuenow={done}>
+        <div className="h-full rounded-full bg-[#477bea] transition-[width] duration-500 ease-out motion-reduce:transition-none" style={{ width: `${percent}%` }} />
+      </div>
+      <p className="mt-2 truncate text-[11px] text-[#999]" aria-hidden="true">
+        Reading {notes.length} {notes.length === 1 ? 'note' : 'notes'}
+        {title && <> · <span className="text-[#666]">“{title}”</span></>}
+      </p>
+    </div>
+  );
+}
+
+function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale, page, onPageChange, onRetry, onClose }: {
+  notes: Note[]; relevance: RelevanceSearch | null; loading: boolean; progress: RelevanceProgress | null; error: string; stale: boolean;
   page: number; onPageChange: (page: number) => void; onRetry: () => void; onClose: () => void;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -1262,10 +1308,7 @@ function RelevantNotesPanel({ notes, relevance, loading, error, stale, page, onP
           /* Skeletons shaped like the real cards, so the layout is already
              built when results land and nothing jumps. */
           <div>
-            <p className="mb-3 flex items-center gap-2 text-xs text-[#888]">
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-[#477bea]" />
-              Reading {notes.length} {notes.length === 1 ? 'note' : 'notes'} across ten readers at once
-            </p>
+            <SearchProgress notes={notes} progress={progress} />
             <div className="space-y-3">
               {Array.from({ length: 3 }).map((_, index) => (
                 <div key={index} className="animate-pulse rounded-lg border border-[#e4e4e4] bg-[#fafafb] p-3" style={{ animationDelay: `${index * 140}ms` }}>
@@ -1380,6 +1423,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
   const [panelOpen, setPanelOpen] = useState(false);
   const [relevance, setRelevance] = useState<RelevanceSearch | null>(null);
   const [relevanceLoading, setRelevanceLoading] = useState(false);
+  const [relevanceProgress, setRelevanceProgress] = useState<RelevanceProgress | null>(null);
   const [relevanceError, setRelevanceError] = useState('');
   const [relevancePage, setRelevancePage] = useState(0);
   const [searchedDraft, setSearchedDraft] = useState('');
@@ -1404,9 +1448,9 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
     const cached = relevanceCache.current.get(draftText);
     if (cached) { setRelevance(cached); setSearchedDraft(draftText); return; }
 
-    setRelevanceLoading(true);
+    setRelevanceProgress(null); setRelevanceLoading(true);
     try {
-      const response = await findRelevantNotes(draftText, state.note?.id ?? null);
+      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress);
       relevanceCache.current.set(draftText, response);
       setRelevance(response); setSearchedDraft(draftText);
     } catch (err) {
@@ -1460,7 +1504,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
             <input maxLength={120} value={state.title} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, title: event.target.value })} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); setEditingStarted(true); bodyRef.current?.focus(); } }} placeholder="What’s on your mind?" aria-label="Note title" className="w-full shrink-0 bg-transparent text-xl font-medium italic outline-none placeholder:text-[#252525] sm:text-2xl" />
             <textarea ref={bodyRef} maxLength={2000} value={state.body} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, body: event.target.value })} placeholder={editingStarted ? '' : "For example: Someone made the point that we mostly don't choose our beliefs, we absorb them and backfill reasons after. Uncomfortable but I can't argue with it. Makes me wonder how much of what I think is actually mine."} aria-label="Note body" className="mt-5 min-h-0 w-full flex-1 resize-none bg-transparent text-base leading-relaxed outline-none placeholder:text-[#8a8a8a]" />
           </div>
-          {panelOpen && <RelevantNotesPanel notes={notes} relevance={relevance} loading={relevanceLoading} error={relevanceError} stale={draftChangedSinceSearch} page={relevancePage} onPageChange={setRelevancePage} onRetry={() => void runRelevanceSearch()} onClose={() => setPanelOpen(false)} />}
+          {panelOpen && <RelevantNotesPanel notes={notes} relevance={relevance} loading={relevanceLoading} progress={relevanceProgress} error={relevanceError} stale={draftChangedSinceSearch} page={relevancePage} onPageChange={setRelevancePage} onRetry={() => void runRelevanceSearch()} onClose={() => setPanelOpen(false)} />}
         </div>
         <div className="relative flex min-h-[58px] flex-wrap items-center gap-1 border-t border-[#eee] bg-[#f8f8fa] px-3 py-2 text-sm text-[#555] sm:px-5">
           <button type="button" onClick={toggleDictation} aria-label={dictating ? 'Stop dictation' : 'Start dictation'} className={`mr-3 rounded p-2 hover:bg-white ${dictating ? 'text-red-600' : ''}`}><Mic className="h-4 w-4" /></button><span className="mr-3 h-7 w-px bg-[#ddd]" />

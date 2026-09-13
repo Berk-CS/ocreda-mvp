@@ -59,6 +59,15 @@ export interface RelevanceCoverage {
   complete: boolean;
 }
 
+/** Live progress of a relevance search, reported as each reader finishes. */
+export interface RelevanceProgress {
+  agents_done: number;
+  agents_total: number;
+  /** Distinct notes scored relevant so far, before the final cap. */
+  matches: number;
+  notes_total: number;
+}
+
 export interface RelevantNotesResponse {
   results: RelevanceResult[];
   coverage: RelevanceCoverage;

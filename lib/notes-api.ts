@@ -14,10 +14,10 @@ import {
   Note,
   Question,
   ConversationMessage,
-  RelevanceResult,
-  RelevanceCoverage,
+  RelevanceProgress,
   RelevantNotesResponse,
 } from './types';
+import { readRelevanceResponse } from './relevance-stream';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -368,9 +368,10 @@ export const MIN_RELEVANCE_DRAFT_CHARS = 40;
  */
 export async function findRelevantNotes(
   draftText: string,
-  excludeNoteId?: string | null
+  excludeNoteId?: string | null,
+  onProgress?: (progress: RelevanceProgress) => void
 ): Promise<RelevantNotesResponse> {
-  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId);  // DEV-LOCAL-MODE
+  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress);  // DEV-LOCAL-MODE
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (sessionError || !accessToken) {
@@ -386,7 +387,7 @@ export async function findRelevantNotes(
         apikey: SUPABASE_ANON_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null }),
+      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null, stream: true }),
     });
   } catch (error) {
     // A missing Edge Function or failed CORS preflight surfaces as an opaque
@@ -395,25 +396,16 @@ export async function findRelevantNotes(
     throw new Error("We couldn't search your notes right now. Please try again.");
   }
 
-  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
       throw new Error('Your session has expired. Sign in again to search your notes.');
     }
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
     const message = typeof payload?.error === 'string' ? payload.error : null;
     throw new Error(message ?? "We couldn't search your notes right now. Please try again.");
   }
 
-  const results = payload && Array.isArray(payload.results) ? (payload.results as RelevanceResult[]) : [];
-  const rawCoverage = payload?.coverage as Partial<RelevanceCoverage> | undefined;
-  return {
-    results,
-    coverage: {
-      notes_searched: Number(rawCoverage?.notes_searched ?? 0),
-      notes_total: Number(rawCoverage?.notes_total ?? 0),
-      complete: rawCoverage?.complete !== false,
-    },
-  };
+  return readRelevanceResponse(response, "We couldn't search your notes right now. Please try again.", onProgress);
 }
 
 /** The single entry point for the "My Brain" input: classifies the text as a note to save or a question to answer. */

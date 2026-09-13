@@ -5,6 +5,7 @@ import {
   condenseDraft,
   mergeAgentResults,
   runRelevanceAgents,
+  streamRelevanceSearch,
   DEFAULT_AGENT_CONCURRENCY,
   DEFAULT_AGENT_COUNT,
   MIN_DRAFT_CHARS,
@@ -76,18 +77,36 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const { outcomes } = await runRelevanceAgents({
+    const agentOptions = {
       draft: condenseDraft(draftText),
       notes,
       agentCount: DEFAULT_AGENT_COUNT,
       concurrency: DEFAULT_AGENT_CONCURRENCY,
       isRetryable: isRetryableGeminiError,
-      generate: (prompt) =>
+      generate: (prompt: string) =>
         generateWithGemini(AGENT_SYSTEM_PROMPT, [{ role: "user", content: prompt }], apiKey, undefined, {
           responseMimeType: "application/json",
           temperature: 0.2,
         }),
-    });
+    };
+
+    // Callers that ask for it get progress as each agent finishes. Anyone who
+    // doesn't still gets the single JSON response below.
+    if (body?.stream === true) {
+      const stream = streamRelevanceSearch({
+        ...agentOptions,
+        maxResults: MAX_RESULTS,
+        allFailedMessage: "Relevance search is unavailable right now. Please try again.",
+        failedMessage: "Relevance search failed. Please try again.",
+        onError: (error) =>
+          console.error("find-relevant-notes stream failed:", error instanceof Error ? error.message : error),
+      });
+      return new Response(stream, {
+        headers: { ...corsHeaders, "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" },
+      });
+    }
+
+    const { outcomes } = await runRelevanceAgents(agentOptions);
 
     const createdAtById = new Map(notes.map((note) => [note.id, note.created_at]));
     const { results, notesSearched } = mergeAgentResults(outcomes, createdAtById, MAX_RESULTS);

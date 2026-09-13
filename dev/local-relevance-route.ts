@@ -3,6 +3,7 @@ import {
   condenseDraft,
   mergeAgentResults,
   runRelevanceAgents,
+  streamRelevanceSearch,
   DEFAULT_AGENT_CONCURRENCY,
   DEFAULT_AGENT_COUNT,
   MIN_DRAFT_CHARS,
@@ -71,19 +72,35 @@ export async function POST(request: Request) {
     });
   }
 
-  try {
-    const { outcomes } = await runRelevanceAgents({
-      draft: condenseDraft(draftText),
-      notes,
-      agentCount: DEFAULT_AGENT_COUNT,
-      concurrency: DEFAULT_AGENT_CONCURRENCY,
-      isRetryable: isRetryableGeminiError,
-      generate: (prompt) =>
-        generateWithGemini(AGENT_SYSTEM_PROMPT, [{ role: 'user', content: prompt }], apiKey, undefined, {
-          responseMimeType: 'application/json',
-          temperature: 0.2,
-        }),
+  const agentOptions = {
+    draft: condenseDraft(draftText),
+    notes,
+    agentCount: DEFAULT_AGENT_COUNT,
+    concurrency: DEFAULT_AGENT_CONCURRENCY,
+    isRetryable: isRetryableGeminiError,
+    generate: (prompt: string) =>
+      generateWithGemini(AGENT_SYSTEM_PROMPT, [{ role: 'user', content: prompt }], apiKey, undefined, {
+        responseMimeType: 'application/json',
+        temperature: 0.2,
+      }),
+  };
+
+  if (body?.stream === true) {
+    const stream = streamRelevanceSearch({
+      ...agentOptions,
+      maxResults: MAX_RESULTS,
+      allFailedMessage: 'Every agent failed — check your GEMINI_API_KEY and the terminal output.',
+      failedMessage: 'Relevance search failed. Check the terminal output.',
+      onError: (error) =>
+        console.error('[local] find-relevant-notes stream failed:', error instanceof Error ? error.message : error),
     });
+    return new Response(stream, {
+      headers: { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache' },
+    });
+  }
+
+  try {
+    const { outcomes } = await runRelevanceAgents(agentOptions);
 
     const createdAtById = new Map(notes.map((note) => [note.id, note.created_at]));
     const { results, notesSearched } = mergeAgentResults(outcomes, createdAtById, MAX_RESULTS);

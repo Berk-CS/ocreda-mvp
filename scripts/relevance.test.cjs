@@ -9,6 +9,7 @@ const {
   parseAgentResponse,
   mergeAgentResults,
   runRelevanceAgents,
+  streamRelevanceSearch,
   condenseDraft,
   truncate,
 } = require('../.relevance-build/relevance.js');
@@ -146,6 +147,71 @@ test('keeps only the first of a repeated id', () => {
 test('skips null entries without dropping good ones', () => {
   const mixed = JSON.stringify([null, { note_id: 'keep-2', relevance_score: 0.7, relation_type: 'question', explanation: 'ok' }]);
   assert.strictEqual(parseAgentResponse(mixed, allowed).length, 1);
+});
+
+// ------------------------------------------------------------- streaming
+
+async function readEvents(stream) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text.trim().split('\n').map((line) => JSON.parse(line));
+}
+
+// Every note in a chunk is scored relevant, so matches track what has finished.
+const matchEveryNote = (prompt) =>
+  Promise.resolve(JSON.stringify([...prompt.matchAll(/^ID: (\S+)$/gm)].map((m) => ({
+    note_id: m[1], relevance_score: 0.8, relation_type: 'supports', gist: 'g', explanation: 'e',
+  }))));
+
+const streamOptions = (over) => ({
+  draft: 'a draft long enough to search',
+  notes: ids(6),
+  agentCount: 3,
+  concurrency: 3,
+  generate: matchEveryNote,
+  isRetryable: () => false,
+  maxResults: 50,
+  allFailedMessage: 'all failed',
+  failedMessage: 'failed',
+  ...over,
+});
+
+test('stream reports start, one progress per agent, then done', async () => {
+  const events = await readEvents(streamRelevanceSearch(streamOptions()));
+  assert.deepStrictEqual(events.map((e) => e.type), ['start', 'progress', 'progress', 'progress', 'done']);
+  assert.deepStrictEqual(events[0], { type: 'start', notes_total: 6, agents_total: 3 });
+  assert.deepStrictEqual(events.slice(1, 4).map((e) => e.agents_done), [1, 2, 3]);
+  assert.strictEqual(events[3].matches, 6);
+  assert.strictEqual(events[4].results.length, 6);
+  assert.deepStrictEqual(events[4].coverage, { notes_searched: 6, notes_total: 6, complete: true });
+});
+
+test('stream reports progress before the slowest agent finishes', async () => {
+  let releaseSlow;
+  const slow = new Promise((resolve) => { releaseSlow = resolve; });
+  let calls = 0;
+  const generate = (prompt) => (calls++ === 0 ? slow.then(() => matchEveryNote(prompt)) : matchEveryNote(prompt));
+  const reader = streamRelevanceSearch(streamOptions({ generate })).getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  while ((text.match(/"progress"/g) ?? []).length < 2) {
+    text += decoder.decode((await reader.read()).value, { stream: true });
+  }
+  assert.ok(!text.includes('"done"'), 'done arrived before the slow agent was released');
+  releaseSlow();
+  await reader.cancel();
+});
+
+test('stream ends in an error event when every agent fails', async () => {
+  const events = await readEvents(streamRelevanceSearch(streamOptions({ generate: () => Promise.reject(new Error('down')) })));
+  assert.deepStrictEqual(events.at(-1), { type: 'error', error: 'all failed' });
+  assert.ok(events.filter((e) => e.type === 'progress').every((e) => e.matches === 0));
 });
 
 // ------------------------------------------------------------- merging

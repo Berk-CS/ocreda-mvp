@@ -220,7 +220,7 @@ export interface AgentOutcome {
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
-  worker: (item: T) => Promise<R>
+  worker: (item: T, index: number) => Promise<R>
 ): Promise<PromiseSettledResult<R>[]> {
   const results = new Array<PromiseSettledResult<R>>(items.length);
   let cursor = 0;
@@ -230,7 +230,7 @@ async function runWithConcurrency<T, R>(
       const index = cursor++;
       if (index >= items.length) return;
       try {
-        results[index] = { status: "fulfilled", value: await worker(items[index]) };
+        results[index] = { status: "fulfilled", value: await worker(items[index], index) };
       } catch (reason) {
         results[index] = { status: "rejected", reason };
       }
@@ -264,30 +264,38 @@ export async function runRelevanceAgents(
   const { draft, notes, agentCount, concurrency, generate, isRetryable, onAgentSettled } = options;
   const chunks = dealIntoChunks(notes, agentCount);
 
-  const settled = await runWithConcurrency(chunks, concurrency, async (chunk) => {
+  const settled = await runWithConcurrency(chunks, concurrency, async (chunk, index) => {
     const prompt = buildPrompt(draft, chunk);
     const allowedIds = new Set(chunk.map((n) => n.id));
+    // Reported the moment this agent finishes rather than after all of them, so
+    // a caller can show progress while the rest are still running. Called
+    // outside the try below, so a throwing callback is never mistaken for a
+    // model failure and retried.
+    const settle = (results: RelevanceResult[] | null) =>
+      onAgentSettled?.(index, { chunkSize: chunk.length, results });
 
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; ; attempt++) {
+      let results: RelevanceResult[];
       try {
-        return parseAgentResponse(await generate(prompt), allowedIds);
+        results = parseAgentResponse(await generate(prompt), allowedIds);
       } catch (error) {
-        if (attempt === 1 || !isRetryable(error)) throw error;
+        if (attempt === 1 || !isRetryable(error)) {
+          settle(null);
+          throw error;
+        }
         // Backoff with jitter so the agents don't all retry in lockstep.
         await new Promise((resolve) => setTimeout(resolve, 500 + Math.random() * 700));
+        continue;
       }
+      settle(results);
+      return results;
     }
-    return [];
   });
 
-  const outcomes: AgentOutcome[] = settled.map((outcome, index) => {
-    const result: AgentOutcome = {
-      chunkSize: chunks[index].length,
-      results: outcome.status === "fulfilled" ? outcome.value : null,
-    };
-    onAgentSettled?.(index, result);
-    return result;
-  });
+  const outcomes: AgentOutcome[] = settled.map((outcome, index) => ({
+    chunkSize: chunks[index].length,
+    results: outcome.status === "fulfilled" ? outcome.value : null,
+  }));
 
   return { chunks, outcomes };
 }
@@ -326,4 +334,80 @@ export function mergeAgentResults(
     .slice(0, maxResults);
 
   return { results, notesSearched };
+}
+
+/**
+ * One line of the newline-delimited JSON stream a caller gets when it asks for
+ * progress. "start" and "progress" drive the loading UI; exactly one "done" or
+ * "error" ends the stream.
+ */
+export type RelevanceStreamEvent =
+  | { type: "start"; notes_total: number; agents_total: number }
+  | { type: "progress"; agents_done: number; agents_total: number; matches: number }
+  | {
+      type: "done";
+      results: RelevanceResult[];
+      coverage: { notes_searched: number; notes_total: number; complete: boolean };
+    }
+  | { type: "error"; error: string };
+
+export interface StreamSearchOptions extends Omit<RunAgentsOptions, "onAgentSettled"> {
+  maxResults: number;
+  /** Shown when every agent failed, which would otherwise read as "nothing related". */
+  allFailedMessage: string;
+  /** Shown when the search throws outright; the error itself goes to onError. */
+  failedMessage: string;
+  onError?: (error: unknown) => void;
+}
+
+/**
+ * Runs the same fan-out and merge as the buffered path, but reports each agent
+ * as it finishes. Written against web-standard ReadableStream and TextEncoder
+ * so the Deno Edge Function and the Node dev route can both return it as is.
+ */
+export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStream<Uint8Array> {
+  const { maxResults, allFailedMessage, failedMessage, onError, ...agentOptions } = options;
+  const encoder = new TextEncoder();
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: RelevanceStreamEvent) =>
+        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+
+      const notesTotal = agentOptions.notes.length;
+      const agentsTotal = dealIntoChunks(agentOptions.notes, agentOptions.agentCount).length;
+      const matched = new Set<string>();
+      let agentsDone = 0;
+
+      send({ type: "start", notes_total: notesTotal, agents_total: agentsTotal });
+
+      try {
+        const { outcomes } = await runRelevanceAgents({
+          ...agentOptions,
+          onAgentSettled: (_index, outcome) => {
+            agentsDone++;
+            outcome.results?.forEach((result) => matched.add(result.note_id));
+            send({ type: "progress", agents_done: agentsDone, agents_total: agentsTotal, matches: matched.size });
+          },
+        });
+
+        const createdAtById = new Map(agentOptions.notes.map((note) => [note.id, note.created_at]));
+        const { results, notesSearched } = mergeAgentResults(outcomes, createdAtById, maxResults);
+
+        if (notesSearched === 0) {
+          send({ type: "error", error: allFailedMessage });
+        } else {
+          send({
+            type: "done",
+            results,
+            coverage: { notes_searched: notesSearched, notes_total: notesTotal, complete: notesSearched === notesTotal },
+          });
+        }
+      } catch (error) {
+        onError?.(error);
+        send({ type: "error", error: failedMessage });
+      }
+      controller.close();
+    },
+  });
 }
