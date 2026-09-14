@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export type ThemePreference = 'light' | 'dark' | 'auto';
@@ -32,12 +32,12 @@ function applyTheme(t: ResolvedTheme) {
   const root = document.documentElement;
   root.classList.remove('dark', 'light');
   root.classList.add(t);
+  try { localStorage.setItem('theme-pref', t); } catch {}
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [preference, setPreferenceState] = useState<ThemePreference>('auto');
   const [theme, setTheme] = useState<ResolvedTheme>('dark');
-  const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   // On mount: read localStorage for instant apply, then fetch from Supabase
   useEffect(() => {
@@ -66,7 +66,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
           applyTheme(r);
           try { localStorage.setItem('theme-pref', pref); } catch {}
         });
-    }).catch(() => {});
+    });
   }, []);
 
   // Listen for system theme changes when in 'auto' mode
@@ -82,23 +82,18 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     return () => mq.removeEventListener('change', handler);
   }, [preference]);
 
-  const setPreference = useCallback((pref: ThemePreference) => {
+  const setPreference = useCallback(async (pref: ThemePreference) => {
     const resolved = resolve(pref);
     setPreferenceState(pref);
     setTheme(resolved);
     applyTheme(resolved);
     try { localStorage.setItem('theme-pref', pref); } catch {}
 
-    persistenceQueueRef.current = persistenceQueueRef.current
-      .catch(() => {})
-      .then(async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-        const { error } = await supabase
-          .from('user_settings')
-          .upsert({ user_id: user.id, theme: pref, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
-        if (error) throw error;
-      });
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    await supabase
+      .from('user_settings')
+      .upsert({ user_id: user.id, theme: pref, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
   }, []);
 
   return (

@@ -3,8 +3,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
-
-const SESSION_BOOT_TIMEOUT_MS = 5_000;
+import { IS_LOCAL_MODE, LOCAL_USER } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 
 interface AuthContextType {
   user: User | null;
@@ -25,21 +24,17 @@ const AuthContext = createContext<AuthContextType>({
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  // Local mode starts already "signed in" as a fake user, which is what lets
+  // AppChrome render instead of redirecting to /auth.
+  const [user, setUser] = useState<User | null>(IS_LOCAL_MODE ? (LOCAL_USER as unknown as User) : null);  // DEV-LOCAL-MODE
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!IS_LOCAL_MODE);  // DEV-LOCAL-MODE
 
   useEffect(() => {
-    let mounted = true;
-    let timeoutId: number | undefined;
-    const sessionTimeout = new Promise<never>((_, reject) => {
-      timeoutId = window.setTimeout(
-        () => reject(new Error('Session initialization timed out')),
-        SESSION_BOOT_TIMEOUT_MS,
-      );
-    });
+    if (IS_LOCAL_MODE) return;  // DEV-LOCAL-MODE
 
-    Promise.race([supabase.auth.getSession(), sessionTimeout])
+    let mounted = true;
+    supabase.auth.getSession()
       .then(({ data: { session } }) => {
         if (!mounted) return;
         setSession(session);
@@ -51,7 +46,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
       })
       .finally(() => {
-        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
         if (mounted) setLoading(false);
       });
 
@@ -63,7 +57,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mounted = false;
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       subscription.unsubscribe();
     };
   }, []);
@@ -89,6 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    if (IS_LOCAL_MODE) return;  // DEV-LOCAL-MODE
     await supabase.auth.signOut();
   };
 

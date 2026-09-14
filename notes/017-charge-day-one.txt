@@ -1,0 +1,14 @@
+Charge Day One
+
+**Charge vs. Free — When & Why**
+
+**YC's Position: Charge From Day One**
+YC advises founders to charge early because it validates real demand — payment proves the pain is worth solving. Paying users also give more serious, actionable feedback. Free users create false positives; they overstate interest but don't convert later. Charging early sets pricing expectations (it's easier to lower price than raise it) and builds revenue discipline by forcing clarity on your value proposition. As Paul Graham puts it: revenue is the strongest signal of product-market fit.
+
+**The "Give It Away Free" Argument**
+Others argue for free early distribution, especially for consumer apps, marketplaces, or scale-dependent products. Going free lowers friction for adoption, accelerates user acquisition, and generates more data. It's particularly useful for network-effect products where value grows with users, and it's better when you're validating usability rather than willingness to pay.
+
+**The Real Decision Framework**
+The real distinction isn't "free vs paid" — it's about what you're validating. If you're validating problem strength, charge. If you're validating engagement or behavior loops, go free. Network-effect products benefit from free or freemium to reach scale. B2B products with high margins should charge from day one. B2C products with low margins and viral potential are better suited for free or freemium models.
+
+The rule of thumb: if you need scale to create value, go free first. If you need signal that the problem is real, charge first.

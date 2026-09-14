@@ -7,11 +7,13 @@ import SidebarMain from '@/components/SidebarMain';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import { useTheme, ThemePreference } from '@/lib/theme-context';
+import { getNotes } from '@/lib/notes-api';
 import {
   Camera,
   Check,
   Loader as Loader2,
   LogOut,
+  Trash2,
   Calendar,
   FileText,
 } from 'lucide-react';
@@ -47,49 +49,36 @@ export default function ProfilePage() {
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [loadingStats, setLoadingStats] = useState(true);
-  const [statsError, setStatsError] = useState('');
 
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarError, setAvatarError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletingAccount, setDeletingAccount] = useState(false);
+
   const loadProfile = useCallback(async () => {
     if (!user) return;
-    try {
-      const { data, error } = await supabase
-        .from('user_settings')
-        .select('full_name, avatar_url')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      if (error) throw error;
-      const p = { full_name: data?.full_name ?? '', avatar_url: data?.avatar_url ?? null };
-      setProfile(p);
-      setEditName(p.full_name);
-    } catch {
-      const fallbackName = String(user.user_metadata?.full_name ?? user.user_metadata?.name ?? '').trim();
-      const p = { full_name: fallbackName, avatar_url: null };
-      setProfile(p);
-      setEditName(p.full_name);
-    }
+    const { data } = await supabase
+      .from('user_settings')
+      .select('full_name, avatar_url')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    const p = { full_name: data?.full_name ?? '', avatar_url: data?.avatar_url ?? null };
+    setProfile(p);
+    setEditName(p.full_name);
   }, [user]);
 
   const loadStats = useCallback(async () => {
     if (!user) return;
     setLoadingStats(true);
-    setStatsError('');
     try {
-      const { count, error } = await supabase
-        .from('notes')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id);
-      if (error) throw error;
+      const notes = await getNotes();
       setStats({
-        totalNotes: count ?? 0,
+        totalNotes: notes.length,
         createdAt: user.created_at,
       });
-    } catch {
-      setStats(null);
-      setStatsError('Unable to load account stats.');
     } finally {
       setLoadingStats(false);
     }
@@ -134,6 +123,13 @@ export default function ProfilePage() {
   };
 
   const handleSignOut = async () => {
+    await signOut();
+    router.replace('/auth');
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE') return;
+    setDeletingAccount(true);
     await signOut();
     router.replace('/auth');
   };
@@ -264,12 +260,7 @@ export default function ProfilePage() {
                   small
                 />
               </div>
-            ) : (
-              <div className="flex items-center justify-between gap-4 rounded-xl bg-muted/50 px-4 py-3">
-                <p role="alert" className="text-xs text-muted-foreground">{statsError || 'Account stats are unavailable.'}</p>
-                <button type="button" onClick={() => void loadStats()} className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-background">Try again</button>
-              </div>
-            )}
+            ) : null}
           </div>
 
           <div className="border-t border-border pt-6 mb-4">
@@ -280,6 +271,46 @@ export default function ProfilePage() {
               <LogOut className="w-4 h-4" />
               Sign Out
             </button>
+          </div>
+
+          <div className="pt-2">
+            {!showDeleteConfirm ? (
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                className="text-xs text-muted-foreground/40 hover:text-destructive/70 transition-colors"
+              >
+                Delete account
+              </button>
+            ) : (
+              <div className="bg-destructive/5 border border-destructive/20 rounded-xl p-4 space-y-3">
+                <p className="text-sm font-medium text-destructive">Delete account permanently?</p>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  This will sign you out. All your notes and data stored in this app will be lost. Type <strong>DELETE</strong> to confirm.
+                </p>
+                <input
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder="Type DELETE to confirm"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-destructive/20 focus:border-destructive/40 transition-all"
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmText(''); }}
+                    className="text-xs text-muted-foreground hover:text-foreground px-3 py-2 rounded-lg border border-border hover:bg-accent transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDeleteAccount}
+                    disabled={deleteConfirmText !== 'DELETE' || deletingAccount}
+                    className="flex items-center gap-1.5 text-xs text-white bg-destructive hover:bg-destructive/90 px-3 py-2 rounded-lg transition-all disabled:opacity-40"
+                  >
+                    {deletingAccount ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                    Delete Account
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
         </div>

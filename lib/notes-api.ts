@@ -1,6 +1,23 @@
 import { supabase } from './supabase';
 import { getOwnerId } from './user';
-import { Note, Question, ConversationMessage } from './types';
+import {
+  IS_LOCAL_MODE,
+  localCreateNote,
+  localDeleteNote,
+  localFindRelevantNotes,
+  localGetNotes,
+  localImportNotes,
+  localMoveNotesToCategory,
+  localUpdateNote,
+} from '@/dev/local-mode';  // DEV-LOCAL-MODE
+import {
+  Note,
+  Question,
+  ConversationMessage,
+  RelevanceProgress,
+  RelevantNotesResponse,
+} from './types';
+import { readRelevanceResponse } from './relevance-stream';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -37,99 +54,6 @@ async function getAuthenticatedOwnerId(): Promise<string> {
     throw new Error('Your session has expired. Sign in again to continue.');
   }
   return data.user.id;
-}
-
-async function getAccessToken(): Promise<string> {
-  const { data, error } = await supabase.auth.getSession();
-  const accessToken = data.session?.access_token;
-  if (error || !accessToken) {
-    throw new Error('Your session has expired. Sign in again to continue.');
-  }
-  return accessToken;
-}
-
-async function invokeAuthenticatedFunction<T>(functionName: string, body: Record<string, unknown>): Promise<T> {
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/${functionName}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${await getAccessToken()}`,
-      apikey: SUPABASE_ANON_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
-  if (!response.ok) {
-    throw new Error(typeof payload?.error === 'string' ? payload.error : `${functionName} failed (${response.status})`);
-  }
-  return payload as T;
-}
-
-export interface EmbeddingBatchResult {
-  success: true;
-  embedding_version: string;
-  processed: number;
-  failed: number;
-  results: Array<{ note_id: string; status: 'ready' | 'failed' | 'skipped' | 'stale'; error?: string; reason?: string }>;
-}
-
-/**
- * Runs the idempotent semantic-embedding worker. The Edge Function derives
- * ownership from this session's JWT; no browser-supplied user id is trusted.
- */
-export async function embedNotes(
-  noteIds: string[] = [],
-  options: { retryFailed?: boolean; retryStaleProcessing?: boolean; limit?: number } = {}
-): Promise<EmbeddingBatchResult[]> {
-  const batches = noteIds.length
-    ? Array.from({ length: Math.ceil(noteIds.length / 20) }, (_, index) => noteIds.slice(index * 20, (index + 1) * 20))
-    : [[]];
-  const results: EmbeddingBatchResult[] = [];
-  for (const batch of batches) {
-    results.push(await invokeAuthenticatedFunction<EmbeddingBatchResult>('embed-notes', {
-      ...(batch.length ? { note_ids: batch } : {}),
-      limit: options.limit ?? 25,
-      retry_failed: options.retryFailed ?? false,
-      retry_stale_processing: options.retryStaleProcessing ?? false,
-    }));
-  }
-  return results;
-}
-
-export async function backfillSemanticEmbeddings(options: {
-  batchSize?: number;
-  maxBatches?: number;
-  retryFailed?: boolean;
-  retryStaleProcessing?: boolean;
-  onBatch?: (completedBatches: number, latest: EmbeddingBatchResult) => void;
-} = {}): Promise<{ batches: number; processed: number; failed: number }> {
-  const batchSize = Math.min(Math.max(options.batchSize ?? 25, 1), 50);
-  const maxBatches = Math.min(Math.max(options.maxBatches ?? 20, 1), 100);
-  let processed = 0;
-  let failed = 0;
-  let batches = 0;
-
-  for (let index = 0; index < maxBatches; index += 1) {
-    const [result] = await embedNotes([], {
-      limit: batchSize,
-      retryFailed: options.retryFailed,
-      retryStaleProcessing: options.retryStaleProcessing,
-    });
-    batches += 1;
-    processed += result.processed;
-    failed += result.failed;
-    options.onBatch?.(batches, result);
-    if (result.results.length < batchSize || result.results.length === 0) break;
-  }
-
-  return { batches, processed, failed };
-}
-
-function startEmbeddingLifecycle(noteIds: string[]): void {
-  if (!noteIds.length) return;
-  void embedNotes(noteIds).catch((error) => {
-    if (process.env.NODE_ENV !== 'production') console.error('Semantic embedding request failed:', error);
-  });
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -208,6 +132,7 @@ export function getLocalDateString(date: Date = new Date()): string {
 }
 
 export async function getNotes(): Promise<Note[]> {
+  if (IS_LOCAL_MODE) return localGetNotes();  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
   if (categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').select(CATEGORY_NOTE_FIELDS).eq('user_id', ownerId).order('created_at', { ascending: false });
@@ -226,6 +151,7 @@ export async function getNotes(): Promise<Note[]> {
 
 /** Save from the dedicated note editor without running question/note classification. */
 export async function createNote(rawText: string, category: string | null = null): Promise<Note> {
+  if (IS_LOCAL_MODE) return localCreateNote(rawText, category);  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
   if (categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').insert({
@@ -236,9 +162,7 @@ export async function createNote(rawText: string, category: string | null = null
     }).select(CATEGORY_NOTE_FIELDS).single();
     if (!result.error) {
       categoryColumnsAvailable = true;
-      const note = normalizeNote(result.data as Record<string, unknown>);
-      startEmbeddingLifecycle([note.id]);
-      return note;
+      return normalizeNote(result.data as Record<string, unknown>);
     }
     if (!isMissingCategoryColumn(result.error)) throw result.error;
     categoryColumnsAvailable = false;
@@ -246,9 +170,7 @@ export async function createNote(rawText: string, category: string | null = null
 
   const { data, error } = await supabase.from('notes').insert({ user_id: ownerId, raw_text: rawText }).select(LEGACY_NOTE_FIELDS).single();
   if (error) throw error;
-  const note = normalizeNote(data as Record<string, unknown>);
-  startEmbeddingLifecycle([note.id]);
-  return note;
+  return normalizeNote(data as Record<string, unknown>);
 }
 
 const NOTE_IMPORT_BATCH_SIZE = 50;
@@ -263,6 +185,7 @@ export async function importNotes(
   onProgress?: (completed: number, total: number) => void
 ): Promise<Note[]> {
   if (rawTexts.length === 0) return [];
+  if (IS_LOCAL_MODE) return localImportNotes(rawTexts, onProgress);  // DEV-LOCAL-MODE
 
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData.user) {
@@ -293,7 +216,6 @@ export async function importNotes(
       onProgress?.(Math.min(start + batch.length, rawTexts.length), rawTexts.length);
     }
 
-    startEmbeddingLifecycle(importedIds);
     return imported;
   } catch (error) {
     if (importedIds.length > 0) {
@@ -337,11 +259,7 @@ export async function extractGuidedNotes(answers: string[], corpus: Note[]): Pro
     },
     body: JSON.stringify({
       answers,
-      corpus: corpus.map((note) => ({
-        id: note.id,
-        title: note.raw_text.split('\n', 1)[0]?.trim() || 'Untitled',
-        body: note.raw_text,
-      })),
+      corpus: corpus.map((note) => ({ id: note.id, title: note.summary, body: note.raw_text })),
     }),
   });
   if (!response.ok) throw new Error(await response.text());
@@ -376,6 +294,7 @@ export async function updateNote(
   rawText: string,
   category?: string | null
 ): Promise<Note> {
+  if (IS_LOCAL_MODE) return localUpdateNote(noteId, rawText, category);  // DEV-LOCAL-MODE
   if (category !== undefined && categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').update({
       raw_text: rawText,
@@ -384,9 +303,7 @@ export async function updateNote(
     }).eq('id', noteId).select(CATEGORY_NOTE_FIELDS).single();
     if (!result.error) {
       categoryColumnsAvailable = true;
-      const note = normalizeNote(result.data as Record<string, unknown>);
-      startEmbeddingLifecycle([note.id]);
-      return note;
+      return normalizeNote(result.data as Record<string, unknown>);
     }
     if (!isMissingCategoryColumn(result.error)) throw result.error;
     categoryColumnsAvailable = false;
@@ -394,9 +311,7 @@ export async function updateNote(
 
   const { data, error } = await supabase.from('notes').update({ raw_text: rawText }).eq('id', noteId).select(LEGACY_NOTE_FIELDS).single();
   if (error) throw error;
-  const note = normalizeNote(data as Record<string, unknown>);
-  startEmbeddingLifecycle([note.id]);
-  return note;
+  return normalizeNote(data as Record<string, unknown>);
 }
 
 export async function moveNotesToCategory(
@@ -404,6 +319,7 @@ export async function moveNotesToCategory(
   category: string | null
 ): Promise<Note[]> {
   if (noteIds.length === 0) return [];
+  if (IS_LOCAL_MODE) return localMoveNotesToCategory(noteIds, category);  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
   if (categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').update({ category, category_updated_at: new Date().toISOString() }).in('id', noteIds).eq('user_id', ownerId).select(CATEGORY_NOTE_FIELDS);
@@ -421,13 +337,75 @@ export async function moveNotesToCategory(
 }
 
 export async function deleteNote(noteId: string): Promise<void> {
+  if (IS_LOCAL_MODE) { localDeleteNote(noteId); return; }  // DEV-LOCAL-MODE
   const { error } = await supabase.from('notes').delete().eq('id', noteId);
   if (error) throw error;
 }
 
 /** Fire-and-forget after a note is saved: finds related notes. */
 export async function processNote(noteId: string): Promise<{ relations_count: number }> {
-  return invokeAuthenticatedFunction<{ relations_count: number }>('process-note', { note_id: noteId });
+  // Background relation-building needs the Edge Function; local mode skips it.
+  if (IS_LOCAL_MODE) return { relations_count: 0 };  // DEV-LOCAL-MODE
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/process-note`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ note_id: noteId, user_id: await getAuthenticatedOwnerId() }),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+/** Below this the draft is too thin for relevance scoring to mean anything. */
+export const MIN_RELEVANCE_DRAFT_CHARS = 40;
+
+/**
+ * Ranks the user's saved notes against the note they are currently drafting.
+ * Sends the user's own access token rather than the anon key so the function
+ * derives the account from a verified session instead of trusting the caller.
+ */
+export async function findRelevantNotes(
+  draftText: string,
+  excludeNoteId?: string | null,
+  onProgress?: (progress: RelevanceProgress) => void
+): Promise<RelevantNotesResponse> {
+  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress);  // DEV-LOCAL-MODE
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (sessionError || !accessToken) {
+    throw new Error('Your session has expired. Sign in again to search your notes.');
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${SUPABASE_URL}/functions/v1/find-relevant-notes`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        apikey: SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null, stream: true }),
+    });
+  } catch (error) {
+    // A missing Edge Function or failed CORS preflight surfaces as an opaque
+    // "Failed to fetch" TypeError, which is useless to show a user.
+    if (process.env.NODE_ENV !== 'production') console.error('Relevance search request failed:', error);
+    throw new Error("We couldn't search your notes right now. Please try again.");
+  }
+
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Your session has expired. Sign in again to search your notes.');
+    }
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const message = typeof payload?.error === 'string' ? payload.error : null;
+    throw new Error(message ?? "We couldn't search your notes right now. Please try again.");
+  }
+
+  return readRelevanceResponse(response, "We couldn't search your notes right now. Please try again.", onProgress);
 }
 
 /** The single entry point for the "My Brain" input: classifies the text as a note to save or a question to answer. */
@@ -443,75 +421,22 @@ export async function handleMessage(rawText: string): Promise<
       note_title_map: Record<string, { id: string; title: string }>;
     }
 > {
-  const result = await invokeAuthenticatedFunction<
-    | { type: 'note'; note: Note }
-    | {
-        type: 'question';
-        answer: string;
-        relevant_notes: Array<{ id: string; summary: string | null; raw_text: string; connection_count: number }>;
-        question_id: string;
-        key_points: string[];
-        inline_sources: Array<{ marker: string; noteId: string }>;
-        note_title_map: Record<string, { id: string; title: string }>;
-      }
-  >('handle-message', { raw_text: rawText, local_date: getLocalDateString() });
-  if (result.type === 'note' && typeof result.note?.id === 'string') startEmbeddingLifecycle([result.note.id]);
-  return result;
-}
-
-export type SemanticRetrievalExperimentRequest =
-  | { experiment: 'q1_subset'; entry_text: string; target_note_ids: string[]; subset_size?: number; seed?: string }
-  | {
-      experiment: 'q1_record_result';
-      experiment_id: string;
-      provider: string;
-      model: string;
-      run_label?: string;
-      response_text: string;
-      selected_note_ids?: string[];
-      metrics?: Record<string, unknown>;
-    }
-  | { experiment: 'q2_full_rank'; entry_text: string; target_note_ids?: string[] }
-  | {
-      experiment: 'q5_short_note';
-      note_id: string;
-      entry_texts: string[];
-      variants?: Array<{ name: string; context_note_ids?: string[]; context_text?: string }>;
-    };
-
-export async function runSemanticRetrievalExperiment<T = Record<string, unknown>>(
-  request: SemanticRetrievalExperimentRequest
-): Promise<T> {
-  return invokeAuthenticatedFunction<T>('semantic-retrieval-experiment', request);
-}
-
-export interface SemanticRetrievalCandidate {
-  note_id: string;
-  similarity: number;
-  raw_rank: number;
-  diversified_rank: number;
-  mmr_score: number;
-  note_length: number;
-  token_count: number;
-  raw_text: string;
-}
-
-export async function retrieveSemanticNotes(
-  pageText: string,
-  options: { candidateLimit?: number; similarityFloor?: number; duplicateThreshold?: number; diversityLambda?: number } = {}
-): Promise<{ candidates: SemanticRetrievalCandidate[]; near_duplicates: SemanticRetrievalCandidate[] }> {
-  return invokeAuthenticatedFunction('semantic-retrieval', {
-    page_text: pageText,
-    candidate_limit: options.candidateLimit ?? 60,
-    similarity_floor: options.similarityFloor ?? 0,
-    duplicate_threshold: options.duplicateThreshold ?? 0.95,
-    diversity_lambda: options.diversityLambda ?? 0.72,
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/handle-message`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ user_id: await getOwnerId(), raw_text: rawText, local_date: getLocalDateString() }),
   });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
 }
 
 export async function getNoteRelations(
   noteId: string
 ): Promise<Array<{ id: string; related_note_id: string; reason: string | null; confidence?: number; weight?: number; related_note: { id: string; summary: string | null; raw_text: string } }>> {
+  if (IS_LOCAL_MODE) return [];  // DEV-LOCAL-MODE
   // Query only columns available in both the current preview schema and the
   // connection-learning migration. Requesting newer columns against an older
   // preview database creates noisy 400 responses before a fallback can run.
@@ -588,9 +513,19 @@ export async function sendChatMessage(
   relevant_notes: Array<{ id: string; summary: string | null; raw_text: string; connection_count: number }>;
   messages: ConversationMessage[];
 }> {
-  return invokeAuthenticatedFunction('chat-message', {
-    question_id: questionId,
-    message,
-    local_date: getLocalDateString(),
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/chat-message`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      question_id: questionId,
+      user_id: await getOwnerId(),
+      message,
+      local_date: getLocalDateString(),
+    }),
   });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
 }
