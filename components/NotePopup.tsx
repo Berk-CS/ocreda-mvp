@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Loader as Loader2, Maximize2, MoreHorizontal, Plus, Search, Trash2, X } from 'lucide-react';
+import { Check, Loader as Loader2, Maximize2, MessageSquare, MoreHorizontal, Plus, Search, Trash2, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { Note } from '@/lib/types';
-import { applyConnectionFeedback, createNote, deleteNote, getNoteById, getNoteRelations, updateNote } from '@/lib/notes-api';
+import { applyConnectionFeedback, createNote, deleteNote, getNoteById, getNoteRelations, processNote, updateNote } from '@/lib/notes-api';
 
 type Relation = Awaited<ReturnType<typeof getNoteRelations>>[number];
 
@@ -31,6 +31,7 @@ export default function NotePopup({
   const [editText, setEditText] = useState('');
   const [saving, setSaving] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [addTitle, setAddTitle] = useState('');
   const [addBody, setAddBody] = useState('');
@@ -62,12 +63,13 @@ export default function NotePopup({
       if (event.key !== 'Escape') return;
       if (addOpen) setAddOpen(false);
       else if (moreOpen) setMoreOpen(false);
+      else if (chatOpen) setChatOpen(false);
       else if (editing) { setEditing(false); setEditText(note?.raw_text ?? ''); }
       else onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [addOpen, editing, moreOpen, note?.raw_text, onClose]);
+  }, [addOpen, chatOpen, editing, moreOpen, note?.raw_text, onClose]);
 
   const save = async () => {
     if (!note || !editText.trim()) return;
@@ -79,6 +81,7 @@ export default function NotePopup({
       setEditing(false);
       onNoteUpdated?.(updated);
       window.dispatchEvent(new CustomEvent('note-updated', { detail: { note: updated } }));
+      await processNote(updated.id).catch(() => ({ relations_count: 0 }));
       const nextRelations = await getNoteRelations(updated.id).catch(() => []);
       setRelations(hideConnections ? [] : nextRelations);
     } finally {
@@ -93,6 +96,17 @@ export default function NotePopup({
     onClose();
   };
 
+  const useInChat = () => {
+    if (!note) return;
+    window.dispatchEvent(new CustomEvent('use-note-in-chat', { detail: { note } }));
+    onClose();
+  };
+
+  const openPastChats = () => {
+    window.dispatchEvent(new Event('open-chat-history'));
+    onClose();
+  };
+
   const saveAddedNote = async () => {
     const title = addTitle.trim();
     const body = addBody.trim();
@@ -100,6 +114,7 @@ export default function NotePopup({
     setAdding(true);
     try {
       const created = await createNote(body ? `${title}\n\n${body}` : title);
+      processNote(created.id).catch(() => {});
       window.dispatchEvent(new CustomEvent('note-created', { detail: { note: created } }));
       setAddTitle('');
       setAddBody('');
@@ -145,13 +160,18 @@ export default function NotePopup({
         <header className="flex h-16 shrink-0 items-center border-b border-border/40 px-5 sm:px-7">
           <div className="flex items-center gap-4 text-muted-foreground">
             <button type="button" aria-label="Add note" onClick={() => { setAddOpen(true); requestAnimationFrame(() => titleRef.current?.focus()); }} className="rounded-md bg-primary p-1.5 text-white"><Plus className="h-5 w-5" /></button>
+            <MessageSquare className="h-5 w-5" />
             <Search className="h-5 w-5" />
           </div>
           {fullView && <button type="button" onClick={onClose} aria-label="Close full note" className="absolute left-1/2 -translate-x-1/2 rounded-lg p-2 text-muted-foreground hover:bg-accent"><X className="h-5 w-5" /></button>}
           <div className="ml-auto flex items-center gap-4">
             {!fullView && <button type="button" onClick={() => setFullView(true)} aria-label="Open full note view" title="Open full note view" className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground"><Maximize2 className="h-5 w-5" /></button>}
             <div className="relative">
-              <button type="button" onClick={() => setMoreOpen((open) => !open)} aria-label="More note options" className="rounded-md p-2 text-muted-foreground hover:bg-accent"><MoreHorizontal className="h-5 w-5" /></button>
+              <button type="button" onClick={() => { setChatOpen((open) => !open); setMoreOpen(false); }} className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground"><MessageSquare className="h-4 w-4" /> See in chat</button>
+              {chatOpen && <div className="absolute right-0 top-8 z-20 w-48 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-xl"><button type="button" onClick={openPastChats} className="block w-full px-4 py-2 text-left text-sm hover:bg-accent">See past chats</button><button type="button" onClick={useInChat} className="block w-full px-4 py-2 text-left text-sm hover:bg-accent">Use this note in chat</button></div>}
+            </div>
+            <div className="relative">
+              <button type="button" onClick={() => { setMoreOpen((open) => !open); setChatOpen(false); }} aria-label="More note options" className="rounded-md p-2 text-muted-foreground hover:bg-accent"><MoreHorizontal className="h-5 w-5" /></button>
               {moreOpen && <div className="absolute right-0 top-10 z-20 w-36 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-xl"><button type="button" onClick={remove} className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"><Trash2 className="h-4 w-4" /> Delete</button></div>}
             </div>
           </div>
@@ -170,7 +190,10 @@ export default function NotePopup({
               {relations.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center px-6 text-center">
                   <p className="max-w-[220px] text-sm leading-relaxed">This note doesn&apos;t have any connections yet.</p>
-                  <button type="button" onClick={() => setAddOpen(true)} className="mt-5 rounded bg-primary px-4 py-2 text-xs text-white">Add a note</button>
+                  <div className="mt-5 flex gap-2">
+                    <button type="button" onClick={() => setAddOpen(true)} className="rounded bg-primary px-4 py-2 text-xs text-white">Add a note</button>
+                    <button type="button" onClick={useInChat} className="rounded bg-foreground px-4 py-2 text-xs text-background">Use this note in chat</button>
+                  </div>
                 </div>
               ) : (
                 <>

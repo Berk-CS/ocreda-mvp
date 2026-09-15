@@ -52,7 +52,6 @@ export default function Navigation() {
         <div className="flex-shrink-0 flex items-center px-3 pt-3 pb-2">
           <button
             onClick={() => setMobileOpen(false)}
-            aria-label="Close navigation menu"
             className="p-1.5 rounded-lg text-muted-foreground/40 hover:text-foreground transition-colors"
             title="Close menu"
           >
@@ -105,7 +104,6 @@ export default function Navigation() {
       <div className="hidden md:block fixed left-0 top-0 z-50 p-3">
         <button
           onClick={toggle}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           className="p-1.5 rounded-lg text-muted-foreground/35 hover:text-foreground hover:bg-accent/50 transition-colors"
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
@@ -124,7 +122,6 @@ export default function Navigation() {
       <header className="md:hidden fixed top-0 left-0 right-0 h-12 bg-background border-b border-border/50 flex items-center px-4 z-40">
         <button
           onClick={() => setMobileOpen(true)}
-          aria-label="Open navigation menu"
           className="p-2 -ml-1 rounded-lg text-muted-foreground/50 hover:text-foreground transition-colors"
         >
           <Menu className="w-5 h-5" />

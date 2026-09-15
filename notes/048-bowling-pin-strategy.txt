@@ -1,0 +1,3 @@
+Bowling Pin Strategy
+
+Then repeat outward into adjacent segments (Moore calls this the "bowling pin" strategy) — each new segment's early buyers become the next segment's reference.

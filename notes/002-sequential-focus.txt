@@ -1,0 +1,3 @@
+Sequential Focus
+
+We must build, ship, validate, etc one by one. the company should design and then build. Finish with one thing and then go to the other. If we do too many things at a time with the small tam that we have than we could get in a mess if things have problems, because we would have to go back to fix it and that would delay new projects.

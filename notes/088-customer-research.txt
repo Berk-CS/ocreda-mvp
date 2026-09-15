@@ -1,0 +1,13 @@
+Customer Research
+
+1. Understanding customers (qualitative)
+User interviews / surveys: Typeform, Google Forms, SurveyMonkey
+Behavioral insight: Hotjar, FullStory (session recordings, heatmaps)
+
+2. Sizing the market (quantitative)
+Industry data: Statista, IBISWorld, Gartner, CB Insights
+Search demand: Google Trends, Ahrefs, SEMrush (keyword volume = proxy for interest)
+
+3. Competitive analysis
+SimilarWeb: traffic and engagement estimates for competitors
+App Annie/data.ai: app store rankings, downloads

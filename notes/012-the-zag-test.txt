@@ -1,0 +1,5 @@
+The Zag Test
+
+A real zag passes three tests: it's new (nobody owns it), it's true (you can actually deliver it), and it's needed (the
+
+You usually iterate: spot a possible space, ask who the tribe is, ask what you'd have to become to own it, then check whether that's a business you can actually run.
