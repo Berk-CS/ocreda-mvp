@@ -14,7 +14,7 @@ import { Note, NoteRelationType, RelevanceCoverage, RelevanceResult } from '@/li
 type MuseMeta = { title: string; description: string; createdAt: string };
 type ProjectPage = { id: string; title: string; content: string; sourceNoteIds: string[]; createdAt: string; updatedAt: string };
 type CortexProject = { id: string; title: string; description: string; content: string; pages: ProjectPage[]; createdAt: string; updatedAt: string };
-type NoteEditorState = { note: Note | null; title: string; body: string; muse: string; context?: 'domain' };
+type NoteEditorState = { note: Note | null; title: string; body: string; muse: string; context: 'domain' };
 type MuseEditorState = { originalTitle: string | null; title: string; description: string };
 type ProjectEditorState = { project: CortexProject | null; title: string; description: string };
 type SpeechRecognitionLike = {
@@ -268,7 +268,7 @@ export default function OcredaHome() {
     setShowUnsorted(false);
     setView('muses');
   }, []);
-  const openNewNote = (muse = AUTOMATIC_MUSE, context?: 'domain') => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context }); };
+  const openNewNote = (muse = AUTOMATIC_MUSE) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
   const openExistingNote = (note: Note) => { setError(''); setActiveNoteId(note.id); };
   const createMuseFromEditor = (value: string) => {
     const requested = cleanCategory(value);
@@ -287,17 +287,20 @@ export default function OcredaHome() {
     const category = noteEditor.muse === AUTOMATIC_MUSE ? inferMuse(rawText, muses) : cleanCategory(noteEditor.muse);
     setSaving(true); setError('');
     try {
+      let savedNoteId: string;
       if (noteEditor.note) {
         const updated = await updateNote(noteEditor.note.id, rawText, category);
         setNotes((current) => current.map((note) => note.id === updated.id ? { ...updated, category } : note));
         persistMuseAssignments([updated.id], category);
+        savedNoteId = updated.id;
       } else {
         const created = await createNote(rawText, category);
         setNotes((current) => [{ ...created, category }, ...current]);
         persistMuseAssignments([created.id], category);
         processNote(created.id).catch(() => {});
+        savedNoteId = created.id;
       }
-      setNoteEditor(null); flashSaved();
+      setNoteEditor(null); setActiveNoteId(savedNoteId); flashSaved();
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this note.')); }
     finally { setSaving(false); }
   };
@@ -477,7 +480,7 @@ export default function OcredaHome() {
           : activeProject && activePage ? <ProjectPageWorkspace key={activePage.id} project={activeProject} page={activePage} notes={notes} muses={muses} projects={projects} saving={saving} onBack={() => setActivePageId(null)} onChange={(page) => updateProjectPage(activeProject.id, page)} onAddNote={() => openNewNote()} onOpenNote={openExistingNote} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onDelete={() => removeProjectPage(activeProject.id, activePage.id)} onSaveRetrieval={saveInstantRetrieval} />
           : activeProject ? <ProjectPagesGrid project={activeProject} onBack={() => { setActiveProjectId(null); setActivePageId(null); }} onAddPage={() => createProjectPage(activeProject.id)} onOpenPage={(page) => setActivePageId(page.id)} onEdit={() => setProjectEditor({ project: activeProject, title: activeProject.title, description: activeProject.description })} onDelete={() => removeProject(activeProject.id)} />
           : isEmpty ? <EmptyWorkspace displayName={displayName} userEmail={user?.email ?? ''} onAddNote={() => openNewNote()} onImport={handleImport} importError={importError} progress={importProgress} />
-          : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? 'Instant retrieval' : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? AUTOMATIC_MUSE : activeMuse ?? AUTOMATIC_MUSE, 'domain')} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} />
+          : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? 'Instant retrieval' : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? AUTOMATIC_MUSE : activeMuse ?? AUTOMATIC_MUSE)} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} />
           : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onAddNote={(muse) => openNewNote(muse ?? AUTOMATIC_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />
           : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
@@ -562,7 +565,7 @@ function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, use
       <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-28 pt-10 sm:px-10 lg:px-16">
         {pinnedMuses.length > 0 && <section className="mx-auto mb-14 w-full max-w-[1450px]" aria-label="Pinned Domains">
           <h2 className="mb-6 text-sm font-normal text-[#8d8d92]">Pinned Domains</h2>
-          <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {pinnedMuses.map((muse) => <MuseHomeCard key={muse.title} muse={muse} notes={notesByMuse.get(muse.title) ?? []} pinned onClick={() => onOpenMuse(muse.title)} onTogglePin={() => onTogglePin(muse.title)} />)}
           </div>
         </section>}
@@ -571,7 +574,7 @@ function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, use
             <h2 className="text-sm font-normal text-[#8d8d92]">Domains</h2>
             <button type="button" onClick={onAddMuse} className="text-sm text-[#477bea] hover:text-[#315fc5]">New Domain</button>
           </div>
-          <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {unpinnedMuses.map((muse) => <MuseHomeCard key={muse.title} muse={muse} notes={notesByMuse.get(muse.title) ?? []} pinned={false} onClick={() => onOpenMuse(muse.title)} onTogglePin={() => onTogglePin(muse.title)} />)}
             <button type="button" onClick={onAddMuse} aria-label="Add a Domain" title="Add a Domain" className="flex h-[286px] items-center justify-center rounded-md border border-dashed border-[#dfe3ec] text-[#477bea] transition hover:border-[#8fb1ff] hover:bg-[#f8f9fc]"><FolderPlus className="h-9 w-9 stroke-[1.6]" /></button>
           </div>
@@ -757,13 +760,13 @@ function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onAddNot
 
   const firstSelectedMuse = Array.from(selectedMuses)[0];
   const resetLibrary = () => { setSelectedMuses(new Set()); setQuery(''); setSearchOpen(false); setDate(''); setSort('newest'); setSortOpen(false); };
-  const toggleLibraryMuse = (title: string) => setSelectedMuses((current) => current.size === 1 && current.has(title) ? new Set() : new Set([title]));
+  const toggleLibraryMuse = (title: string) => setSelectedMuses((current) => { const next = new Set(current); if (next.has(title)) next.delete(title); else next.add(title); return next; });
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-white">
       <header className="relative z-20 flex h-[112px] shrink-0 items-end gap-3 overflow-x-auto bg-[#bdbdbd] px-5 pb-4 pt-10 lg:px-7">
         <button type="button" onClick={resetLibrary} className={`h-9 min-w-[96px] shrink-0 rounded-md px-7 text-sm shadow-[0_3px_7px_rgba(0,0,0,0.18)] transition-colors ${selectedMuses.size === 0 ? 'bg-[#202020] text-white' : 'bg-white text-[#222] hover:bg-[#f7f7f7]'}`}>All</button>
-        {muses.slice(0, 5).map((muse) => <button key={muse.title} type="button" onClick={() => toggleLibraryMuse(muse.title)} aria-pressed={selectedMuses.size === 1 && selectedMuses.has(muse.title)} className={`h-9 min-w-[174px] shrink-0 rounded-md px-5 text-sm shadow-[0_3px_7px_rgba(0,0,0,0.16)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${selectedMuses.size === 1 && selectedMuses.has(muse.title) ? 'bg-[#202020] text-white' : 'bg-[#fbfbfd] text-[#ababaf] hover:bg-white hover:text-[#222]'}`}>{muse.title}</button>)}
+        {muses.slice(0, 5).map((muse) => <button key={muse.title} type="button" onClick={() => toggleLibraryMuse(muse.title)} aria-pressed={selectedMuses.has(muse.title)} className={`h-9 min-w-[174px] shrink-0 rounded-md px-5 text-sm shadow-[0_3px_7px_rgba(0,0,0,0.16)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${selectedMuses.has(muse.title) ? 'bg-[#202020] text-white' : 'bg-[#fbfbfd] text-[#ababaf] hover:bg-white hover:text-[#222]'}`}>{muse.title}</button>)}
         <span aria-hidden="true" className="mx-1 h-8 w-px shrink-0 bg-white/65" />
         <button type="button" onClick={() => setMusesOpen(true)} className="ml-auto h-9 min-w-[148px] shrink-0 rounded-md bg-white px-7 text-sm text-[#222] shadow-[0_3px_7px_rgba(0,0,0,0.16)] hover:bg-[#f8f8f8]">See all</button>
         <button type="button" onClick={onAddMuse} className="h-9 min-w-[140px] shrink-0 rounded-md border border-white/90 bg-transparent px-7 text-sm text-white shadow-sm hover:bg-white/10">New Domain</button>
@@ -772,7 +775,7 @@ function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onAddNot
 
       <div className="flex min-h-0 flex-1 bg-white">
         <aside className="relative z-10 hidden w-[118px] shrink-0 flex-col items-center justify-center border-r border-[#f1f1f2] py-8 text-[#aaa] sm:flex lg:w-[138px]">
-          <button type="button" onClick={() => onAddNote(firstSelectedMuse)} aria-label="Add note" title="Add note" className="flex h-10 w-10 items-center justify-center rounded-md bg-[#477bea] text-white shadow-[0_3px_7px_rgba(0,0,0,0.2)] hover:bg-[#3d6ed7]"><Plus className="h-5 w-5" /></button>
+          <button type="button" onClick={() => onAddNote(selectedMuses.size === 1 ? firstSelectedMuse : undefined)} aria-label="Add note" title="Add note" className="flex h-10 w-10 items-center justify-center rounded-md bg-[#477bea] text-white shadow-[0_3px_7px_rgba(0,0,0,0.2)] hover:bg-[#3d6ed7]"><Plus className="h-5 w-5" /></button>
           <span className="mt-16 text-center text-xs text-[#477bea]">{visibleNotes.length} {visibleNotes.length === 1 ? 'entry' : 'entries'}</span>
           <div className="relative mt-7">
             <button type="button" onClick={() => setSortOpen((open) => !open)} aria-label="Sort notes" title="Sort notes" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><Filter className="h-5 w-5" /></button>
@@ -789,7 +792,7 @@ function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onAddNot
           <div data-testid="note-library-cards" data-layout={query.trim() ? 'search' : layout} className={`mx-auto grid max-w-[1520px] gap-7 pb-20 lg:gap-x-12 lg:gap-y-10 ${query.trim() ? 'grid-cols-1 xl:grid-cols-2' : layout === 'grid' ? 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3' : 'grid-cols-1 lg:grid-cols-2'}`}>
             {visibleNotes.map((note) => <LibraryNoteCard key={note.id} note={note} query={query} layout={query.trim() ? 'search' : layout} onClick={() => onOpenNote(note)} />)}
             {query.trim() && <InstantRetrievalCard onClick={() => setInstantRetrievalOpen(true)} tall />}
-            {!query.trim() && <AddLibraryCard layout={layout} onClick={() => onAddNote(selectedMuses.size > 0 ? firstSelectedMuse : undefined)} />}
+            {!query.trim() && <AddLibraryCard layout={layout} onClick={() => onAddNote(selectedMuses.size === 1 ? firstSelectedMuse : undefined)} />}
           </div>
           {!visibleNotes.length && query.trim() && <p className="pb-20 text-sm text-[#999]">No notes contain “{query.trim()}”.</p>}
         </section>
@@ -914,6 +917,13 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
   const [body, setBody] = useState(initial.body);
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(true);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [retrieval, setRetrieval] = useState<RelevanceSearch | null>(null);
+  const [retrievalLoading, setRetrievalLoading] = useState(false);
+  const [retrievalProgress, setRetrievalProgress] = useState<RelevanceProgress | null>(null);
+  const [retrievalError, setRetrievalError] = useState('');
+  const [retrievalAttempt, setRetrievalAttempt] = useState(0);
   const [searchRequest, setSearchRequest] = useState<KnowledgeSearchRequest | null>(null);
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -936,12 +946,32 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
   const noteIndex = orderedNotes.findIndex((item) => item.id === note.id);
   const previousNote = noteIndex < orderedNotes.length - 1 ? orderedNotes[noteIndex + 1] : null;
   const nextNote = noteIndex > 0 ? orderedNotes[noteIndex - 1] : null;
-  const usedPages = useMemo(() => {
-    const noteTitle = splitNote(note).title.toLowerCase();
-    return projects.flatMap((project) => project.pages.map((page) => ({ project, page }))).filter(({ page }) =>
-      page.sourceNoteIds.includes(note.id) || (noteTitle.length > 4 && `${page.title} ${page.content}`.toLowerCase().includes(noteTitle))
-    ).sort((left, right) => right.page.updatedAt.localeCompare(left.page.updatedAt)).slice(0, 6);
-  }, [note, projects]);
+  const noteTooShortForRetrieval = note.raw_text.trim().length < MIN_RELEVANCE_DRAFT_CHARS;
+  const hasOtherNotes = allNotes.some((item) => item.id !== note.id);
+
+  useEffect(() => {
+    let active = true;
+    setRetrieval(null); setRetrievalError(''); setRetrievalProgress(null); setSelectedNoteId(null);
+    if (noteTooShortForRetrieval || !hasOtherNotes) { setRetrievalLoading(false); return; }
+    setRetrievalLoading(true);
+    findRelevantNotes(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); })
+      .then((response) => { if (active) setRetrieval(response); })
+      .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
+      .finally(() => { if (active) setRetrievalLoading(false); });
+    return () => { active = false; };
+  }, [hasOtherNotes, note.id, note.raw_text, noteTooShortForRetrieval, retrievalAttempt]);
+
+  const surfacedNotes = useMemo(() => {
+    const notesById = new Map(allNotes.map((item) => [item.id, item]));
+    return (retrieval?.results ?? []).map((result) => notesById.get(result.note_id)).filter((item): item is Note => item !== undefined && item.id !== note.id).slice(0, 8);
+  }, [allNotes, note.id, retrieval]);
+
+  useEffect(() => {
+    setSelectedNoteId((current) => surfacedNotes.some((item) => item.id === current) ? current : surfacedNotes[0]?.id ?? null);
+  }, [surfacedNotes]);
+
+  const selectedNote = surfacedNotes.find((item) => item.id === selectedNoteId) ?? surfacedNotes[0] ?? null;
+  const selectedContent = selectedNote ? splitNote(selectedNote) : null;
 
   const leaveWorkspace = async (next?: Note | null) => {
     if (rawText && rawText !== note.raw_text.trim()) {
@@ -972,41 +1002,46 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
   const openMuse = () => setSearchRequest({ query: muse, filter: { kind: 'muse', value: muse, label: muse } });
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#bdbdbd] p-3 sm:p-5">
-      <header className="relative flex h-14 shrink-0 items-center justify-between px-1 text-white sm:px-2">
-        <div className="flex items-center gap-1 sm:gap-2">
-          <button type="button" onClick={onAddNote} aria-label="Add a note" className="flex h-8 w-24 items-center justify-center rounded-md bg-[#477bea] hover:bg-[#3d6ed7]"><Plus className="h-5 w-5" /></button>
-          <button type="button" onClick={() => setInstantRetrievalOpen(true)} aria-label="Open Instant Retrieval" title="Open Instant Retrieval" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-white/10"><ScanSearch className="h-5 w-5" /></button>
-          <button type="button" onClick={() => setSearchRequest({ query: '' })} aria-label="Search notes, pages, and Domains" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-white/10"><Search className="h-5 w-5" /></button>
+    <div className="flex h-full min-h-0 flex-col bg-white p-3 sm:p-5">
+      <header className="relative flex h-14 shrink-0 items-center px-1 sm:px-2">
+        <div className="flex items-center gap-1 text-[#777] sm:gap-2">
+          <button type="button" onClick={() => void leaveWorkspace()} aria-label="Back to notes" title="Back to notes" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><ArrowLeft className="h-5 w-5" /></button>
+          <span className="mx-1 h-7 w-px bg-[#e5e5e5]" />
+          <button type="button" onClick={onAddNote} aria-label="Add a note" title="Add a note" className="flex h-8 w-8 items-center justify-center rounded-md bg-[#477bea] text-white hover:bg-[#3d6ed7]"><Plus className="h-5 w-5" /></button>
+          <button type="button" onClick={() => setInstantRetrievalOpen(true)} aria-label="Open Instant Retrieval" title="Open Instant Retrieval" className="flex h-9 w-9 items-center justify-center rounded-md text-[#477bea] hover:bg-[#edf3ff]"><ScanSearch className="h-5 w-5" /></button>
+          <button type="button" onClick={() => setSearchRequest({ query: '' })} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><Search className="h-5 w-5" /></button>
+          <button type="button" onClick={() => setContextOpen((open) => !open)} aria-label={contextOpen ? 'Hide retrieved notes' : 'Show retrieved notes'} aria-expanded={contextOpen} className="flex h-9 items-center gap-2 rounded-md px-2 text-xs hover:bg-[#f4f4f4]"><PanelRightOpen className={`h-5 w-5 ${contextOpen ? '' : 'rotate-180'}`} /><span className="hidden lg:inline">{contextOpen ? 'Hide retrieval' : 'Show retrieval'}</span></button>
         </div>
-        <div className="flex items-center gap-1 text-xs sm:gap-2">
-          <button type="button" disabled={!previousNote} onClick={() => previousNote && void leaveWorkspace(previousNote)} aria-label="Previous note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-white/10 disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
-          <span className="min-w-[60px] text-center">{formatDate(note.created_at)}</span>
-          <button type="button" disabled={!nextNote} onClick={() => nextNote && void leaveWorkspace(nextNote)} aria-label="Next note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-white/10 disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
-          <button type="button" onClick={() => void leaveWorkspace()} aria-label="Close note view" title="Close note view" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-white/10"><X className="h-6 w-6" /></button>
+        <span className="pointer-events-none absolute left-1/2 hidden max-w-[24vw] -translate-x-1/2 truncate text-sm text-[#aaa] xl:block">{muse}</span>
+        <div className="relative ml-auto flex items-center gap-1 text-[#777]">
+          <button type="button" disabled={!previousNote} onClick={() => previousNote && void leaveWorkspace(previousNote)} aria-label="Previous note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
+          <button type="button" disabled={!nextNote} onClick={() => nextNote && void leaveWorkspace(nextNote)} aria-label="Next note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
+          <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><MoreHorizontal className="h-5 w-5" /></button>
+          {menuOpen && <div className="absolute right-0 top-11 z-30 w-40 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl"><button type="button" onClick={() => { setMenuOpen(false); setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f5f5]">Edit note</button><button type="button" disabled={saving} onClick={() => { setMenuOpen(false); void onDelete(note); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /> Delete note</button></div>}
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 overflow-y-auto rounded-2xl border-[8px] border-white/80 bg-[#f7f7f9] shadow-2xl lg:grid-cols-[minmax(0,1fr)_340px] lg:overflow-hidden">
-        <section className="relative flex min-h-[560px] min-w-0 flex-col overflow-hidden bg-white shadow-[4px_0_14px_rgba(0,0,0,0.14)] lg:min-h-0">
-          <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-28 pt-12 sm:px-16 lg:px-[11%] lg:pt-20">
-            {editing ? <div className="mx-auto max-w-4xl"><input autoFocus maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" className="w-full bg-transparent text-2xl font-semibold outline-none" /><textarea ref={bodyRef} maxLength={4000} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-8 min-h-[560px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="mx-auto max-w-4xl"><button type="button" onClick={() => setEditing(true)} className="block w-full rounded-md px-2 py-1 text-left outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><h1 className="text-2xl font-semibold">{title}</h1></button><button type="button" onClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="mt-8 block w-full rounded-md px-2 py-2 text-left text-base leading-[1.7] outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><span className="whitespace-pre-wrap">{body || note.raw_text || 'Tap to start writing.'}</span></button></article>}
+      <div className={`grid min-h-0 flex-1 overflow-y-auto rounded-xl border border-[#d8d8d8] bg-[#f7f7f9] shadow-[0_2px_9px_rgba(0,0,0,0.13)] xl:overflow-hidden ${contextOpen ? 'xl:grid-cols-[minmax(0,1.05fr)_minmax(300px,.9fr)_300px]' : 'grid-cols-1'}`}>
+        <section className="relative flex min-h-[520px] min-w-0 flex-col overflow-hidden bg-white xl:min-h-0">
+          <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-24 pt-12 sm:px-12 xl:px-[8%]">
+            {editing ? <div className="mx-auto max-w-3xl"><input autoFocus maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" className="w-full bg-transparent text-2xl font-semibold outline-none" /><textarea ref={bodyRef} maxLength={4000} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="mx-auto max-w-3xl"><button type="button" onClick={() => setEditing(true)} className="block w-full rounded-md px-2 py-1 text-left outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><h1 className="text-2xl font-semibold">{title}</h1></button><div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]"><button type="button" onClick={openMuse} className="hover:text-[#477bea]">Note in {muse}</button><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div><button type="button" onClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="mt-9 block w-full rounded-md px-2 py-2 text-left text-base leading-[1.7] outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><span className="whitespace-pre-wrap">{body || note.raw_text || 'Tap to start writing.'}</span></button></article>}
           </div>
           <ReadingFormatBar onFormat={applyReadingFormat} onDone={() => setEditing(false)} editing={editing} />
           <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
         </section>
 
-        <aside className="relative min-h-[420px] overflow-y-auto bg-[#f7f7f9] px-6 pb-8 pt-16 lg:min-h-0">
-          <div className="absolute right-4 top-3">
-            <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-white"><MoreHorizontal className="h-5 w-5" /></button>
-            {menuOpen && <div className="absolute right-0 top-10 z-10 w-40 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl"><button type="button" onClick={() => { setMenuOpen(false); setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f5f5]">Edit note</button><button type="button" disabled={saving} onClick={() => { setMenuOpen(false); void onDelete(note); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /> Delete note</button></div>}
-          </div>
-          <button type="button" onClick={openDate} aria-label={`Search notes from ${fullNoteDate(note.created_at)}`} className="block rounded px-1 py-1 text-left text-sm text-[#777] hover:bg-white hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button>
-          <button type="button" onClick={openMuse} aria-label={`Search notes in ${muse}`} className="mt-5 block rounded px-1 py-1 text-left text-sm hover:bg-white"><span className="font-medium">Domain:</span> <span className="text-[#777]">{muse}</span></button>
-          <div className="my-6 h-px bg-[#d8d8d8]" />
-          <h2 className="text-sm font-normal text-[#477bea]">Used in pages</h2>
-          <div className="mt-5 space-y-5">{usedPages.map(({ project, page }) => <button key={`${project.id}-${page.id}`} type="button" onClick={() => onOpenPage(project, page)} className="block w-full overflow-hidden rounded-lg border border-[#e0e0e0] bg-[#f7f7f9] p-2 text-left shadow-[0_2px_8px_rgba(0,0,0,0.13)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff]"><span className="block min-h-[150px] rounded bg-white p-5"><strong className="block text-base">{page.title}</strong><span className="mt-4 block line-clamp-6 whitespace-pre-wrap text-sm leading-relaxed text-[#777]">{page.content || 'Empty page'}</span></span><span className="mt-2 flex justify-between px-2 text-xs text-[#aaa]"><span>{project.title}</span><span>Page</span></span></button>)}{!usedPages.length && <p className="py-8 text-sm leading-relaxed text-[#999]">This note has not been used on a project page yet.</p>}</div>
-        </aside>
+        {contextOpen && <section className="min-h-[420px] overflow-y-auto border-t border-[#dedede] bg-[#f7f7f9] px-7 pb-12 pt-12 sm:px-12 xl:min-h-0 xl:border-l xl:border-t-0">
+          {retrievalLoading ? <div className="flex h-full items-center justify-center gap-3 text-sm text-[#777]" role="status"><Loader2 className="h-5 w-5 animate-spin text-[#477bea]" /> Finding related notes{retrievalProgress?.agents_total ? ` · ${retrievalProgress.agents_done}/${retrievalProgress.agents_total}` : '…'}</div>
+            : retrievalError ? <div className="flex h-full items-center justify-center text-center" role="alert"><div><h2 className="text-lg font-semibold">Could not retrieve notes</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">{retrievalError}</p><button type="button" onClick={() => setRetrievalAttempt((attempt) => attempt + 1)} className="mt-5 rounded-md bg-[#477bea] px-4 py-2 text-sm text-white hover:bg-[#3d6ed7]">Try again</button></div></div>
+            : selectedContent && selectedNote ? <article className="mx-auto max-w-xl"><h2 className="text-lg font-semibold leading-snug">{selectedContent.title}</h2><p className="mt-7 whitespace-pre-wrap text-sm leading-[1.7] text-[#333]">{selectedContent.body || selectedNote.raw_text}</p><div className="mt-8 border-t border-[#dedede] pt-4 text-xs text-[#999]">Domain: {cleanCategory(selectedNote.category) || 'Instant retrieval'} · {fullNoteDate(selectedNote.created_at)}</div><button type="button" onClick={() => void leaveWorkspace(selectedNote)} className="mt-5 text-sm text-[#477bea] hover:underline">Open note</button></article>
+            : <div className="flex h-full items-center justify-center text-center"><div><h2 className="text-lg font-semibold">{noteTooShortForRetrieval ? 'Keep writing to retrieve notes' : !hasOtherNotes ? 'Your next note could connect here' : 'No related notes yet'}</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">{noteTooShortForRetrieval ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters, then save to find related notes.` : !hasOtherNotes ? 'Once you have another note, Ocreda can look for connections.' : 'No notes matched this one yet.'}</p></div></div>}
+        </section>}
+
+        {contextOpen && <aside className="min-h-[420px] overflow-y-auto border-t border-[#dedede] bg-white p-4 xl:min-h-0 xl:border-l xl:border-t-0">
+          <h2 className="mb-4 text-center text-sm font-normal text-[#999]">Retrieved for this note</h2>
+          <div className="space-y-4">{surfacedNotes.map((item) => { const content = splitNote(item); return <button key={item.id} type="button" onMouseEnter={() => setSelectedNoteId(item.id)} onFocus={() => setSelectedNoteId(item.id)} onClick={() => setSelectedNoteId(item.id)} aria-pressed={selectedNote?.id === item.id} className={`block h-[190px] w-full overflow-hidden rounded-md border bg-[#f7f7f9] p-2 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}><span className="block h-[142px] overflow-hidden rounded bg-white p-4"><span className="float-right text-[11px] text-[#477bea]">note</span><strong className="block max-w-[80%] truncate text-sm">{content.title}</strong><span className="mt-3 block line-clamp-4 text-xs leading-relaxed text-[#777]">{content.body || notePreview(item)}</span></span><span className="mt-2 flex items-center justify-between px-2 text-[11px] text-[#aaa]"><span className="truncate">Domain: {cleanCategory(item.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span></button>; })}{!surfacedNotes.length && !retrievalLoading && !retrievalError && !noteTooShortForRetrieval && hasOtherNotes && <p className="px-4 py-12 text-center text-sm leading-relaxed text-[#999]">No related notes found yet.</p>}</div>
+          {retrieval?.coverage.complete === false && <p className="mt-4 text-center text-xs text-[#999]">Only some notes could be searched. Results may be incomplete.</p>}
+        </aside>}
       </div>
 
       {searchRequest && <KnowledgeSearchOverlay request={searchRequest} notes={allNotes} muses={muses} projects={projects} onClose={() => setSearchRequest(null)} onOpenPage={(project, page) => { setSearchRequest(null); onOpenPage(project, page); }} onOpenNote={(item) => { setSearchRequest(null); onOpenNote(item); }} onInstantRetrieval={() => { setSearchRequest(null); setInstantRetrievalOpen(true); }} />}
@@ -1580,18 +1615,18 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
     <div className={`fixed inset-0 z-50 flex items-center justify-center ${domainCapture ? 'bg-[#e5e5e5] p-3 sm:p-6' : 'bg-black/25 p-4 backdrop-blur-[5px]'}`} role="dialog" aria-modal="true" aria-label={state.note ? 'Edit note' : 'Create note'} onMouseDown={(event) => { if (!domainCapture && event.target === event.currentTarget && !saving) onClose(); }}>
       {!domainCapture && <button type="button" onClick={onClose} aria-label="Close note editor" className="absolute right-5 top-5 z-10 text-white drop-shadow sm:right-8 sm:top-7"><X className="h-7 w-7" /></button>}
       <div className={`flex min-h-[530px] flex-col bg-white ${domainCapture ? 'h-full w-full overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.12)]' : 'h-[min(78vh,780px)] w-[min(88vw,1340px)] overflow-visible rounded-[20px] border-[9px] border-[#f5f5f7] shadow-2xl'}`}>
-        {domainCapture && <header className="relative flex h-16 shrink-0 items-center border-b border-[#eeeeef] px-4 text-[#aaa] sm:px-6">
+        {domainCapture && <header className="relative z-30 flex h-16 shrink-0 items-center border-b border-[#eeeeef] bg-white px-4 text-[#aaa] sm:px-6">
           <div className="flex items-center gap-2">
-            <button type="button" onClick={onClose} aria-label="Return to Domain" title="Return to Domain" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#555]"><ArrowLeft className="h-5 w-5" /></button>
+            <button type="button" onClick={onClose} aria-label="Close note editor" title="Close note editor" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#555]"><ArrowLeft className="h-5 w-5" /></button>
             <span aria-hidden="true" className="flex h-8 w-8 items-center justify-center rounded-md bg-[#477bea] text-white"><Plus className="h-4 w-4" /></span>
             <span aria-hidden="true" className="flex h-9 w-9 items-center justify-center"><Upload className="h-5 w-5" /></span>
             <button type="button" onClick={() => void runRelevanceSearch()} disabled={draftTooShort || relevanceLoading} aria-label="Find relevant notes" title={draftTooShort ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters to search your notes` : 'Find relevant notes'} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#477bea] disabled:opacity-35">{relevanceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-5 w-5" />}</button>
           </div>
-          <div ref={museMenuRef} className="absolute left-1/2 -translate-x-1/2">
-            <button type="button" onClick={() => setMuseOpen((value) => !value)} className="flex items-center text-xs text-[#555]"><span>Domain:&nbsp;</span><span className="border-b border-[#999]">{museLabel}</span><ChevronDown className="ml-1 h-3.5 w-3.5" /></button>
-            {museOpen && <div className="absolute left-1/2 top-8 z-[60] w-[285px] -translate-x-1/2 overflow-hidden rounded-lg border border-[#ddd] bg-white py-2 text-left shadow-xl">
-              {muses.map((muse) => <button key={muse.title} type="button" onClick={() => { onChange({ ...state, muse: muse.title }); setMuseOpen(false); }} className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-[#f6f6f6]">{muse.title} {state.muse === muse.title && <Check className="h-4 w-4 text-[#477bea]" />}</button>)}
-              {!muses.length && <p className="px-5 py-3 text-sm text-[#999]">No Domains available.</p>}
+          <div ref={museMenuRef} className="absolute left-1/2 z-40 -translate-x-1/2">
+            <button type="button" onClick={() => setMuseOpen((value) => !value)} aria-expanded={museOpen} className="flex items-center rounded px-2 py-1 text-xs text-[#555] hover:bg-[#f5f5f6]"><span>Domain:&nbsp;</span><span className="border-b border-[#999]">{museLabel}</span><ChevronDown className="ml-1 h-3.5 w-3.5" /></button>
+            {museOpen && <div className="absolute left-1/2 top-8 z-50 w-[285px] -translate-x-1/2 overflow-hidden rounded-lg border border-[#ddd] bg-white py-2 text-left text-[#555] shadow-xl">
+              <button type="button" onClick={() => { onChange({ ...state, muse: AUTOMATIC_MUSE }); setMuseOpen(false); }} className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-[#f6f6f6] focus:bg-[#f6f6f6] focus:outline-none">Automatically organize {state.muse === AUTOMATIC_MUSE && <Check className="h-4 w-4 text-[#477bea]" />}</button>
+              {muses.map((muse) => <button key={muse.title} type="button" onClick={() => { onChange({ ...state, muse: muse.title }); setMuseOpen(false); }} className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-[#f6f6f6] focus:bg-[#f6f6f6] focus:outline-none">{muse.title} {state.muse === muse.title && <Check className="h-4 w-4 text-[#477bea]" />}</button>)}
             </div>}
           </div>
           <div className="ml-auto flex items-center gap-1 text-xs">
