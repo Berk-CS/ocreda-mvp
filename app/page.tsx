@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Plus, RefreshCw, Rows3, ScanSearch, Search, Trash2, Upload, X } from 'lucide-react';
+import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Pin, Plus, RefreshCw, Rows3, ScanSearch, Search, Trash2, Upload, X } from 'lucide-react';
 import type { RelevanceProgress } from '@/lib/types';
 import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
 import { useAuth } from '@/lib/auth-context';
@@ -133,6 +133,7 @@ export default function OcredaHome() {
   const { user } = useAuth();
   const [notes, setNotes] = useState<Note[]>([]);
   const [museMeta, setMuseMeta] = useState<MuseMeta[]>([]);
+  const [pinnedMuseTitles, setPinnedMuseTitles] = useState<string[]>([]);
   const [projects, setProjects] = useState<CortexProject[]>([]);
   const [view, setView] = useState<'cortex' | 'muses'>('cortex');
   const [loading, setLoading] = useState(true);
@@ -170,6 +171,7 @@ export default function OcredaHome() {
     const storedMuses = readStoredList<MuseMeta>(museKey).filter((item) => item && typeof item.title === 'string');
     const nextMuses = storedMuses.length ? storedMuses : legacy;
     setMuseMeta(nextMuses);
+    setPinnedMuseTitles([...new Set(readStoredList<string>(`ocreda-pinned-muses:${user.id}`).filter((title): title is string => typeof title === 'string'))].slice(0, 3));
     if (!storedMuses.length && legacy.length) localStorage.setItem(museKey, JSON.stringify(legacy));
 
     const storedProjects = readStoredList<CortexProject>(projectKey).filter((item) => item && typeof item.id === 'string' && typeof item.title === 'string').map(normalizeProject);
@@ -202,6 +204,22 @@ export default function OcredaHome() {
     setMuseMeta(next);
     if (user) localStorage.setItem(`ocreda-muses:${user.id}`, JSON.stringify(next));
   }, [user]);
+
+  const persistPinnedMuses = useCallback((next: string[]) => {
+    setPinnedMuseTitles(next);
+    if (user) localStorage.setItem(`ocreda-pinned-muses:${user.id}`, JSON.stringify(next));
+  }, [user]);
+
+  const togglePinnedMuse = (title: string) => {
+    const validPinned = pinnedMuseTitles.filter((pinned) => muses.some((muse) => muse.title.toLowerCase() === pinned.toLowerCase()));
+    const exists = validPinned.some((pinned) => pinned.toLowerCase() === title.toLowerCase());
+    if (!exists && validPinned.length >= 3) {
+      setError('You can pin up to 3 Domains. Unpin one before adding another.');
+      return;
+    }
+    persistPinnedMuses(exists ? validPinned.filter((pinned) => pinned.toLowerCase() !== title.toLowerCase()) : [...validPinned, title]);
+    setError('');
+  };
 
   const persistProjects = useCallback((next: CortexProject[]) => {
     setProjects(next);
@@ -242,7 +260,7 @@ export default function OcredaHome() {
   }, [muses, notes]);
 
   const unsortedNotes = useMemo(() => notes.filter((note) => !cleanCategory(note.category)), [notes]);
-  const isEmpty = !loading && notes.length === 0 && muses.length === 0 && projects.length === 0;
+  const isEmpty = !loading && notes.length === 0 && muses.length === 0;
   const flashSaved = () => { setSavedOpen(true); window.setTimeout(() => setSavedOpen(false), 1350); };
   const closeLibrary = useCallback(() => { setActiveMuse(null); setShowUnsorted(false); setView('cortex'); }, []);
   const openMuse = useCallback((title: string) => {
@@ -366,6 +384,9 @@ export default function OcredaHome() {
       const next = museMeta.filter((item) => item.title.toLowerCase() !== originalKey && item.title.toLowerCase() !== title.toLowerCase());
       next.push({ title, description: museEditor.description.trim(), createdAt: museMeta.find((item) => item.title.toLowerCase() === originalKey)?.createdAt ?? new Date().toISOString() });
       persistMuseMeta(next);
+      if (museEditor.originalTitle && museEditor.originalTitle !== title) {
+        persistPinnedMuses(pinnedMuseTitles.map((pinned) => pinned.toLowerCase() === museEditor.originalTitle?.toLowerCase() ? title : pinned));
+      }
       if (activeMuse === museEditor.originalTitle) setActiveMuse(title);
       setMuseEditor(null); flashSaved();
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this Domain.')); }
@@ -380,7 +401,9 @@ export default function OcredaHome() {
       const updates = new Map(updated.map((note) => [note.id, note]));
       setNotes((current) => current.map((note) => updates.get(note.id) ?? note));
       persistMuseAssignments((notesByMuse.get(title) ?? []).map((note) => note.id), null);
-      persistMuseMeta(museMeta.filter((item) => item.title.toLowerCase() !== title.toLowerCase())); setActiveMuse(null);
+      persistMuseMeta(museMeta.filter((item) => item.title.toLowerCase() !== title.toLowerCase()));
+      persistPinnedMuses(pinnedMuseTitles.filter((pinned) => pinned.toLowerCase() !== title.toLowerCase()));
+      setActiveMuse(null);
     } catch (err) { setError(safeErrorMessage(err, 'Unable to delete this Domain.')); }
     finally { setSaving(false); }
   };
@@ -455,8 +478,8 @@ export default function OcredaHome() {
           : activeProject ? <ProjectPagesGrid project={activeProject} onBack={() => { setActiveProjectId(null); setActivePageId(null); }} onAddPage={() => createProjectPage(activeProject.id)} onOpenPage={(page) => setActivePageId(page.id)} onEdit={() => setProjectEditor({ project: activeProject, title: activeProject.title, description: activeProject.description })} onDelete={() => removeProject(activeProject.id)} />
           : isEmpty ? <EmptyWorkspace displayName={displayName} userEmail={user?.email ?? ''} onAddNote={() => openNewNote()} onImport={handleImport} importError={importError} progress={importProgress} />
           : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? 'Instant retrieval' : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? AUTOMATIC_MUSE : activeMuse ?? AUTOMATIC_MUSE, 'domain')} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} />
-          : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onOpenMuse={openMuse} onAddNote={(muse) => openNewNote(muse ?? AUTOMATIC_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />
-          : <CortexHome projects={projects} muses={muses} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onAddProject={() => setProjectEditor({ project: null, title: '', description: '' })} onOpenProject={(project) => { setActiveProjectId(project.id); setActivePageId(null); }} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
+          : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onAddNote={(muse) => openNewNote(muse ?? AUTOMATIC_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />
+          : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
       {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
@@ -513,14 +536,16 @@ function EmptyWorkspace({ displayName, userEmail, onAddNote, onImport, importErr
   );
 }
 
-function CortexHome({ projects, muses, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onAddMuse, onAddNote, onAddProject, onOpenProject, onOpenPage, onOpenNote, onSaveRetrieval }: {
-  projects: CortexProject[]; muses: MuseMeta[]; notes: Note[]; notesByMuse: Map<string, Note[]>; userEmail: string; busy: boolean;
-  onOpenMuses: () => void; onOpenMuse: (title: string) => void; onAddMuse: () => void; onAddNote: () => void; onAddProject: () => void;
-  onOpenProject: (project: CortexProject) => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void; onOpenNote: (note: Note) => void;
+function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onTogglePin, onAddMuse, onAddNote, onOpenPage, onOpenNote, onSaveRetrieval }: {
+  projects: CortexProject[]; muses: MuseMeta[]; pinnedMuseTitles: string[]; notes: Note[]; notesByMuse: Map<string, Note[]>; userEmail: string; busy: boolean;
+  onOpenMuses: () => void; onOpenMuse: (title: string) => void; onTogglePin: (title: string) => void; onAddMuse: () => void; onAddNote: () => void;
+  onOpenPage: (project: CortexProject, page: ProjectPage) => void; onOpenNote: (note: Note) => void;
   onSaveRetrieval: (queryText: string, resultNotes: Note[], projectId: string, newProjectTitle?: string) => Promise<void>;
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
+  const pinnedMuses = pinnedMuseTitles.map((title) => muses.find((muse) => muse.title.toLowerCase() === title.toLowerCase())).filter((muse): muse is MuseMeta => Boolean(muse));
+  const unpinnedMuses = muses.filter((muse) => !pinnedMuseTitles.some((title) => title.toLowerCase() === muse.title.toLowerCase()));
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-white">
@@ -528,29 +553,27 @@ function CortexHome({ projects, muses, notes, notesByMuse, userEmail, busy, onOp
         <div className="flex items-center gap-2 text-[#222]">
           <button type="button" onClick={onAddNote} className="flex h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-[#f5f5f6]" title="Add a note"><span className="flex h-7 w-16 items-center justify-center rounded-md bg-[#477bea] text-white"><Plus className="h-4 w-4" /></span><span className="hidden sm:inline">Add a note</span></button>
           <button type="button" onClick={() => setSearchOpen(true)} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Search className="h-5 w-5" /></button>
+          <button type="button" onClick={() => setInstantRetrievalOpen(true)} aria-label="Open Instant Retrieval" title="Instant Retrieval" className="flex h-10 w-10 items-center justify-center rounded-md text-[#477bea] hover:bg-[#edf3ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><ScanSearch className="h-5 w-5" /></button>
         </div>
         <h1 className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-sm font-normal text-[#b2b2b2] sm:text-base">Your knowledge</h1>
         <div className="ml-auto"><BetaAndAvatar email={userEmail} feedback /></div>
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-28 pt-10 sm:px-10 lg:px-16">
+        {pinnedMuses.length > 0 && <section className="mx-auto mb-14 w-full max-w-[1450px]" aria-label="Pinned Domains">
+          <h2 className="mb-6 text-sm font-normal text-[#8d8d92]">Pinned Domains</h2>
+          <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {pinnedMuses.map((muse) => <MuseHomeCard key={muse.title} muse={muse} notes={notesByMuse.get(muse.title) ?? []} pinned onClick={() => onOpenMuse(muse.title)} onTogglePin={() => onTogglePin(muse.title)} />)}
+          </div>
+        </section>}
         <section className="mx-auto w-full max-w-[1450px]">
           <div className="mb-6 flex items-center justify-between">
             <h2 className="text-sm font-normal text-[#8d8d92]">Domains</h2>
             <button type="button" onClick={onAddMuse} className="text-sm text-[#477bea] hover:text-[#315fc5]">New Domain</button>
           </div>
           <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {muses.map((muse) => <MuseHomeCard key={muse.title} muse={muse} notes={notesByMuse.get(muse.title) ?? []} onClick={() => onOpenMuse(muse.title)} />)}
+            {unpinnedMuses.map((muse) => <MuseHomeCard key={muse.title} muse={muse} notes={notesByMuse.get(muse.title) ?? []} pinned={false} onClick={() => onOpenMuse(muse.title)} onTogglePin={() => onTogglePin(muse.title)} />)}
             <button type="button" onClick={onAddMuse} aria-label="Add a Domain" title="Add a Domain" className="flex h-[286px] items-center justify-center rounded-md border border-dashed border-[#dfe3ec] text-[#477bea] transition hover:border-[#8fb1ff] hover:bg-[#f8f9fc]"><FolderPlus className="h-9 w-9 stroke-[1.6]" /></button>
-          </div>
-        </section>
-
-        <section className="mx-auto mt-14 w-full max-w-[1450px]">
-          <div className="mb-6 flex items-center justify-between"><h2 className="text-sm font-normal text-[#8d8d92]">Projects</h2><button type="button" onClick={onAddProject} className="text-sm text-[#477bea] hover:text-[#315fc5]">New project</button></div>
-          <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          <InstantRetrievalCard onClick={() => setInstantRetrievalOpen(true)} />
-          {projects.map((project) => <CortexProjectCard key={project.id} project={project} onClick={() => onOpenProject(project)} />)}
-          <button type="button" onClick={onAddProject} aria-label="Add a project" title="Add a project" className="flex h-[286px] items-center justify-center rounded-md text-[#477bea] transition hover:bg-[#f8f9fc]"><FolderPlus className="h-9 w-9 stroke-[1.6]" /></button>
           </div>
         </section>
       </main>
@@ -566,23 +589,16 @@ function CortexHome({ projects, muses, notes, notesByMuse, userEmail, busy, onOp
   );
 }
 
-function MuseHomeCard({ muse, notes, onClick }: { muse: MuseMeta; notes: Note[]; onClick: () => void }) {
+function MuseHomeCard({ muse, notes, pinned, onClick, onTogglePin }: { muse: MuseMeta; notes: Note[]; pinned: boolean; onClick: () => void; onTogglePin: () => void }) {
   const preview = muse.description.trim() || notes.slice(0, 3).map((note) => splitNote(note).title).join('\n') || 'Add notes to build this Domain.';
   return (
-    <button type="button" onClick={onClick} aria-label={`Open ${muse.title} Domain`} className="relative h-[286px] overflow-hidden rounded-md border border-[#e0e0e0] bg-[#f7f7f9] p-2 text-left shadow-[0_2px_9px_rgba(0,0,0,0.14)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
-      <span className="block h-[230px] overflow-hidden rounded bg-white px-5 py-5 text-sm leading-relaxed text-[#777]"><span className="line-clamp-[10] whitespace-pre-line">{preview}</span></span>
-      <span className="absolute inset-x-4 bottom-3 flex items-center justify-between gap-4 text-xs"><strong className="truncate font-semibold text-[#666]">{muse.title}</strong><span className="shrink-0 text-[#b5b5b5]">{notes.length} {notes.length === 1 ? 'entry' : 'entries'}</span></span>
-    </button>
-  );
-}
-
-function CortexProjectCard({ project, onClick }: { project: CortexProject; onClick: () => void }) {
-  const pages = project.pages.length;
-  return (
-    <button type="button" onClick={onClick} className="relative h-[286px] overflow-hidden rounded-md border border-[#e0e0e0] bg-[#f7f7f9] p-2 text-left shadow-[0_2px_9px_rgba(0,0,0,0.14)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff] hover:shadow-lg">
-      <span className="block h-[230px] overflow-hidden rounded bg-white px-5 py-5 text-sm leading-relaxed text-[#777]"><span className="line-clamp-[10]">{project.description || project.content || 'Start writing freely in this project.'}</span></span>
-      <span className="absolute inset-x-4 bottom-3 flex items-center justify-between gap-4 text-xs"><strong className="truncate font-semibold text-[#666]">{project.title}</strong><span className="shrink-0 text-[#b5b5b5]">{pages} {pages === 1 ? 'page' : 'pages'}</span></span>
-    </button>
+    <div className="relative h-[286px]">
+      <button type="button" onClick={onClick} aria-label={`Open ${muse.title} Domain`} className="relative flex h-full w-full flex-col overflow-hidden rounded-md border border-[#e0e0e0] bg-[#f7f7f9] p-2 text-left shadow-[0_2px_9px_rgba(0,0,0,0.14)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
+        <span className="block min-h-0 flex-1 overflow-hidden rounded bg-white px-5 py-5 text-sm leading-relaxed text-[#777]"><span className="line-clamp-[9] whitespace-pre-line">{preview}</span></span>
+        <span className="flex h-10 w-full shrink-0 items-center justify-between gap-3 px-3 pr-11 text-xs"><strong className="min-w-0 truncate font-semibold text-[#666]">{muse.title}</strong><span className="shrink-0 text-[#999]">{notes.length} {notes.length === 1 ? 'entry' : 'entries'}</span></span>
+      </button>
+      <button type="button" onClick={onTogglePin} aria-label={`${pinned ? 'Unpin' : 'Pin'} ${muse.title} Domain`} aria-pressed={pinned} title={pinned ? 'Unpin Domain' : 'Pin Domain'} className={`absolute bottom-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${pinned ? 'text-[#477bea]' : 'text-[#aaa] hover:bg-white hover:text-[#477bea]'}`}><Pin className={`h-4 w-4 ${pinned ? 'fill-current' : ''}`} /></button>
+    </div>
   );
 }
 
@@ -698,9 +714,9 @@ function ProjectPageWorkspace({ project, page, notes, muses, projects, saving, o
 type LibrarySort = 'newest' | 'oldest' | 'random' | 'date';
 type LibraryLayout = 'grid' | 'large';
 
-function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onOpenMuse, onAddNote, onAddMuse, onEditMuse, onDeleteMuse, onOpenNote, onSaveRetrieval }: {
+function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onAddNote, onAddMuse, onEditMuse, onDeleteMuse, onOpenNote, onSaveRetrieval }: {
   muses: MuseMeta[]; projects: CortexProject[]; notes: Note[]; notesByMuse: Map<string, Note[]>; busy: boolean;
-  onClose: () => void; onOpenMuse: (title: string) => void;
+  onClose: () => void;
   onAddNote: (muse?: string) => void; onAddMuse: () => void; onEditMuse: (muse: MuseMeta) => void;
   onDeleteMuse: (title: string) => void; onOpenNote: (note: Note) => void;
   onSaveRetrieval: (queryText: string, resultNotes: Note[], projectId: string, newProjectTitle?: string) => Promise<void>;
@@ -741,12 +757,13 @@ function MuseGrid({ muses, projects, notes, notesByMuse, busy, onClose, onOpenMu
 
   const firstSelectedMuse = Array.from(selectedMuses)[0];
   const resetLibrary = () => { setSelectedMuses(new Set()); setQuery(''); setSearchOpen(false); setDate(''); setSort('newest'); setSortOpen(false); };
+  const toggleLibraryMuse = (title: string) => setSelectedMuses((current) => current.size === 1 && current.has(title) ? new Set() : new Set([title]));
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-white">
       <header className="relative z-20 flex h-[112px] shrink-0 items-end gap-3 overflow-x-auto bg-[#bdbdbd] px-5 pb-4 pt-10 lg:px-7">
         <button type="button" onClick={resetLibrary} className={`h-9 min-w-[96px] shrink-0 rounded-md px-7 text-sm shadow-[0_3px_7px_rgba(0,0,0,0.18)] transition-colors ${selectedMuses.size === 0 ? 'bg-[#202020] text-white' : 'bg-white text-[#222] hover:bg-[#f7f7f7]'}`}>All</button>
-        {muses.slice(0, 5).map((muse) => <button key={muse.title} type="button" onClick={() => onOpenMuse(muse.title)} className="h-9 min-w-[174px] shrink-0 rounded-md bg-[#fbfbfd] px-5 text-sm text-[#ababaf] shadow-[0_3px_7px_rgba(0,0,0,0.16)] transition-colors hover:bg-white hover:text-[#222] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">{muse.title}</button>)}
+        {muses.slice(0, 5).map((muse) => <button key={muse.title} type="button" onClick={() => toggleLibraryMuse(muse.title)} aria-pressed={selectedMuses.size === 1 && selectedMuses.has(muse.title)} className={`h-9 min-w-[174px] shrink-0 rounded-md px-5 text-sm shadow-[0_3px_7px_rgba(0,0,0,0.16)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${selectedMuses.size === 1 && selectedMuses.has(muse.title) ? 'bg-[#202020] text-white' : 'bg-[#fbfbfd] text-[#ababaf] hover:bg-white hover:text-[#222]'}`}>{muse.title}</button>)}
         <span aria-hidden="true" className="mx-1 h-8 w-px shrink-0 bg-white/65" />
         <button type="button" onClick={() => setMusesOpen(true)} className="ml-auto h-9 min-w-[148px] shrink-0 rounded-md bg-white px-7 text-sm text-[#222] shadow-[0_3px_7px_rgba(0,0,0,0.16)] hover:bg-[#f8f8f8]">See all</button>
         <button type="button" onClick={onAddMuse} className="h-9 min-w-[140px] shrink-0 rounded-md border border-white/90 bg-transparent px-7 text-sm text-white shadow-sm hover:bg-white/10">New Domain</button>
