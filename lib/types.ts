@@ -41,7 +41,8 @@ export type NoteRelationType = 'supports' | 'extends' | 'contradicts' | 'questio
 export interface RelevanceResult {
   note_id: string;
   relevance_score: number;
-  relation_type: NoteRelationType;
+  /** Null when semantic retrieval has not classified the relationship. */
+  relation_type: NoteRelationType | null;
   /** One-sentence summary of the note itself. Empty when the model omitted it. */
   gist: string;
   /** How the note bears on the draft. */

@@ -17,7 +17,6 @@ import {
   RelevanceProgress,
   RelevantNotesResponse,
 } from './types';
-import { readRelevanceResponse } from './relevance-stream';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -361,15 +360,14 @@ export async function processNote(noteId: string): Promise<{ relations_count: nu
 /** Below this the draft is too thin for relevance scoring to mean anything. */
 export const MIN_RELEVANCE_DRAFT_CHARS = 40;
 
-/**
- * Ranks the user's saved notes against the note they are currently drafting.
- * Sends the user's own access token rather than the anon key so the function
- * derives the account from a verified session instead of trusting the caller.
- */
+type SemanticCandidate = { note_id: string; similarity: number };
+
+/** Search the user's embedded notes with their own JWT and RLS. */
 export async function findRelevantNotes(
   draftText: string,
   excludeNoteId?: string | null,
-  onProgress?: (progress: RelevanceProgress) => void
+  onProgress?: (progress: RelevanceProgress) => void,
+  notePool: Note[] = [],
 ): Promise<RelevantNotesResponse> {
   if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress);  // DEV-LOCAL-MODE
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
@@ -380,32 +378,64 @@ export async function findRelevantNotes(
 
   let response: Response;
   try {
-    response = await fetch(`${SUPABASE_URL}/functions/v1/find-relevant-notes`, {
+    response = await fetch(`${SUPABASE_URL}/functions/v1/semantic-retrieval`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         apikey: SUPABASE_ANON_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null, stream: true }),
+      body: JSON.stringify({ page_text: draftText }),
     });
   } catch (error) {
-    // A missing Edge Function or failed CORS preflight surfaces as an opaque
-    // "Failed to fetch" TypeError, which is useless to show a user.
+    // Browser CORS/network failures do not expose an HTTP response.
     if (process.env.NODE_ENV !== 'production') console.error('Relevance search request failed:', error);
     throw new Error("We couldn't search your notes right now. Please try again.");
   }
 
+  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
       throw new Error('Your session has expired. Sign in again to search your notes.');
     }
-    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
     const message = typeof payload?.error === 'string' ? payload.error : null;
-    throw new Error(message ?? "We couldn't search your notes right now. Please try again.");
+    if (message?.includes('GEMINI_API_KEY is not configured')) {
+      throw new Error('Semantic search is not configured on the server yet.');
+    }
+    throw new Error("We couldn't search your notes right now. Please try again.");
   }
 
-  return readRelevanceResponse(response, "We couldn't search your notes right now. Please try again.", onProgress);
+  if (payload?.success !== true || !Array.isArray(payload.candidates)) {
+    throw new Error("We couldn't search your notes right now. Please try again.");
+  }
+  // The retrieval endpoint keeps near-duplicates out of generated connection
+  // slots, but a note search must still find another copy of the same text.
+  const candidates = [
+    ...(Array.isArray(payload.near_duplicates) ? payload.near_duplicates as SemanticCandidate[] : []),
+    ...(payload.candidates as SemanticCandidate[]),
+  ];
+  const exactMatches = notePool
+    .filter((note) => note.id !== excludeNoteId && note.raw_text.trim() === draftText.trim())
+    .map((note) => ({ note_id: note.id, similarity: 1 }));
+  const uniqueCandidates = new Map<string, SemanticCandidate>();
+  for (const candidate of [...exactMatches, ...candidates]) {
+    if (!candidate || typeof candidate.note_id !== 'string' ||
+        candidate.note_id === excludeNoteId || !Number.isFinite(candidate.similarity)) continue;
+    if (!uniqueCandidates.has(candidate.note_id)) uniqueCandidates.set(candidate.note_id, candidate);
+  }
+  const results = [...uniqueCandidates.values()]
+    .map((candidate) => ({
+      note_id: candidate.note_id,
+      relevance_score: Math.max(0, Math.min(1, candidate.similarity)),
+      relation_type: null,
+      gist: '',
+      explanation: '',
+    }));
+  return {
+    results,
+    // The endpoint ranks embedded candidates, but does not report corpus coverage.
+    coverage: { notes_searched: 0, notes_total: 0, complete: true },
+  };
 }
 
 /** The single entry point for the "My Brain" input: classifies the text as a note to save or a question to answer. */
