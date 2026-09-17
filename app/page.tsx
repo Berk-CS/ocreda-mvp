@@ -954,12 +954,12 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
     setRetrieval(null); setRetrievalError(''); setRetrievalProgress(null); setSelectedNoteId(null);
     if (noteTooShortForRetrieval || !hasOtherNotes) { setRetrievalLoading(false); return; }
     setRetrievalLoading(true);
-    findRelevantNotes(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); })
+    findRelevantNotes(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); }, allNotes)
       .then((response) => { if (active) setRetrieval(response); })
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
     return () => { active = false; };
-  }, [hasOtherNotes, note.id, note.raw_text, noteTooShortForRetrieval, retrievalAttempt]);
+  }, [allNotes, hasOtherNotes, note.id, note.raw_text, noteTooShortForRetrieval, retrievalAttempt]);
 
   const surfacedNotes = useMemo(() => {
     const notesById = new Map(allNotes.map((item) => [item.id, item]));
@@ -1362,7 +1362,7 @@ function SearchProgress({ notes, progress }: { notes: Note[]; progress: Relevanc
       <div className="flex items-center justify-between gap-2 text-xs">
         <span className="flex items-center gap-2 text-[#555]">
           <Loader2 className="h-3.5 w-3.5 animate-spin text-[#477bea]" />
-          {total ? `${done} of ${total} readers done` : 'Starting readers…'}
+          {total ? `${done} of ${total} readers done` : 'Searching notes…'}
         </span>
         <span className={matches ? 'font-medium text-[#477bea]' : 'text-[#aaa]'}>
           {matches ? `${matches} ${matches === 1 ? 'match' : 'matches'} so far` : 'No matches yet'}
@@ -1446,7 +1446,7 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
               const note = noteById.get(result.note_id);
               if (!note) return null;
               const content = splitNote(note);
-              const badge = RELATION_BADGES[result.relation_type];
+              const badge = result.relation_type ? RELATION_BADGES[result.relation_type] : null;
               const expanded = expandedId === result.note_id;
               const flipped = Boolean(flippedById[result.note_id]);
               // splitNote treats the first line as a title. For a note written
@@ -1478,14 +1478,14 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
                       flipped={flipped}
                       onFlip={() => setFlippedById((current) => ({ ...current, [result.note_id]: !flipped }))}
                     />
-                  ) : (
+                  ) : result.explanation ? (
                     <div className="mt-2.5 rounded-md bg-[#f4f7ff] px-2.5 py-2">
                       <p className="text-[9px] font-semibold uppercase tracking-[0.09em] text-[#8ba0d8]">Why it’s relevant</p>
                       <p className="mt-1 text-[11px] leading-relaxed text-[#5d6b85]">{result.explanation}</p>
                     </div>
-                  )}
+                  ) : null}
                   <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#aaa]">
-                    <span>{Math.round(result.relevance_score * 100)}% match</span>
+                    <span>{Math.round(result.relevance_score * 100)}% {result.explanation ? 'match' : 'similarity'}</span>
                     <span>{formatDate(note.created_at)}</span>
                   </div>
                 </div>
@@ -1567,7 +1567,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
 
     setRelevanceProgress(null); setRelevanceLoading(true);
     try {
-      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress);
+      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, notes);
       relevanceCache.current.set(draftText, response);
       setRelevance(response); setSearchedDraft(draftText);
     } catch (err) {
