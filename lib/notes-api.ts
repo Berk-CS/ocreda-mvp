@@ -361,6 +361,72 @@ export async function processNote(noteId: string): Promise<{ relations_count: nu
 export const MIN_RELEVANCE_DRAFT_CHARS = 40;
 
 type SemanticCandidate = { note_id: string; similarity: number };
+type EmbeddingOutcome = { status?: string; embedding_status?: string };
+
+const EMBEDDING_BATCH_SIZE = 20;
+const EMBEDDING_BATCH_CONCURRENCY = 2;
+const EMBEDDING_QUERY_PAGE_SIZE = 1000;
+// Candidate retrieval stays wide; the user-facing note list should not display
+// every positive cosine score as though it were a meaningful match.
+const MIN_VISIBLE_NOTE_SIMILARITY = 0.68;
+const MAX_VISIBLE_SCORE_GAP = 0.10;
+const MAX_VISIBLE_RELATED_NOTES = 8;
+
+/** Finish pending note embeddings before ranking them, including older notes. */
+async function prepareNotesForSemanticSearch(accessToken: string): Promise<number> {
+  const pendingIds: string[] = [];
+  for (let offset = 0; ; offset += EMBEDDING_QUERY_PAGE_SIZE) {
+    const { data, error } = await supabase.from('notes')
+      .select('id')
+      .neq('embedding_status', 'ready')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + EMBEDDING_QUERY_PAGE_SIZE - 1);
+    if (error) throw new Error('Could not check which notes are ready for semantic search.');
+    pendingIds.push(...(data ?? []).map((note) => note.id));
+    if ((data ?? []).length < EMBEDDING_QUERY_PAGE_SIZE) break;
+  }
+
+  const batches: string[][] = [];
+  for (let start = 0; start < pendingIds.length; start += EMBEDDING_BATCH_SIZE) {
+    batches.push(pendingIds.slice(start, start + EMBEDDING_BATCH_SIZE));
+  }
+  let nextBatch = 0;
+  let unprepared = 0;
+  const processBatches = async () => {
+    while (nextBatch < batches.length) {
+      const noteIds = batches[nextBatch++];
+      let response: Response;
+      try {
+        response = await fetch(`${SUPABASE_URL}/functions/v1/embed-notes`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            apikey: SUPABASE_ANON_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ note_ids: noteIds, retry_failed: true, retry_stale_processing: true }),
+        });
+      } catch {
+        throw new Error('Could not prepare your notes for semantic search. Please try again.');
+      }
+      const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+      if (!response.ok || payload?.success !== true || !Array.isArray(payload.results)) {
+        if (response.status === 401 || response.status === 403) {
+          throw new Error('Your session has expired. Sign in again to search your notes.');
+        }
+        if (typeof payload?.error === 'string' && payload.error.includes('GEMINI_API_KEY is not configured')) {
+          throw new Error('Semantic search is not configured on the server yet.');
+        }
+        throw new Error('Could not prepare your notes for semantic search. Please try again.');
+      }
+      unprepared += (payload.results as EmbeddingOutcome[]).filter((result) =>
+        result.status !== 'ready' && !(result.status === 'skipped' && result.embedding_status === 'ready')
+      ).length;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(EMBEDDING_BATCH_CONCURRENCY, batches.length) }, processBatches));
+  return unprepared;
+}
 
 /** Search the user's embedded notes with their own JWT and RLS. */
 export async function findRelevantNotes(
@@ -375,6 +441,8 @@ export async function findRelevantNotes(
   if (sessionError || !accessToken) {
     throw new Error('Your session has expired. Sign in again to search your notes.');
   }
+
+  const unpreparedCount = await prepareNotesForSemanticSearch(accessToken);
 
   let response: Response;
   try {
@@ -410,9 +478,14 @@ export async function findRelevantNotes(
   }
   // The retrieval endpoint keeps near-duplicates out of generated connection
   // slots, but a note search must still find another copy of the same text.
+  const nearDuplicates = Array.isArray(payload.near_duplicates)
+    ? payload.near_duplicates as SemanticCandidate[] : [];
+  const rankedCandidates = payload.candidates as SemanticCandidate[];
+  const strongestScore = Math.max(0, ...rankedCandidates.map((candidate) => Number(candidate.similarity) || 0));
+  const visibleFloor = Math.max(MIN_VISIBLE_NOTE_SIMILARITY, strongestScore - MAX_VISIBLE_SCORE_GAP);
   const candidates = [
-    ...(Array.isArray(payload.near_duplicates) ? payload.near_duplicates as SemanticCandidate[] : []),
-    ...(payload.candidates as SemanticCandidate[]),
+    ...nearDuplicates,
+    ...rankedCandidates.filter((candidate) => candidate.similarity >= visibleFloor),
   ];
   const exactMatches = notePool
     .filter((note) => note.id !== excludeNoteId && note.raw_text.trim() === draftText.trim())
@@ -424,6 +497,8 @@ export async function findRelevantNotes(
     if (!uniqueCandidates.has(candidate.note_id)) uniqueCandidates.set(candidate.note_id, candidate);
   }
   const results = [...uniqueCandidates.values()]
+    .sort((left, right) => right.similarity - left.similarity)
+    .slice(0, MAX_VISIBLE_RELATED_NOTES)
     .map((candidate) => ({
       note_id: candidate.note_id,
       relevance_score: Math.max(0, Math.min(1, candidate.similarity)),
@@ -431,10 +506,16 @@ export async function findRelevantNotes(
       gist: '',
       explanation: '',
     }));
+  if (results.length === 0 && unpreparedCount > 0) {
+    throw new Error('Some notes are not searchable yet. Please try again.');
+  }
   return {
     results,
-    // The endpoint ranks embedded candidates, but does not report corpus coverage.
-    coverage: { notes_searched: 0, notes_total: 0, complete: true },
+    coverage: {
+      notes_searched: Math.max(0, notePool.length - unpreparedCount),
+      notes_total: notePool.length,
+      complete: unpreparedCount === 0,
+    },
   };
 }
 
