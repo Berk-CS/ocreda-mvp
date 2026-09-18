@@ -53,9 +53,11 @@ function fileKey(file: File): string {
 export default function NoteImporter({
   onImport,
   importError,
+  centerActions = false,
 }: {
   onImport: (notes: ImportNoteDraft[]) => Promise<void>;
   importError?: string;
+  centerActions?: boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFiles, setSelectedFiles] = useState<SelectedNoteFile[]>([]);
@@ -256,7 +258,7 @@ export default function NoteImporter({
         </div>
       </div>
 
-      <div className="mt-6 flex items-center gap-2 pl-5">
+      <div className={`mt-6 flex items-center gap-2 ${centerActions ? 'justify-center' : 'pl-5'}`}>
         <button
           type="button"
           onClick={() => void importSelectedFiles()}
