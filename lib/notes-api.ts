@@ -17,6 +17,7 @@ import {
   RelevanceProgress,
   RelevantNotesResponse,
 } from './types';
+import { readRelevanceResponse } from './relevance-stream';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -428,13 +429,19 @@ async function prepareNotesForSemanticSearch(accessToken: string): Promise<numbe
   return unprepared;
 }
 
-/** Search the user's embedded notes with their own JWT and RLS. */
-export async function findRelevantNotes(
+/**
+ * Embedding search: ranks notes by cosine similarity with their own JWT and RLS.
+ * Cheap and sub-second, so this is what runs on its own when a note is opened.
+ * It returns similarity only; nothing here classifies the relationship or
+ * explains it. Use findRelevantNotes for that.
+ */
+export async function findSimilarNotes(
   draftText: string,
   excludeNoteId?: string | null,
   onProgress?: (progress: RelevanceProgress) => void,
   notePool: Note[] = [],
 ): Promise<RelevantNotesResponse> {
+  // Local mode has no embedding stand-in, so it falls back to the AI readers.
   if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress);  // DEV-LOCAL-MODE
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
@@ -517,6 +524,57 @@ export async function findRelevantNotes(
       complete: unpreparedCount === 0,
     },
   };
+}
+
+/**
+ * AI reader search: every note is read against the draft by a model that scores
+ * the strength of the connection, names the relationship, and explains it. Slower
+ * and far more expensive than findSimilarNotes, so this runs only when the user
+ * asks for it.
+ *
+ * Sends the user's own access token rather than the anon key so the function
+ * derives the account from a verified session instead of trusting the caller.
+ */
+export async function findRelevantNotes(
+  draftText: string,
+  excludeNoteId?: string | null,
+  onProgress?: (progress: RelevanceProgress) => void
+): Promise<RelevantNotesResponse> {
+  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress);  // DEV-LOCAL-MODE
+  const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  if (sessionError || !accessToken) {
+    throw new Error('Your session has expired. Sign in again to search your notes.');
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${SUPABASE_URL}/functions/v1/find-relevant-notes`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        apikey: SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null, stream: true }),
+    });
+  } catch (error) {
+    // A missing Edge Function or failed CORS preflight surfaces as an opaque
+    // "Failed to fetch" TypeError, which is useless to show a user.
+    if (process.env.NODE_ENV !== 'production') console.error('Relevance search request failed:', error);
+    throw new Error("We couldn't search your notes right now. Please try again.");
+  }
+
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      throw new Error('Your session has expired. Sign in again to search your notes.');
+    }
+    const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const message = typeof payload?.error === 'string' ? payload.error : null;
+    throw new Error(message ?? "We couldn't search your notes right now. Please try again.");
+  }
+
+  return readRelevanceResponse(response, "We couldn't search your notes right now. Please try again.", onProgress);
 }
 
 /** The single entry point for the "My Brain" input: classifies the text as a note to save or a question to answer. */

@@ -8,7 +8,7 @@ import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/lib/auth-context';
-import { createNote, deleteNote, findRelevantNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
+import { createNote, deleteNote, findRelevantNotes, findSimilarNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
 import { supabase } from '@/lib/supabase';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 import { Note, NoteRelationType, RelevanceCoverage, RelevanceResult } from '@/lib/types';
@@ -501,7 +501,7 @@ export default function OcredaHome() {
           : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
-      {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
+      {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onImport={() => { setImportError(''); setImportOpen(true); }} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
       {museEditor && <MuseEditor state={museEditor} saving={saving} error={error} onChange={setMuseEditor} onClose={() => { setMuseEditor(null); setError(''); }} onSave={() => void saveMuse()} />}
       {projectEditor && <ProjectEditor state={projectEditor} error={error} onChange={setProjectEditor} onClose={() => { setProjectEditor(null); setError(''); }} onSave={saveProject} />}
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
@@ -602,8 +602,9 @@ function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, use
           <button type="button" onClick={onAddNote} className="flex h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-[#f5f5f6]" title="Add a note"><span className="flex h-7 w-16 items-center justify-center rounded-md bg-[#477bea] text-white"><Plus className="h-4 w-4" /></span><span className="hidden sm:inline">Add a note</span></button>
           <button type="button" onClick={() => setSearchOpen(true)} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Search className="h-5 w-5" /></button>
           <button type="button" onClick={() => setInstantRetrievalOpen(true)} aria-label="Open Instant Retrieval" title="Instant Retrieval" className="flex h-10 w-10 items-center justify-center rounded-md text-[#477bea] hover:bg-[#edf3ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><ScanSearch className="h-5 w-5" /></button>
+          <button type="button" onClick={onOpenImport} aria-label="Import notes" title="Import notes" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Upload className="h-5 w-5" /></button>
         </div>
-        <h1 className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-sm font-normal text-[#b2b2b2] sm:text-base">Your knowledge</h1>
+        <h1 className="pointer-events-none absolute left-1/2 hidden -translate-x-1/2 text-sm font-normal text-[#b2b2b2] lg:block lg:text-base">Your knowledge</h1>
         <div className="ml-auto"><BetaAndAvatar email={userEmail} feedback onOpenImport={onOpenImport} /></div>
       </header>
 
@@ -1030,7 +1031,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
     setRetrieval(null); setRetrievalError(''); setRetrievalProgress(null); setSelectedNoteId(null);
     if (noteTooShortForRetrieval || !hasOtherNotes) { setRetrievalLoading(false); return; }
     setRetrievalLoading(true);
-    findRelevantNotes(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); }, allNotes)
+    findSimilarNotes(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); }, allNotes)
       .then((response) => { if (active) setRetrieval(response); })
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
@@ -1585,10 +1586,10 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
   );
 }
 
-function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse, onClose, onSave, onDelete }: {
+function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse, onClose, onSave, onImport, onDelete }: {
   state: NoteEditorState; muses: MuseMeta[]; notes: Note[]; saving: boolean; error: string;
   onChange: (state: NoteEditorState) => void; onCreateMuse: (title: string) => void;
-  onClose: () => void; onSave: () => void; onDelete?: () => void;
+  onClose: () => void; onSave: () => void; onImport: () => void; onDelete?: () => void;
 }) {
   const bodyRef = useRef<HTMLTextAreaElement>(null);
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
@@ -1642,7 +1643,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
 
     setRelevanceProgress(null); setRelevanceLoading(true);
     try {
-      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, notes);
+      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress);
       relevanceCache.current.set(draftText, response);
       setRelevance(response); setSearchedDraft(draftText);
     } catch (err) {
@@ -1695,7 +1696,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
           <div className="flex items-center gap-2">
             <button type="button" onClick={onClose} aria-label="Close note editor" title="Close note editor" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#555]"><ArrowLeft className="h-5 w-5" /></button>
             <span aria-hidden="true" className="flex h-8 w-8 items-center justify-center rounded-md bg-[#477bea] text-white"><Plus className="h-4 w-4" /></span>
-            <span aria-hidden="true" className="flex h-9 w-9 items-center justify-center"><Upload className="h-5 w-5" /></span>
+            <button type="button" onClick={onImport} aria-label="Import notes" title="Import notes" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#555]"><Upload className="h-5 w-5" /></button>
             <button type="button" onClick={() => void runRelevanceSearch()} disabled={draftTooShort || relevanceLoading} aria-label="Find relevant notes" title={draftTooShort ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters to search your notes` : 'Find relevant notes'} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#477bea] disabled:opacity-35">{relevanceLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-5 w-5" />}</button>
           </div>
           <div ref={museMenuRef} className="absolute left-1/2 z-40 -translate-x-1/2">
