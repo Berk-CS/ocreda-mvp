@@ -72,4 +72,6 @@ export interface RelevanceProgress {
 export interface RelevantNotesResponse {
   results: RelevanceResult[];
   coverage: RelevanceCoverage;
+  /** A short synthesis of the related notes as a group, when available. */
+  summary?: string;
 }

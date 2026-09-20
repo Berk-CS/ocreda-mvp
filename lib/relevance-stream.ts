@@ -5,6 +5,7 @@ function toRelevantNotesResponse(payload: Record<string, unknown> | null): Relev
   const rawCoverage = payload?.coverage as Partial<RelevanceCoverage> | undefined;
   return {
     results,
+    summary: typeof payload?.summary === 'string' ? payload.summary.trim() : undefined,
     coverage: {
       notes_searched: Number(rawCoverage?.notes_searched ?? 0),
       notes_total: Number(rawCoverage?.notes_total ?? 0),

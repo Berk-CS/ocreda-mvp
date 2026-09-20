@@ -192,6 +192,21 @@ test('stream reports start, one progress per agent, then done', async () => {
   assert.deepStrictEqual(events[4].coverage, { notes_searched: 6, notes_total: 6, complete: true });
 });
 
+test('stream includes a combined summary of the final matches', async () => {
+  const events = await readEvents(streamRelevanceSearch(streamOptions({
+    summarize: async (results) => `Summary of ${results.length} notes`,
+  })));
+  assert.strictEqual(events.at(-1).summary, 'Summary of 6 notes');
+});
+
+test('summary failure does not hide retrieved notes', async () => {
+  const events = await readEvents(streamRelevanceSearch(streamOptions({
+    summarize: async () => { throw new Error('summary unavailable'); },
+  })));
+  assert.strictEqual(events.at(-1).type, 'done');
+  assert.strictEqual(events.at(-1).results.length, 6);
+});
+
 test('stream reports progress before the slowest agent finishes', async () => {
   let releaseSlow;
   const slow = new Promise((resolve) => { releaseSlow = resolve; });
