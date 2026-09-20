@@ -55,7 +55,7 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Write a little more before searching for related notes." }, 400);
     }
 
-    const apiKey = Deno.env.get("GEMINI_API_KEY");
+    const apiKey = Deno.env.get("OPENROUTER_API_KEY");
     if (!apiKey) return json({ error: "Relevance search is not configured." }, 500);
 
     let query = supabase

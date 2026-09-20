@@ -36,7 +36,7 @@ Return JSON only in this exact shape:
     const raw = await generateWithGemini(
       "You retrieve the most relevant existing notes from a supplied corpus and return only valid JSON.",
       [{ role: "user", content: prompt }],
-      Deno.env.get("GEMINI_API_KEY")!
+      Deno.env.get("OPENROUTER_API_KEY")!
     );
     const json = extractJson(raw);
     if (!json) throw new Error("Model did not return valid JSON");

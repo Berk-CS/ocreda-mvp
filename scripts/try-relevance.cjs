@@ -4,7 +4,7 @@
  * the same chunking, prompt, parsing, and merging code the deployed Edge
  * Function uses. Needs only a Gemini API key — no Supabase, no auth, no deploy.
  *
- *   GEMINI_API_KEY=...  npm run try:relevance
+ *   OPENROUTER_API_KEY=...  npm run try:relevance
  *
  * With no arguments it runs the handpicked eval in notes/: the draft from
  * notes/test-notes/entry.txt against all 100 notes in notes/all-notes.json,
@@ -114,11 +114,11 @@ function wrap(text, width, indent) {
 }
 
 async function main() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    console.error('\nSet GEMINI_API_KEY first. Get a free one at https://aistudio.google.com/apikey\n');
-    console.error('  PowerShell:  $env:GEMINI_API_KEY = "your-key"; npm run try:relevance');
-    console.error('  bash:        GEMINI_API_KEY=your-key npm run try:relevance\n');
+    console.error('\nSet OPENROUTER_API_KEY first. Get a free one at https://openrouter.ai/keys\n');
+    console.error('  PowerShell:  $env:OPENROUTER_API_KEY = "your-key"; npm run try:relevance');
+    console.error('  bash:        OPENROUTER_API_KEY=your-key npm run try:relevance\n');
     process.exit(1);
   }
 

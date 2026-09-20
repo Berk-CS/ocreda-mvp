@@ -4,7 +4,7 @@ export const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const DEFAULT_MODEL = "gemini-3.6-flash";
+const DEFAULT_MODEL = "google/gemini-2.5-flash";
 
 export interface GeminiMessage {
   role: "user" | "model";
@@ -44,27 +44,33 @@ export async function generateWithGemini(
   model: string = DEFAULT_MODEL,
   generationConfig?: GeminiGenerationConfig
 ): Promise<string> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: messages.map((m) => ({ role: m.role, parts: [{ text: m.content }] })),
-        ...(generationConfig ? { generationConfig } : {}),
-      }),
-    }
-  );
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...messages.map((m) => ({ role: m.role === "model" ? "assistant" : m.role, content: m.content })),
+      ],
+      ...(generationConfig?.temperature !== undefined ? { temperature: generationConfig.temperature } : {}),
+      ...(generationConfig?.maxOutputTokens !== undefined ? { max_tokens: generationConfig.maxOutputTokens } : {}),
+      ...(generationConfig?.responseMimeType === "application/json"
+        ? { response_format: { type: "json_object" } }
+        : {}),
+    }),
+  });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new GeminiError(res.status, `Gemini API error (${res.status}): ${err}`);
+    throw new GeminiError(res.status, `OpenRouter API error (${res.status}): ${err}`);
   }
 
   const data = await res.json();
-  const parts = data.candidates?.[0]?.content?.parts ?? [];
-  return parts.map((p: { text?: string }) => p.text ?? "").join("");
+  return data.choices?.[0]?.message?.content ?? "";
 }
 
 /** Pulls a JSON object out of a Gemini response, tolerating a ```json fence around it. */
