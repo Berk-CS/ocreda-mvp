@@ -1179,7 +1179,28 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
 
         {notesOpen && <aside id="related-notes-panel" className="min-h-[420px] overflow-y-auto border-t border-[#dedede] bg-white p-4 xl:min-h-0 xl:border-l xl:border-t-0">
           <div className="mb-4 flex items-center justify-between gap-2"><h2 className="text-sm font-normal text-[#999]">Retrieved for this note</h2><button type="button" onClick={() => setNotesOpen(false)} className="rounded-md px-2 py-1 text-xs text-[#477bea] hover:bg-[#edf3ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">Hide notes</button></div>
-          <div className="space-y-4">{surfacedNotes.map((item) => { const content = splitNote(item); return <button key={item.id} type="button" onMouseEnter={() => setSelectedNoteId(item.id)} onFocus={() => setSelectedNoteId(item.id)} onClick={() => setSelectedNoteId(item.id)} aria-pressed={selectedNote?.id === item.id} className={`block h-[190px] w-full overflow-hidden rounded-md border bg-[#f7f7f9] p-2 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}><span className="block h-[142px] overflow-hidden rounded bg-white p-4"><span className="float-right text-[11px] text-[#477bea]">note</span><strong className="block max-w-[80%] truncate text-sm">{content.title}</strong><span className="mt-3 block line-clamp-4 text-xs leading-relaxed text-[#777]">{content.body || notePreview(item)}</span></span><span className="mt-2 flex items-center justify-between px-2 text-[11px] text-[#aaa]"><span className="truncate">Domain: {cleanCategory(item.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span></button>; })}{!surfacedNotes.length && !retrievalLoading && !retrievalError && !noteTooShortForRetrieval && hasOtherNotes && <p className="px-4 py-12 text-center text-sm leading-relaxed text-[#999]">No related notes found yet.</p>}</div>
+          <div className="space-y-4">
+            {surfacedNotes.map((item) => {
+              const content = splitNote(item);
+              return <button
+                key={item.id}
+                type="button"
+                onMouseEnter={() => setSelectedNoteId(item.id)}
+                onFocus={() => setSelectedNoteId(item.id)}
+                onClick={() => setSelectedNoteId(item.id)}
+                onDoubleClick={() => void leaveWorkspace(item)}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void leaveWorkspace(item); } }}
+                aria-label={`${content.title}. Double-click or press Enter to open`}
+                title="Double-click to open note"
+                aria-pressed={selectedNote?.id === item.id}
+                className={`block h-[190px] w-full overflow-hidden rounded-md border bg-[#f7f7f9] p-2 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}
+              >
+                <span className="block h-[142px] overflow-hidden rounded bg-white p-4"><span className="float-right text-[11px] text-[#477bea]">note</span><strong className="block max-w-[80%] truncate text-sm">{content.title}</strong><span className="mt-3 block line-clamp-4 text-xs leading-relaxed text-[#777]">{content.body || notePreview(item)}</span></span>
+                <span className="mt-2 flex items-center justify-between px-2 text-[11px] text-[#aaa]"><span className="truncate">Domain: {cleanCategory(item.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span>
+              </button>;
+            })}
+            {!surfacedNotes.length && !retrievalLoading && !retrievalError && !noteTooShortForRetrieval && hasOtherNotes && <p className="px-4 py-12 text-center text-sm leading-relaxed text-[#999]">No related notes found yet.</p>}
+          </div>
           {retrieval?.coverage.complete === false && <p className="mt-4 text-center text-xs text-[#999]">Only some notes could be searched. Results may be incomplete.</p>}
         </aside>}
       </div>
