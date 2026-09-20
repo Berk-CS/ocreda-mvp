@@ -348,11 +348,14 @@ export type RelevanceStreamEvent =
       type: "done";
       results: RelevanceResult[];
       coverage: { notes_searched: number; notes_total: number; complete: boolean };
+      summary?: string;
     }
   | { type: "error"; error: string };
 
 export interface StreamSearchOptions extends Omit<RunAgentsOptions, "onAgentSettled"> {
   maxResults: number;
+  /** Optional synthesis of the final matches; failure must not hide the matches. */
+  summarize?: (results: RelevanceResult[]) => Promise<string>;
   /** Shown when every agent failed, which would otherwise read as "nothing related". */
   allFailedMessage: string;
   /** Shown when the search throws outright; the error itself goes to onError. */
@@ -366,7 +369,7 @@ export interface StreamSearchOptions extends Omit<RunAgentsOptions, "onAgentSett
  * so the Deno Edge Function and the Node dev route can both return it as is.
  */
 export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStream<Uint8Array> {
-  const { maxResults, allFailedMessage, failedMessage, onError, ...agentOptions } = options;
+  const { maxResults, summarize, allFailedMessage, failedMessage, onError, ...agentOptions } = options;
   const encoder = new TextEncoder();
 
   return new ReadableStream<Uint8Array>({
@@ -397,10 +400,14 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
         if (notesSearched === 0) {
           send({ type: "error", error: allFailedMessage });
         } else {
+          const summary = results.length && summarize
+            ? await summarize(results).catch((error) => { onError?.(error); return ""; })
+            : "";
           send({
             type: "done",
             results,
             coverage: { notes_searched: notesSearched, notes_total: notesTotal, complete: notesSearched === notesTotal },
+            ...(summary ? { summary } : {}),
           });
         }
       } catch (error) {

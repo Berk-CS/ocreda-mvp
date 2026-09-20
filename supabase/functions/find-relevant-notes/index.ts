@@ -10,6 +10,7 @@ import {
   DEFAULT_AGENT_COUNT,
   MIN_DRAFT_CHARS,
   type NoteLike,
+  type RelevanceResult,
 } from "../_shared/relevance.ts";
 
 const MAX_NOTES = 1000;
@@ -17,6 +18,27 @@ const MAX_RESULTS = 50;
 
 const AGENT_SYSTEM_PROMPT =
   "You identify meaningful relationships between a person's notes. You respond with a JSON array and nothing else.";
+
+async function summarizeMatches(results: RelevanceResult[], apiKey: string): Promise<string> {
+  // The reading workspace displays eight related notes, so summarize that same
+  // set rather than describing results the user cannot see.
+  const gists = results.slice(0, 8).map((result) => result.gist.trim()).filter(Boolean);
+  if (!gists.length) return "";
+  const fallback = gists.join(" ");
+  try {
+    const summary = await generateWithGemini(
+      "Summarize the supplied notes together in 2-4 plain sentences. Cover the distinct ideas across all of them, including any tension between them. Use only the supplied facts. Do not mention the search, relevance scores, or the act of summarizing. Return only the summary text.",
+      [{ role: "user", content: gists.map((gist, index) => `Note ${index + 1}: ${gist}`).join("\n") }],
+      apiKey,
+      undefined,
+      { temperature: 0.2, maxOutputTokens: 320 },
+    );
+    return summary.trim().slice(0, 1600) || fallback;
+  } catch (error) {
+    console.error("find-relevant-notes summary failed:", error instanceof Error ? error.message : error);
+    return fallback;
+  }
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -96,6 +118,7 @@ Deno.serve(async (req: Request) => {
       const stream = streamRelevanceSearch({
         ...agentOptions,
         maxResults: MAX_RESULTS,
+        summarize: (results) => summarizeMatches(results, apiKey),
         allFailedMessage: "Relevance search is unavailable right now. Please try again.",
         failedMessage: "Relevance search failed. Please try again.",
         onError: (error) =>
@@ -119,6 +142,7 @@ Deno.serve(async (req: Request) => {
 
     return json({
       results,
+      summary: await summarizeMatches(results, apiKey),
       coverage: {
         notes_searched: notesSearched,
         notes_total: notes.length,
