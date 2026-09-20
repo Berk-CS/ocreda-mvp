@@ -21,7 +21,7 @@ Rules:
     const message = await generateWithGemini(
       systemPrompt,
       [{ role: "user", content: `Their answer: ${previous_answer}\n\nExact next question: ${next_question}` }],
-      Deno.env.get("GEMINI_API_KEY")!
+      Deno.env.get("OPENROUTER_API_KEY")!
     );
 
     return new Response(JSON.stringify({ message: message.trim() }), {

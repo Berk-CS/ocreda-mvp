@@ -13,7 +13,7 @@ Everything here is inert unless `NEXT_PUBLIC_LOCAL_MODE=1` is set in
 ```
 # .env.local
 NEXT_PUBLIC_LOCAL_MODE=1
-GEMINI_API_KEY=your-key-here
+OPENROUTER_API_KEY=your-key-here
 ```
 
 Then `npm run dev`. No Supabase URL or anon key is needed.

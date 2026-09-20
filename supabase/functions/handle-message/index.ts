@@ -55,7 +55,7 @@ Deno.serve(async (req: Request) => {
     );
 
     const { user_id, raw_text, local_date }: HandleMessageRequest = await req.json();
-    const apiKey = Deno.env.get("GEMINI_API_KEY")!;
+    const apiKey = Deno.env.get("OPENROUTER_API_KEY")!;
 
     const { data: allNotes, error: notesErr } = await supabase
       .from("notes")

@@ -87,7 +87,7 @@ How to respond:
     geminiMessages.push({ role: "user", content: message });
 
     // 6. Call Gemini
-    const reply = await generateWithGemini(systemPrompt, geminiMessages, Deno.env.get("GEMINI_API_KEY")!);
+    const reply = await generateWithGemini(systemPrompt, geminiMessages, Deno.env.get("OPENROUTER_API_KEY")!);
     const relevantNoteIds = notesToUse.map((n) => n.id);
 
     // 7. Save user message and assistant reply

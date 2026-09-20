@@ -41,10 +41,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { error: 'Set GEMINI_API_KEY in .env.local, then restart the dev server.' },
+      { error: 'Set OPENROUTER_API_KEY in .env.local, then restart the dev server.' },
       { status: 500 }
     );
   }
@@ -89,7 +89,7 @@ export async function POST(request: Request) {
     const stream = streamRelevanceSearch({
       ...agentOptions,
       maxResults: MAX_RESULTS,
-      allFailedMessage: 'Every agent failed — check your GEMINI_API_KEY and the terminal output.',
+      allFailedMessage: 'Every agent failed — check your OPENROUTER_API_KEY and the terminal output.',
       failedMessage: 'Relevance search failed. Check the terminal output.',
       onError: (error) =>
         console.error('[local] find-relevant-notes stream failed:', error instanceof Error ? error.message : error),
@@ -107,7 +107,7 @@ export async function POST(request: Request) {
 
     if (notesSearched === 0) {
       return NextResponse.json(
-        { error: 'Every agent failed — check your GEMINI_API_KEY and the terminal output.' },
+        { error: 'Every agent failed — check your OPENROUTER_API_KEY and the terminal output.' },
         { status: 502 }
       );
     }
