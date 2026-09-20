@@ -1380,9 +1380,11 @@ const RELATION_BADGES: Partial<Record<NoteRelationType, { label: string; classNa
 function AnnotationFlip({ summary, relevance, flipped, onFlip }: {
   summary: string; relevance: string; flipped: boolean; onFlip: () => void;
 }) {
+  // Each face carries its own tint: blue restates the note, green explains how
+  // it bears on the draft, so which side is showing reads at a glance.
   const faces = [
-    { key: 'summary', label: 'Summary', text: summary, action: 'Why it’s relevant', hidden: flipped, back: false },
-    { key: 'relevance', label: 'Why it’s relevant', text: relevance, action: 'Summary', hidden: !flipped, back: true },
+    { key: 'summary', label: 'Summary', text: summary, action: 'Why it’s relevant', hidden: flipped, back: false, panel: 'bg-[#f4f7ff]', labelColor: 'text-[#8ba0d8]', textColor: 'text-[#5d6b85]' },
+    { key: 'relevance', label: 'Why it’s relevant', text: relevance, action: 'Summary', hidden: !flipped, back: true, panel: 'bg-[#e4f2e8]', labelColor: 'text-[#6aa37c]', textColor: 'text-[#4a6b55]' },
   ];
   return (
     <div className="mt-2.5 [perspective:900px]">
@@ -1391,10 +1393,10 @@ function AnnotationFlip({ summary, relevance, flipped, onFlip }: {
           <div
             key={face.key}
             aria-hidden={face.hidden}
-            className={`flex flex-col rounded-md bg-[#f4f7ff] px-2.5 py-2 [backface-visibility:hidden] [grid-area:1/1] ${face.back ? '[transform:rotateY(180deg)]' : ''}`}
+            className={`flex flex-col rounded-md px-2.5 py-2 [backface-visibility:hidden] [grid-area:1/1] ${face.panel} ${face.back ? '[transform:rotateY(180deg)]' : ''}`}
           >
-            <p className="text-[9px] font-semibold uppercase tracking-[0.09em] text-[#8ba0d8]">{face.label}</p>
-            <p className="mt-1 flex-1 text-[11px] leading-relaxed text-[#5d6b85]">{face.text}</p>
+            <p className={`text-[9px] font-semibold uppercase tracking-[0.09em] ${face.labelColor}`}>{face.label}</p>
+            <p className={`mt-1 flex-1 text-[11px] leading-relaxed ${face.textColor}`}>{face.text}</p>
             <button
               type="button"
               tabIndex={face.hidden ? -1 : 0}
