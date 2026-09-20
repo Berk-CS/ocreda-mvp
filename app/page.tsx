@@ -6,7 +6,7 @@ import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight
 import type { RelevanceProgress } from '@/lib/types';
 import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
 import { useAuth } from '@/lib/auth-context';
-import { createNote, deleteNote, findRelevantNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
+import { createNote, deleteNote, findRelevantNotes, findSimilarNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
 import { supabase } from '@/lib/supabase';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 import { Note, NoteRelationType, RelevanceCoverage, RelevanceResult } from '@/lib/types';
@@ -954,7 +954,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
     setRetrieval(null); setRetrievalError(''); setRetrievalProgress(null); setSelectedNoteId(null);
     if (noteTooShortForRetrieval || !hasOtherNotes) { setRetrievalLoading(false); return; }
     setRetrievalLoading(true);
-    findRelevantNotes(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); }, allNotes)
+    findSimilarNotes(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); }, allNotes)
       .then((response) => { if (active) setRetrieval(response); })
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
@@ -1567,7 +1567,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
 
     setRelevanceProgress(null); setRelevanceLoading(true);
     try {
-      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, notes);
+      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress);
       relevanceCache.current.set(draftText, response);
       setRelevance(response); setSearchedDraft(draftText);
     } catch (err) {
