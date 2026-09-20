@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beta Terms of Service — Ocreda</title>
+<meta name="description" content="Beta Terms of Service for the Ocreda beta, operated by SRVK LLC.">
+<meta name="robots" content="index, follow">
+<style>
+:root{
+  --ink:#15171a; --ink-soft:#4b5259; --ink-faint:#767e87;
+  --rule:#e2e5e9; --rule-soft:#eef0f3;
+  --bg:#ffffff; --bg-soft:#f7f8fa; --accent:#1f5f4f; --accent-soft:#eaf2ef;
+  --warn-bg:#fdf6ec; --warn-rule:#e3c99a;
+  --max:46rem;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:var(--max); margin:0 auto; padding:3.5rem 1.5rem 6rem}
+header.doc{border-bottom:2px solid var(--ink); padding-bottom:1.5rem; margin-bottom:2rem}
+.eyebrow{font-size:.75rem; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-faint); margin:0 0 .6rem}
+h1{font-size:2rem; line-height:1.2; margin:0 0 .5rem; letter-spacing:-.02em}
+.entity{margin:0 0 1rem; color:var(--ink-soft); font-size:1rem}
+.meta{display:flex; flex-wrap:wrap; gap:.5rem; margin:0}
+.pill{display:inline-block; font-size:.75rem; padding:.25rem .7rem; border-radius:999px;
+  background:var(--bg-soft); border:1px solid var(--rule); color:var(--ink-soft)}
+.pill.beta{background:var(--accent-soft); border-color:#c3ded4; color:var(--accent); font-weight:600}
+.summary-box{
+  background:var(--bg-soft); border:1px solid var(--rule); border-left:3px solid var(--accent);
+  border-radius:4px; padding:1.25rem 1.4rem; margin:0 0 2.5rem;
+}
+.summary-box h2{font-size:.75rem; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--accent); margin:0 0 .75rem; border:0; padding:0}
+.summary-box p{margin:0 0 .8rem; font-size:.95rem; color:var(--ink-soft)}
+.summary-box p:last-child{margin-bottom:0}
+.toolbar{display:flex; justify-content:flex-end; margin:0 0 .75rem}
+.toolbar button{font:inherit; font-size:.8rem; color:var(--ink-soft); background:none;
+  border:1px solid var(--rule); border-radius:4px; padding:.35rem .8rem; cursor:pointer}
+.toolbar button:hover{background:var(--bg-soft); color:var(--ink)}
+details.sec{border:1px solid var(--rule); border-radius:6px; margin:0 0 .6rem; overflow:hidden; background:var(--bg)}
+details.sec[open]{border-color:#cfd5dc}
+details.sec>summary{
+  list-style:none; cursor:pointer; padding:.95rem 1.1rem; display:flex; align-items:center; gap:.85rem;
+  background:var(--bg-soft); font-weight:600; font-size:1rem; color:var(--ink); user-select:none;
+}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary:hover{background:#f1f3f6}
+details.sec>summary:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+.num{flex:0 0 1.85rem; height:1.85rem; border-radius:50%; background:var(--accent-soft); color:var(--accent);
+  display:flex; align-items:center; justify-content:center; font-size:.8rem; font-weight:700}
+.stitle{flex:1}
+.chev{flex:0 0 auto; color:var(--ink-faint); font-size:1.1rem; transition:transform .18s ease}
+details.sec[open] .chev{transform:rotate(45deg)}
+.body{padding:1.1rem 1.4rem 1.5rem; border-top:1px solid var(--rule)}
+.body h3{font-size:1rem; margin:1.5rem 0 .5rem; color:var(--ink)}
+.body h3:first-child{margin-top:0}
+.body p{margin:0 0 .9rem; color:var(--ink-soft)}
+.body strong{color:var(--ink)}
+.body ul,.body ol{margin:0 0 .9rem; padding-left:1.3rem; color:var(--ink-soft)}
+.body li{margin-bottom:.35rem}
+.body table{width:100%; border-collapse:collapse; margin:0 0 1.1rem; font-size:.9rem}
+.body th{text-align:left; padding:.55rem .7rem; border-bottom:2px solid var(--rule);
+  font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint)}
+.body td{padding:.55rem .7rem; border-bottom:1px solid var(--rule-soft); vertical-align:top; color:var(--ink-soft)}
+.body td strong{color:var(--ink)}
+.body hr{border:0; border-top:1px solid var(--rule); margin:1.5rem 0}
+.body a{color:var(--accent)}
+.legalcaps{font-size:.88rem; letter-spacing:.005em}
+footer.doc{margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--rule);
+  font-size:.82rem; color:var(--ink-faint)}
+footer.doc p{margin:0 0 .5rem}
+.todo{background:var(--warn-bg); border:1px solid var(--warn-rule); border-radius:4px;
+  padding:.15rem .45rem; font-size:.85rem; color:#8a6417; font-weight:600}
+@media print{
+  .toolbar{display:none}
+  details.sec{border:0; page-break-inside:avoid}
+  details.sec>summary{background:none; padding-left:0}
+  .body{border:0; padding-left:0}
+  details.sec .body{display:block !important}
+}
+@media (max-width:640px){ .wrap{padding:2rem 1.1rem 4rem} h1{font-size:1.6rem} }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="doc">
+    <p class="eyebrow">SRVK LLC &middot; doing business as Ocreda</p>
+    <h1>Ocreda Beta Terms Of Service</h1>
+    <p class="entity">SRVK LLC, a Florida limited liability company, doing business as Ocreda</p>
+    <p class="meta">
+      <span class="pill beta">Beta &mdash; pre-release software</span>
+      <span class="pill">Effective September 3, 2026</span>
+      <span class="pill">Version Beta 1.0</span>
+      <span class="pill">United States only &middot; 18+</span>
+    </p>
+  </header>
+
+  <section class="summary-box" aria-label="Plain-language summary">
+    <h2>Plain-language summary</h2>
+    <p> Ocreda is unreleased software offered free of charge to a small group of testers. It reads the notes you store in it, sends portions of them to an outside AI provider so it can find connections, and shows you older notes while you write without being asked. It may break, and it may lose data, so keep your own copies. We do not sell your notes and we do not use them to train AI models. You can leave and delete everything at any time. This summary is for orientation only; the numbered sections below are the binding terms.</p>
+
+  </section>
+
+  <div class="toolbar"><button type="button" id="toggleAll" hidden>Expand all</button></div>
+
+  <details class="sec" id="s1" open>
+  <summary><span class="num" aria-hidden="true">1</span><span class="stitle">Definitions</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p><strong>“Agreement”</strong> means these Terms of Service together with the Ocreda Privacy Notice, which is incorporated by reference.</p>
+<p><strong>“Account”</strong> means the registered profile you create to access the Service, including your credentials and settings.</p>
+<p><strong>“Beta Period”</strong> means the period during which the Service is made available for testing and evaluation, prior to general commercial release.</p>
+<p><strong>“Company,” “we,” “us,” or “our”</strong> means SRVK LLC, a Florida limited liability company doing business as Ocreda.</p>
+<p><strong>“Feedback”</strong> means any suggestion, idea, bug report, enhancement request, correction, or comment you provide to us about the Service.</p>
+<p><strong>“Intellectual Property Rights”</strong> means all patents, copyrights, moral rights, trademarks, trade secrets, database rights, and other intellectual property rights recognized in any jurisdiction.</p>
+<p><strong>“Service”</strong> means the Ocreda application and website at ocreda.com, together with all related features made available by us during the Beta Period.</p>
+<p><strong>“Subprocessor”</strong> means a third party we engage to process your data on our behalf in order to operate the Service. Our subprocessors are named in Section 9 and in the Privacy Notice.</p>
+<p><strong>“Tester,” “you,” or “your”</strong> means the individual who accesses or uses the Service during the Beta Period.</p>
+<p><strong>“Your Content”</strong> means the notes, text, files, and other material you submit to, upload to, or create within the Service.</p>
+</div>
+</details><details class="sec" id="s2" open>
+  <summary><span class="num" aria-hidden="true">2</span><span class="stitle">Acceptance of These Terms</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="binding-agreement">2.1 Binding agreement</h3>
+<p>By creating an Account or otherwise using the Service, you confirm that you have read and understood this Agreement and agree to be bound by it. If you do not agree, do not use the Service.</p>
+<h3 id="individual-capacity-only">2.2 Individual capacity only</h3>
+<p>The Beta Period is open to individuals acting on their own behalf. You may not accept this Agreement on behalf of a company, employer, or other organization, and you may not use the Service to store material belonging to an organization that has not agreed to these terms.</p>
+<h3 id="changes">2.3 Changes</h3>
+<p>If we change this Agreement, Section 20 governs how you will be notified and what happens next.</p>
+</div>
+</details><details class="sec" id="s3" open>
+  <summary><span class="num" aria-hidden="true">3</span><span class="stitle">Beta Status</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="the-service-is-unreleased-software">3.1 The Service is unreleased software</h3>
+<p>The Service is a pre-release beta. It is incomplete, has not been through a full security review, and is expected to contain defects. Features may be added, changed, or removed without notice. The Service may be unavailable for extended periods, and the Beta Period may end at any time.</p>
+<h3 id="keep-your-own-copies">3.2 Keep your own copies</h3>
+<p><strong>Ocreda is not a backup service and must not be relied on as the only copy of anything.</strong> Data loss during a beta is a realistic possibility, not a remote one. You are responsible for maintaining your own independent copies of any material you care about. Do not upload anything to the Service that you cannot afford to lose.</p>
+<h3 id="do-not-upload-sensitive-material">3.3 Do not upload sensitive material</h3>
+<p>Because the Service is unreleased and because your notes are processed by an outside AI provider as described in Section 9, you should not use the Service to store: government identifiers; financial account or payment card numbers; health or medical records; login credentials; material subject to legal privilege or a professional duty of confidentiality; material about identifiable third parties who have not consented; or anything else whose disclosure would cause you serious harm.</p>
+<h3 id="no-fees-during-the-beta-period">3.4 No fees during the Beta Period</h3>
+<p>The Service is provided free of charge during the Beta Period. We do not collect payment information and there is no subscription, invoice, or payment obligation of any kind. If we later introduce paid features, we will publish separate terms and you will have the opportunity to decline them.</p>
+<h3 id="confidentiality-of-the-service">3.5 Confidentiality of the Service</h3>
+<p>We may show you unreleased features. We do not require you to keep the Service secret and you are free to write or speak publicly about your experience with it, including criticism. If we ever share something with you on a confidential basis, we will say so explicitly at the time.</p>
+</div>
+</details><details class="sec" id="s4" open>
+  <summary><span class="num" aria-hidden="true">4</span><span class="stitle">What the Service Is and Is Not</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="what-it-is">4.1 What it is</h3>
+<p>Ocreda is a personal knowledge management application. It stores notes you write, converts them into numerical representations called embeddings so that related material can be located by similarity rather than by keyword, and surfaces older notes it judges relevant to what you are currently writing. It also records which surfaced notes you engage with, and uses those signals to adjust what it surfaces for you in future.</p>
+<h3 id="surfacing-happens-without-you-asking">4.2 Surfacing happens without you asking</h3>
+<p>The defining behavior of the Service is that it shows you your own older notes <strong>unprompted, while you write</strong>. You are not required to search, tag, or link anything for this to happen. By using the Service you understand and accept that material you wrote in the past, including material you have forgotten writing, may appear on screen without any action by you.</p>
+<h3 id="what-it-is-not">4.3 What it is not</h3>
+<p>The Service is not, and must not be relied on as: a backup or archival service; a social network; a licensed professional service of any kind, including medical, psychological, legal, tax, or financial advice; a records system for regulated or professional obligations; or a marketplace.</p>
+<h3 id="no-guarantee-of-retrieval-or-accuracy">4.4 No guarantee of retrieval or accuracy</h3>
+<p>We do not promise that the Service will surface any particular note, that surfaced notes will be relevant, that connections it identifies will be correct, or that any note will be retrievable at any given time. Output produced with the assistance of AI systems may be wrong.</p>
+</div>
+</details><details class="sec" id="s5" open>
+  <summary><span class="num" aria-hidden="true">5</span><span class="stitle">Eligibility</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="age">5.1 Age</h3>
+<p><strong>You must be at least eighteen (18) years old to use the Service.</strong> The Beta Period is not open to minors under any circumstances, including with the consent of a parent or guardian. If you become aware that someone under 18 is using the Service, tell us at hello@ocreda.com and we will close the Account and delete the data.</p>
+<h3 id="location">5.2 Location</h3>
+<p><strong>The Beta Period is open only to individuals located in the United States.</strong> The Service is not offered to, and must not be used by, residents of the European Economic Area, the United Kingdom, Switzerland, or any other jurisdiction whose data protection laws would apply to your use. We store and process data exclusively in the United States and have not put in place the transfer mechanisms those laws require.</p>
+<h3 id="capacity-and-sanctions">5.3 Capacity and sanctions</h3>
+<p>You confirm that you have the legal capacity to enter into this Agreement, that your use of the Service does not violate any law applicable to you, and that you are not located in a country subject to a United States embargo or named on any United States government list of restricted parties.</p>
+</div>
+</details><details class="sec" id="s6" open>
+  <summary><span class="num" aria-hidden="true">6</span><span class="stitle">Your Account</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="security">6.1 Security</h3>
+<p>You are responsible for keeping your Account credentials confidential and for activity that occurs under them. Use a strong, unique password. Tell us at hello@ocreda.com as soon as you suspect unauthorized access.</p>
+<h3 id="accurate-information">6.2 Accurate information</h3>
+<p>Provide accurate registration information and keep it current. We do not independently verify the identity of testers.</p>
+</div>
+</details><details class="sec" id="s7" open>
+  <summary><span class="num" aria-hidden="true">7</span><span class="stitle">Acceptable Use</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>You agree not to:</p>
+<ol type="a">
+<li><p>access or attempt to access any Account, data, or system component that is not yours;</p></li>
+<li><p>probe, scan, scrape, overload, or otherwise interfere with the Service or the infrastructure it runs on, except that good-faith security research reported to us under Section 7.1 is welcome;</p></li>
+<li><p>reverse engineer, decompile, or attempt to derive the source code or underlying models of the Service, except to the extent that restriction is unenforceable under applicable law;</p></li>
+<li><p>impersonate any person or misrepresent your affiliation with any person or entity;</p></li>
+<li><p>upload material that is unlawful, or that infringes another person’s Intellectual Property Rights or privacy;</p></li>
+<li><p>use the Service to send unsolicited commercial messages;</p></li>
+<li><p>circumvent any access control, usage limit, or security mechanism; or</p></li>
+<li><p>use the Service to build, train, or benchmark a competing product, or to extract our prompts, retrieval logic, or ranking behavior for that purpose.</p></li>
+</ol>
+<h3 id="reporting-security-issues">7.1 Reporting security issues</h3>
+<p>If you find a vulnerability, report it to hello@ocreda.com before disclosing it publicly. We will not pursue legal action against a tester who investigates and reports in good faith, does not access other testers’ data beyond what is necessary to demonstrate the issue, and gives us a reasonable opportunity to fix it.</p>
+<h3 id="enforcement">7.2 Enforcement</h3>
+<p>We may suspend or terminate an Account for a material or repeated breach of this Section, for a confirmed or suspected security compromise, for identity fraud, or where a court order or law enforcement request requires it. Where circumstances allow, we will tell you what happened and give you an opportunity to respond.</p>
+</div>
+</details><details class="sec" id="s8" open>
+  <summary><span class="num" aria-hidden="true">8</span><span class="stitle">Your Content</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="you-own-it">8.1 You own it</h3>
+<p>You retain all Intellectual Property Rights in Your Content. Nothing in this Agreement transfers ownership of Your Content to us.</p>
+<h3 id="the-license-you-give-us">8.2 The license you give us</h3>
+<p>You grant us a worldwide, royalty-free, non-exclusive license to host, store, copy, transmit, index, embed, and process Your Content <strong>solely to operate the Service for you</strong>. This license exists so that we can run the software; it does not permit any other use.</p>
+<p>This license terminates when you delete the relevant content or close your Account, subject to the deletion timelines in Section 8.4.</p>
+<h3 id="what-we-will-not-do-with-it">8.3 What we will not do with it</h3>
+<p>We will not sell Your Content. We will not license, rent, trade, or otherwise make Your Content available to any third party for that party’s own purposes. We will not publish Your Content or show it to any other tester. We will not use Your Content for advertising. We do not have any commercial data-sharing partners, and if that ever changes we will obtain your affirmative consent first rather than announcing it in a policy update.</p>
+<h3 id="deletion">8.4 Deletion</h3>
+<p>You may delete individual notes at any time, and you may delete your Account from your account settings or by writing to contact@ocreda.com.</p>
+<p>When you delete content or close your Account, we remove the material and its associated embeddings and interaction records from our active systems <strong>within thirty (30) days</strong>. Encrypted backups are on a rolling cycle and are fully overwritten <strong>within ninety (90) days</strong>, after which no copy remains. These are the only deletion timelines that apply; the Privacy Notice states the same periods.</p>
+</div>
+</details><details class="sec" id="s9" open>
+  <summary><span class="num" aria-hidden="true">9</span><span class="stitle">How Your Notes Are Processed</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>This section describes what actually happens to your notes. Read it before deciding whether to participate.</p>
+<h3 id="automated-processing">9.1 Automated processing</h3>
+<p>The Service reads and processes the full text of Your Content automatically. That processing includes generating embeddings from your notes, comparing them for similarity, and sending portions of your notes to an AI provider so that a connection between them can be identified and explained. No human being at Ocreda reads your notes as part of normal operation. Automated processing is still processing, and we do not claim otherwise.</p>
+<h3 id="our-subprocessors">9.2 Our subprocessors</h3>
+<p>To operate the Service we transmit Your Content to the following third parties:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Subprocessor</th>
+<th>Role</th>
+<th>Location</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Supabase, Inc.</td>
+<td>Database hosting, authentication, and storage of note text and embeddings</td>
+<td>United States</td>
+</tr>
+<tr class="even">
+<td>Anthropic, PBC</td>
+<td>Claude API; receives note excerpts and your current writing in order to identify and describe connections</td>
+<td>United States</td>
+</tr>
+</tbody>
+</table>
+<p>This list is complete as of the Effective Date. If we add or replace a subprocessor, we will update the Privacy Notice and notify you by email before the change takes effect.</p>
+<h3 id="human-review-by-us">9.3 Human review by us</h3>
+<p>We do not read your notes as a matter of course. We may access specific content only where you ask us to in order to resolve a support issue, or where we have a good-faith belief that access is strictly necessary to investigate a security incident or to comply with a legal obligation. We keep an internal record of any such access.</p>
+<h3 id="interaction-data">9.4 Interaction data</h3>
+<p>The Service records which surfaced notes you open, dismiss, or ignore, and uses those signals to rank what it surfaces for you in future. These signals are tied to your Account and are used only for your Account.</p>
+</div>
+</details><details class="sec" id="s10" open>
+  <summary><span class="num" aria-hidden="true">10</span><span class="stitle">No Training on Your Content</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>We do not use Your Content, your interaction data, or your Feedback to train, fine-tune, or otherwise develop any foundation model or general-purpose AI model, and we do not permit our subprocessors to do so. Our agreements with our AI provider are on terms under which submitted content is not used for model training.</p>
+<p>We do use your interaction data to personalize what the Service surfaces <strong>to you</strong>. That personalization is confined to your own Account: it does not draw on other testers’ data, and your data does not influence what any other tester sees. We describe this openly rather than claiming a blanket exemption, because the distinction between personalizing for one person and training a model on many people is the one that actually matters.</p>
+</div>
+</details><details class="sec" id="s11" open>
+  <summary><span class="num" aria-hidden="true">11</span><span class="stitle">Feedback</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>We would like your Feedback and this is the main reason the Beta Period exists. If you give us Feedback, you grant us an unrestricted, perpetual, royalty-free right to use it to improve the Service, without obligation or compensation to you. Feedback is not confidential unless you mark it as such. You are not required to give Feedback, and choosing not to will not affect your access.</p>
+</div>
+</details><details class="sec" id="s12" open>
+  <summary><span class="num" aria-hidden="true">12</span><span class="stitle">Our Intellectual Property</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>The Service, including its software, source code, database structure, retrieval and ranking logic, interfaces, name, and logo, is owned by us or our licensors. Subject to your compliance with this Agreement, we grant you a limited, non-exclusive, non-transferable, revocable license to use the Service for your own personal purposes during the Beta Period. No other rights are granted.</p>
+</div>
+</details><details class="sec" id="s13" open>
+  <summary><span class="num" aria-hidden="true">13</span><span class="stitle">Disclaimers</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="as-is">13.1 As is</h3>
+<p class="legalcaps">THE SERVICE IS PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTY OF ANY KIND. TO THE FULLEST EXTENT PERMITTED BY LAW, WE DISCLAIM ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT, AND ANY WARRANTY THAT THE SERVICE WILL BE UNINTERRUPTED, SECURE, ERROR-FREE, OR THAT DATA WILL NOT BE LOST.</p>
+<h3 id="beta-software-specifically">13.2 Beta software specifically</h3>
+<p class="legalcaps">YOU ACKNOWLEDGE THAT THE SERVICE IS PRE-RELEASE SOFTWARE, THAT DEFECTS AND DATA LOSS ARE FORESEEABLE, AND THAT YOU HAVE BEEN ADVISED IN SECTION 3.2 TO MAINTAIN INDEPENDENT COPIES OF YOUR CONTENT.</p>
+<h3 id="availability">13.3 Availability</h3>
+<p>We make no commitment regarding uptime and there is no service level agreement. We will use reasonable efforts to give advance notice of planned downtime, but emergency maintenance may occur without notice.</p>
+<h3 id="third-parties">13.4 Third parties</h3>
+<p>We do not warrant or endorse any third-party service reachable through the Service.</p>
+<h3 id="consumer-rights">13.5 Consumer rights</h3>
+<p>Some jurisdictions do not allow the exclusion of certain warranties. Nothing in this Agreement limits any right you have under a law that cannot be waived by contract.</p>
+</div>
+</details><details class="sec" id="s14" open>
+  <summary><span class="num" aria-hidden="true">14</span><span class="stitle">Limitation of Liability</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="excluded-damages">14.1 Excluded damages</h3>
+<p class="legalcaps">TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, PUNITIVE, OR EXEMPLARY DAMAGES, INCLUDING LOST PROFITS, LOST DATA, OR BUSINESS INTERRUPTION, ARISING OUT OF OR RELATING TO THIS AGREEMENT OR THE SERVICE, EVEN IF WE HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.</p>
+<h3 id="cap">14.2 Cap</h3>
+<p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, OUR TOTAL AGGREGATE LIABILITY ARISING OUT OF OR RELATING TO THIS AGREEMENT WILL NOT EXCEED ONE HUNDRED UNITED STATES DOLLARS (US$100). Because the Service is free during the Beta Period, a cap tied to fees paid would be zero; this fixed amount is stated instead so that the cap is a real one.</p>
+<h3 id="exceptions">14.3 Exceptions</h3>
+<p>Nothing in this Section limits our liability for fraud, fraudulent misrepresentation, gross negligence, willful misconduct, or any liability that cannot lawfully be limited.</p>
+<h3 id="allocation-of-risk">14.4 Allocation of risk</h3>
+<p>These limitations reflect an allocation of risk that is a basic part of this Agreement between us. Some jurisdictions do not allow certain limitations, so parts of this Section may not apply to you.</p>
+</div>
+</details><details class="sec" id="s15" open>
+  <summary><span class="num" aria-hidden="true">15</span><span class="stitle">Indemnification</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>You will indemnify and hold us harmless from third-party claims, and reasonable attorneys’ fees and costs arising from them, to the extent they arise out of (a) content you upload in breach of Section 7(e), or (b) your breach of this Agreement or of applicable law. This obligation does not apply to claims arising from our own acts or omissions, and it survives termination.</p>
+<p>We will notify you promptly of any claim, will not settle it without your consent, and you may control the defense with counsel of your choosing.</p>
+</div>
+</details><details class="sec" id="s16" open>
+  <summary><span class="num" aria-hidden="true">16</span><span class="stitle">Privacy</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>Our handling of personal data is described in the Ocreda Privacy Notice at <strong>ocreda.com/privacy</strong>, which forms part of this Agreement. Where this Agreement and the Privacy Notice describe the same practice, they are written to say the same thing; if they nonetheless conflict, the Privacy Notice governs on matters of data handling.</p>
+</div>
+</details><details class="sec" id="s17" open>
+  <summary><span class="num" aria-hidden="true">17</span><span class="stitle">Term and Termination</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="by-you">17.1 By you</h3>
+<p>Close your Account at any time from your account settings or by writing to contact@ocreda.com. You do not need a reason and there is no notice period.</p>
+<h3 id="by-us">17.2 By us</h3>
+<p>We may terminate your access immediately for a material breach of Section 7, or for any reason on seven (7) days’ notice to your Account email. We may also end the Beta Period entirely, in which case we will give all testers at least <strong>thirty (30) days’</strong> notice and an opportunity to export their content before access ends.</p>
+<h3 id="export">17.3 Export</h3>
+<p>You may export Your Content at any time while your Account is active, and during any notice period under Section 17.2.</p>
+<h3 id="what-survives">17.4 What survives</h3>
+<p>Sections 8.1, 8.3, 8.4, 10, 11, 12, 13, 14, 15, 18, 19, and 21 survive termination.</p>
+</div>
+</details><details class="sec" id="s18" open>
+  <summary><span class="num" aria-hidden="true">18</span><span class="stitle">Dispute Resolution</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><h3 id="talk-to-us-first">18.1 Talk to us first</h3>
+<p>Before starting any formal proceeding, write to us at hello@ocreda.com describing the dispute. We will try to resolve it within thirty (30) days.</p>
+<h3 id="arbitration">18.2 Arbitration</h3>
+<p>If we cannot resolve it informally, any dispute arising out of this Agreement will be settled by binding individual arbitration administered by the American Arbitration Association under its Consumer Arbitration Rules. <strong>The arbitration will be conducted by telephone, videoconference, or on written submissions, or in the county where you reside, at your election.</strong> We will pay the arbitration filing and administrative fees for claims under US$10,000.</p>
+<h3 id="how-to-opt-out-of-arbitration">18.3 How to opt out of arbitration</h3>
+<p><strong>You may opt out of Section 18.2 and Section 18.4 by emailing hello@ocreda.com with the subject line “Arbitration Opt-Out” within thirty (30) days of creating your Account.</strong> Include your name and Account email. Opting out costs you nothing, will not affect your access to the Service, and does not affect any other part of this Agreement. This address is monitored; if you do not receive an acknowledgment within five business days, resend it, and your opt-out will be effective as of your first attempt.</p>
+<h3 id="class-action-waiver">18.4 Class action waiver</h3>
+<p>YOU AND WE EACH AGREE TO BRING CLAIMS ONLY IN AN INDIVIDUAL CAPACITY, AND NOT AS A PLAINTIFF OR CLASS MEMBER IN ANY CLASS OR REPRESENTATIVE PROCEEDING. This waiver does not apply if you opt out under Section 18.3.</p>
+<h3 id="small-claims">18.5 Small claims</h3>
+<p>Either of us may bring an individual claim in small claims court instead of arbitration.</p>
+</div>
+</details><details class="sec" id="s19" open>
+  <summary><span class="num" aria-hidden="true">19</span><span class="stitle">Governing Law</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>This Agreement is governed by the laws of the State of Florida, without regard to its conflict-of-law rules. Where a mandatory consumer protection law of the state in which you reside provides you greater rights, that law applies.</p>
+</div>
+</details><details class="sec" id="s20" open>
+  <summary><span class="num" aria-hidden="true">20</span><span class="stitle">Changes to This Agreement</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p>We may change this Agreement. For any change that materially affects your rights or how your data is handled, we will give you at least <strong>thirty (30) days’</strong> notice by email and in the Service before it takes effect. If you do not agree, close your Account before the effective date and your content will be deleted under Section 8.4. Continued use after the effective date means you accept the change.</p>
+<p><strong>We will not apply a materially adverse change retroactively to content you uploaded before the change took effect.</strong> In particular, we will not use a policy update to authorize selling, licensing, or model-training uses of content you already gave us under this version of the Agreement.</p>
+</div>
+</details><details class="sec" id="s21" open>
+  <summary><span class="num" aria-hidden="true">21</span><span class="stitle">General</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><p><strong>21.1 Entire agreement.</strong> This Agreement and the Privacy Notice are the entire agreement between us regarding the Service and replace any earlier understanding.</p>
+<p><strong>21.2 Severability.</strong> If a provision is held unenforceable, it will be modified to the least extent necessary to make it enforceable, and the rest of the Agreement remains in effect.</p>
+<p><strong>21.3 No waiver.</strong> Our failure to enforce a provision is not a waiver of it. Waivers must be in writing.</p>
+<p><strong>21.4 Assignment.</strong> You may not assign this Agreement without our written consent. We may assign it in connection with a merger, acquisition, or sale of assets, provided the acquirer agrees in writing to be bound by the commitments in Sections 8.3 and 10. If it will not, we will notify you at least thirty (30) days in advance so that you can export your content and close your Account.</p>
+<p><strong>21.5 Notices.</strong> Notices to us go to hello@ocreda.com, or by mail to the address in Section 22. Notices to you go to your Account email and are deemed received twenty-four (24) hours after sending.</p>
+<p><strong>21.6 Force majeure.</strong> Neither of us is liable for a delay caused by circumstances beyond reasonable control, provided prompt notice is given and reasonable efforts are made to resume.</p>
+<p><strong>21.7 No third-party beneficiaries.</strong> This Agreement benefits only you and us.</p>
+<p><strong>21.8 Independent relationship.</strong> This Agreement does not create a partnership, joint venture, agency, or employment relationship.</p>
+<p><strong>21.9 Language.</strong> This Agreement is written in English, which controls.</p>
+</div>
+</details><details class="sec" id="s22" open>
+  <summary><span class="num" aria-hidden="true">22</span><span class="stitle">Contact</span><span class="chev" aria-hidden="true">+</span></summary>
+  <div class="body"><table>
+<thead>
+<tr class="header">
+<th>Purpose</th>
+<th>Contact</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>General questions and support</td>
+<td>hello@ocreda.com</td>
+</tr>
+<tr class="even">
+<td>Legal notices</td>
+<td>hello@ocreda.com</td>
+</tr>
+<tr class="odd">
+<td>Security reports</td>
+<td>hello@ocreda.com</td>
+</tr>
+<tr class="even">
+<td>Arbitration opt-out</td>
+<td>hello@ocreda.com</td>
+</tr>
+<tr class="odd">
+<td>Privacy and data requests</td>
+<td>contact@ocreda.com</td>
+</tr>
+<tr class="even">
+<td>Account deletion</td>
+<td>contact@ocreda.com</td>
+</tr>
+</tbody>
+</table>
+<p><strong>SRVK LLC (d/b/a Ocreda)</strong><br />
+<span class="todo">MAILING ADDRESS — insert before publishing</span><br />
+Florida, United States</p>
+</div>
+</details>
+
+  <footer class="doc">
+    <p>&copy; 2026 SRVK LLC. All rights reserved.</p>
+    <p>This notice renders in full when JavaScript is unavailable, and prints in full from any browser.</p>
+  </footer>
+</main>
+<script>
+(function(){
+  /* Progressive enhancement: sections render OPEN so the full text is readable
+     with JavaScript disabled. Script collapses all but the first on load. */
+  var secs=document.querySelectorAll('details.sec');
+  secs.forEach(function(d,i){ if(i>0) d.open=false; });
+  var btn=document.getElementById('toggleAll');
+  if(!btn) return;
+  btn.hidden=false;
+  var open=false;
+  btn.addEventListener('click',function(){
+    open=!open;
+    document.querySelectorAll('details.sec').forEach(function(d){d.open=open;});
+    btn.textContent = open ? 'Collapse all' : 'Expand all';
+  });
+})();
+</script>
+</body>
+</html>

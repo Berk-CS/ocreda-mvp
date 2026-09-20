@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowUp, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Pin, Plus, RefreshCw, Rows3, ScanSearch, Search, Trash2, Upload, X } from 'lucide-react';
 import type { RelevanceProgress } from '@/lib/types';
 import NoteImporter, { ImportNoteDraft } from '@/components/NoteImporter';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/lib/auth-context';
 import { createNote, deleteNote, findRelevantNotes, findSimilarNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
 import { supabase } from '@/lib/supabase';
@@ -35,9 +37,7 @@ function splitNote(note: Note): { title: string; body: string } {
   const text = note.raw_text.trim();
   if (!text) return { title: 'Untitled note', body: '' };
   const [first, ...rest] = text.split('\n');
-  const title = (first.trim() || 'Untitled note').slice(0, 120);
-  const body = rest.join('\n').trim();
-  return { title, body: body || (first.trim().length > 120 ? first.trim() : '') };
+  return { title: first.trim() || 'Untitled note', body: rest.join('\n').trim() };
 }
 
 function notePreview(note: Note): string {
@@ -319,9 +319,24 @@ export default function OcredaHome() {
     if (!current || !rawText.trim()) return;
     setSaving(true); setError('');
     try {
-      const updated = await updateNote(noteId, rawText, cleanCategory(current.category));
-      setNotes((items) => items.map((note) => note.id === noteId ? { ...updated, category: current.category } : note));
+      // Only update text: a pending autosave must not undo a Domain change.
+      const updated = await updateNote(noteId, rawText);
+      setNotes((items) => items.map((note) => note.id === noteId ? { ...updated, category: note.category, category_updated_at: note.category_updated_at } : note));
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this note.')); throw err; }
+    finally { setSaving(false); }
+  };
+
+  const changeReadingNoteDomain = async (noteId: string, category: string | null) => {
+    const current = notes.find((note) => note.id === noteId);
+    const nextCategory = cleanCategory(category);
+    if (!current || cleanCategory(current.category) === nextCategory) return;
+    setSaving(true); setError('');
+    try {
+      const [updated] = await moveNotesToCategory([noteId], nextCategory);
+      if (!updated) throw new Error('Note not found.');
+      setNotes((items) => items.map((note) => note.id === noteId ? { ...note, category: nextCategory, category_updated_at: updated.category_updated_at } : note));
+      persistMuseAssignments([noteId], nextCategory);
+    } catch (err) { setError(safeErrorMessage(err, 'Unable to change this note’s Domain.')); }
     finally { setSaving(false); }
   };
 
@@ -465,7 +480,7 @@ export default function OcredaHome() {
     try {
       const imported = await importNotes(drafts.map((draft) => draft.rawText), (completed, total) => setImportProgress({ completed, total }));
       setNotes((current) => [...imported, ...current]); imported.forEach((note) => processNote(note.id).catch(() => {}));
-      setImportProgress(null); flashSaved();
+      setImportProgress(null); setImportOpen(false); flashSaved();
     } catch (err) { setImportProgress(null); setImportError(safeErrorMessage(err, 'Your notes could not be imported.')); throw err; }
   };
 
@@ -477,48 +492,76 @@ export default function OcredaHome() {
   return (
     <main className="light h-[100dvh] w-full overflow-hidden bg-white text-[#141414]">
       <section className="relative flex h-full w-full flex-col overflow-hidden bg-white">
-        {activeNoteId && notes.find((note) => note.id === activeNoteId) ? <NoteReadingWorkspace key={activeNoteId} note={notes.find((note) => note.id === activeNoteId)!} allNotes={notes} muses={muses} projects={projects} saving={saving} onBack={() => setActiveNoteId(null)} onAddNote={() => openNewNote(cleanCategory(notes.find((note) => note.id === activeNoteId)?.category) ?? AUTOMATIC_MUSE)} onOpenNote={(note) => setActiveNoteId(note.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} />
+        {activeNoteId && notes.find((note) => note.id === activeNoteId) ? <NoteReadingWorkspace key={activeNoteId} note={notes.find((note) => note.id === activeNoteId)!} allNotes={notes} muses={muses} projects={projects} saving={saving} onBack={() => setActiveNoteId(null)} onAddNote={() => openNewNote(cleanCategory(notes.find((note) => note.id === activeNoteId)?.category) ?? AUTOMATIC_MUSE)} onOpenNote={(note) => setActiveNoteId(note.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNoteId, category)} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} />
           : activeProject && activePage ? <ProjectPageWorkspace key={activePage.id} project={activeProject} page={activePage} notes={notes} muses={muses} projects={projects} saving={saving} onBack={() => setActivePageId(null)} onChange={(page) => updateProjectPage(activeProject.id, page)} onAddNote={() => openNewNote()} onOpenNote={openExistingNote} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onDelete={() => removeProjectPage(activeProject.id, activePage.id)} onSaveRetrieval={saveInstantRetrieval} />
           : activeProject ? <ProjectPagesGrid project={activeProject} onBack={() => { setActiveProjectId(null); setActivePageId(null); }} onAddPage={() => createProjectPage(activeProject.id)} onOpenPage={(page) => setActivePageId(page.id)} onEdit={() => setProjectEditor({ project: activeProject, title: activeProject.title, description: activeProject.description })} onDelete={() => removeProject(activeProject.id)} />
-          : isEmpty ? <EmptyWorkspace displayName={displayName} userEmail={user?.email ?? ''} onAddNote={() => openNewNote()} onImport={handleImport} importError={importError} progress={importProgress} />
+          : isEmpty ? <EmptyWorkspace displayName={displayName} userEmail={user?.email ?? ''} onAddNote={() => openNewNote()} onImport={handleImport} onOpenImport={() => setImportOpen(true)} importError={importError} progress={importProgress} />
           : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? 'Instant retrieval' : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? AUTOMATIC_MUSE : activeMuse ?? AUTOMATIC_MUSE)} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} />
           : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onAddNote={(muse) => openNewNote(muse ?? AUTOMATIC_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />
-          : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onImport={() => { setImportError(''); setImportOpen(true); }} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
+          : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
       {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onImport={() => { setImportError(''); setImportOpen(true); }} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
       {museEditor && <MuseEditor state={museEditor} saving={saving} error={error} onChange={setMuseEditor} onClose={() => { setMuseEditor(null); setError(''); }} onSave={() => void saveMuse()} />}
       {projectEditor && <ProjectEditor state={projectEditor} error={error} onChange={setProjectEditor} onClose={() => { setProjectEditor(null); setError(''); }} onSave={saveProject} />}
-      {importOpen && <ImportOverlay onImport={handleImport} importError={importError} progress={importProgress} onClose={() => { setImportOpen(false); setImportError(''); setImportProgress(null); }} />}
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="light w-[calc(100vw-48px)] max-w-[480px] overflow-visible border-[#e6e7eb] bg-white p-0 text-[#141414] shadow-xl [&>button]:!-right-4 [&>button]:!-top-4 [&>button]:flex [&>button]:h-9 [&>button]:w-9 [&>button]:items-center [&>button]:justify-center [&>button]:rounded-full [&>button]:border [&>button]:border-[#e6e7eb] [&>button]:bg-white [&>button]:opacity-100 [&>button]:shadow-md">
+          <div className="max-h-[calc(100dvh-48px)] overflow-y-auto p-6">
+            <DialogTitle className="sr-only">Import notes</DialogTitle>
+            <NoteImporter onImport={handleImport} importError={importError} centerActions />
+            {importProgress && <p className="text-center text-sm text-[#777]" aria-live="polite">Importing {importProgress.completed} of {importProgress.total} notes…</p>}
+          </div>
+        </DialogContent>
+      </Dialog>
       {savedOpen && <SavedConfirmation />}
     </main>
   );
 }
 
-function Avatar({ email }: { email: string }) {
-  return <Link href="/profile" aria-label="Open profile" className="flex h-9 w-9 items-center justify-center rounded-full bg-[#bd315c] text-sm font-medium text-white hover:opacity-90 sm:h-10 sm:w-10">{(email[0] || 'U').toUpperCase()}</Link>;
+function Avatar({ email, onOpenImport }: { email: string; onOpenImport: () => void }) {
+  const menuItemClassName = 'cursor-pointer rounded-md px-3 py-2.5 !text-[#252525] hover:!bg-[#e8efff] focus:!bg-[#e8efff] focus:!text-[#1b3f88] data-[highlighted]:!bg-[#e8efff] data-[highlighted]:!text-[#1b3f88]';
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label="Open account menu" className="flex h-9 w-9 items-center justify-center rounded-full bg-[#bd315c] text-sm font-medium text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2 sm:h-10 sm:w-10">{(email[0] || 'U').toUpperCase()}</button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={10} className="w-48 rounded-xl border-[#e6e7eb] bg-white p-1.5 text-[#252525] shadow-lg">
+        <DropdownMenuItem asChild className={menuItemClassName}>
+          <Link href="/profile">Profile</Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild className={menuItemClassName}>
+          <a href="/terms">Terms of use</a>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild className={menuItemClassName}>
+          <a href="/privacy">Privacy policy</a>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator className="my-1 bg-[#ececef]" />
+        <DropdownMenuItem onSelect={onOpenImport} className={menuItemClassName}>Import notes</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
-function BetaAndAvatar({ email, feedback = false }: { email: string; feedback?: boolean }) {
+function BetaAndAvatar({ email, feedback = false, onOpenImport }: { email: string; feedback?: boolean; onOpenImport: () => void }) {
   return (
     <div className="flex items-center gap-4">
       <div className="inline-flex overflow-hidden rounded-md border border-[#a8c4ff] text-sm">
         <span className="bg-[#edf3ff] px-4 py-1.5 text-[#477bea]">Beta</span>
         {feedback && <a href="mailto:feedback@ocreda.com" className="hidden border-l border-[#a8c4ff] px-3 py-1.5 text-[#252525] hover:bg-[#f5f7fb] sm:block">Send feedback</a>}
       </div>
-      <Avatar email={email} />
+      <Avatar email={email} onOpenImport={onOpenImport} />
     </div>
   );
 }
 
-function EmptyWorkspace({ displayName, userEmail, onAddNote, onImport, importError, progress }: {
+function EmptyWorkspace({ displayName, userEmail, onAddNote, onImport, onOpenImport, importError, progress }: {
   displayName: string; userEmail: string; onAddNote: () => void;
-  onImport: (drafts: ImportNoteDraft[]) => Promise<void>; importError: string;
+  onImport: (drafts: ImportNoteDraft[]) => Promise<void>; onOpenImport: () => void; importError: string;
   progress: { completed: number; total: number } | null;
 }) {
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-y-auto bg-white px-5 md:overflow-hidden sm:px-10">
-      <div className="flex h-[72px] shrink-0 items-start justify-end pt-5 sm:h-[82px] sm:pt-7"><BetaAndAvatar email={userEmail} /></div>
+      <div className="flex h-[72px] shrink-0 items-start justify-end pt-5 sm:h-[82px] sm:pt-7"><BetaAndAvatar email={userEmail} onOpenImport={onOpenImport} /></div>
       <div className="flex flex-none flex-col items-center justify-start py-5 sm:py-7 md:min-h-0 md:flex-1 md:justify-center">
       <div className="mx-auto w-full max-w-[920px]">
         <div className="text-center">
@@ -541,39 +584,9 @@ function EmptyWorkspace({ displayName, userEmail, onAddNote, onImport, importErr
   );
 }
 
-/**
- * Bulk import, reachable at any time. The welcome screen keeps its own inline
- * importer; this is the same component in a dialog for everyone past that point.
- */
-function ImportOverlay({ onImport, importError, progress, onClose }: {
-  onImport: (drafts: ImportNoteDraft[]) => Promise<void>; importError: string;
-  progress: { completed: number; total: number } | null; onClose: () => void;
-}) {
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/25 p-4 backdrop-blur-[5px]" role="dialog" aria-modal="true" aria-label="Import notes" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="flex max-h-[90vh] w-[min(92vw,620px)] flex-col overflow-hidden rounded-[20px] bg-white shadow-2xl">
-        <header className="flex h-16 shrink-0 items-center border-b border-[#eeeeef] px-5 sm:px-7">
-          <h2 className="text-[17px] font-semibold">Import notes</h2>
-          <button type="button" onClick={onClose} aria-label="Close import" title="Close import" className="ml-auto flex h-9 w-9 items-center justify-center rounded-md text-[#777] hover:bg-[#f5f5f6]"><X className="h-5 w-5" /></button>
-        </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-7">
-          <NoteImporter onImport={onImport} importError={importError} />
-          {progress && <div className="mt-6" aria-live="polite"><div className="h-1.5 overflow-hidden rounded-full bg-[#eee]"><div className="h-full bg-[#477bea] transition-all" style={{ width: `${Math.round((progress.completed / progress.total) * 100)}%` }} /></div><p className="mt-2 text-center text-sm text-[#777]">Uploading and organizing {progress.completed} of {progress.total} notes</p></div>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onTogglePin, onAddMuse, onAddNote, onImport, onOpenPage, onOpenNote, onSaveRetrieval }: {
+function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onTogglePin, onAddMuse, onAddNote, onOpenImport, onOpenPage, onOpenNote, onSaveRetrieval }: {
   projects: CortexProject[]; muses: MuseMeta[]; pinnedMuseTitles: string[]; notes: Note[]; notesByMuse: Map<string, Note[]>; userEmail: string; busy: boolean;
-  onOpenMuses: () => void; onOpenMuse: (title: string) => void; onTogglePin: (title: string) => void; onAddMuse: () => void; onAddNote: () => void; onImport: () => void;
+  onOpenMuses: () => void; onOpenMuse: (title: string) => void; onTogglePin: (title: string) => void; onAddMuse: () => void; onAddNote: () => void; onOpenImport: () => void;
   onOpenPage: (project: CortexProject, page: ProjectPage) => void; onOpenNote: (note: Note) => void;
   onSaveRetrieval: (queryText: string, resultNotes: Note[], projectId: string, newProjectTitle?: string) => Promise<void>;
 }) {
@@ -589,10 +602,10 @@ function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, use
           <button type="button" onClick={onAddNote} className="flex h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-[#f5f5f6]" title="Add a note"><span className="flex h-7 w-16 items-center justify-center rounded-md bg-[#477bea] text-white"><Plus className="h-4 w-4" /></span><span className="hidden sm:inline">Add a note</span></button>
           <button type="button" onClick={() => setSearchOpen(true)} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Search className="h-5 w-5" /></button>
           <button type="button" onClick={() => setInstantRetrievalOpen(true)} aria-label="Open Instant Retrieval" title="Instant Retrieval" className="flex h-10 w-10 items-center justify-center rounded-md text-[#477bea] hover:bg-[#edf3ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><ScanSearch className="h-5 w-5" /></button>
-          <button type="button" onClick={onImport} aria-label="Import notes" title="Import notes" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Upload className="h-5 w-5" /></button>
+          <button type="button" onClick={onOpenImport} aria-label="Import notes" title="Import notes" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Upload className="h-5 w-5" /></button>
         </div>
         <h1 className="pointer-events-none absolute left-1/2 hidden -translate-x-1/2 text-sm font-normal text-[#b2b2b2] lg:block lg:text-base">Your knowledge</h1>
-        <div className="ml-auto"><BetaAndAvatar email={userEmail} feedback /></div>
+        <div className="ml-auto"><BetaAndAvatar email={userEmail} feedback onOpenImport={onOpenImport} /></div>
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-28 pt-10 sm:px-10 lg:px-16">
@@ -939,10 +952,41 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   return <>{text.split(expression).map((part, index) => termSet.has(part.toLowerCase()) ? <mark key={`${part}-${index}`} className="rounded-sm bg-[#eaf1ff] px-0.5 text-[#477bea]">{part}</mark> : part)}</>;
 }
 
-function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack, onAddNote, onOpenNote, onOpenPage, onUpdate, onDelete, onSaveRetrieval }: {
+function NoteDomainPicker({ category, muses, saving, onChange, showPrefix = false }: {
+  category: string | null; muses: MuseMeta[]; saving: boolean;
+  onChange: (category: string | null) => void; showPrefix?: boolean;
+}) {
+  const current = cleanCategory(category);
+  const label = current || 'Instant retrieval';
+  const itemClassName = 'flex cursor-pointer items-center justify-between rounded-md px-3 py-2 !text-[#252525] data-[highlighted]:!bg-[#e8efff] data-[highlighted]:!text-[#1b3f88]';
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" disabled={saving} aria-label={`Change note Domain, currently ${label}`} className={`inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-left hover:bg-[#edf3ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] disabled:opacity-50 ${showPrefix ? 'text-[#999]' : 'max-w-[24vw] text-[#777]'}`}>
+          <span className="truncate">{showPrefix ? `Note in ${label}` : label}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align={showPrefix ? 'start' : 'center'} sideOffset={6} className="z-[60] max-h-72 w-56 overflow-y-auto rounded-lg border-[#e0e0e0] bg-white p-1.5 shadow-xl">
+        <DropdownMenuItem disabled={saving} onSelect={() => { if (current) onChange(null); }} className={itemClassName}>
+          Instant retrieval {!current && <Check className="h-4 w-4 text-[#477bea]" />}
+        </DropdownMenuItem>
+        {muses.length > 0 && <DropdownMenuSeparator className="my-1 bg-[#ececef]" />}
+        {muses.map((muse) => {
+          const selected = current?.toLowerCase() === muse.title.toLowerCase();
+          return <DropdownMenuItem key={muse.title} disabled={saving} onSelect={() => { if (!selected) onChange(muse.title); }} className={itemClassName}>
+            <span className="min-w-0 truncate">{muse.title}</span>{selected && <Check className="h-4 w-4 shrink-0 text-[#477bea]" />}
+          </DropdownMenuItem>;
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack, onAddNote, onOpenNote, onOpenPage, onUpdate, onChangeDomain, onDelete, onSaveRetrieval }: {
   note: Note; allNotes: Note[]; muses: MuseMeta[]; projects: CortexProject[]; saving: boolean;
   onBack: () => void; onAddNote: () => void; onOpenNote: (note: Note) => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void;
-  onUpdate: (noteId: string, rawText: string) => Promise<void>; onDelete: (note: Note) => Promise<void>;
+  onUpdate: (noteId: string, rawText: string) => Promise<void>; onChangeDomain: (category: string | null) => void; onDelete: (note: Note) => Promise<void>;
   onSaveRetrieval: (queryText: string, resultNotes: Note[], projectId: string, newProjectTitle?: string) => Promise<void>;
 }) {
   const initial = splitNote(note);
@@ -1032,7 +1076,6 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
   };
 
   const openDate = () => setSearchRequest({ query: '', filter: { kind: 'date', value: localDateKey(note.created_at), label: fullNoteDate(note.created_at) } });
-  const openMuse = () => setSearchRequest({ query: muse, filter: { kind: 'muse', value: muse, label: muse } });
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white p-3 sm:p-5">
@@ -1045,7 +1088,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
           <button type="button" onClick={() => setSearchRequest({ query: '' })} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><Search className="h-5 w-5" /></button>
           <button type="button" onClick={() => setContextOpen((open) => !open)} aria-label={contextOpen ? 'Hide retrieved notes' : 'Show retrieved notes'} aria-expanded={contextOpen} className="flex h-9 items-center gap-2 rounded-md px-2 text-xs hover:bg-[#f4f4f4]"><PanelRightOpen className={`h-5 w-5 ${contextOpen ? '' : 'rotate-180'}`} /><span className="hidden lg:inline">{contextOpen ? 'Hide retrieval' : 'Show retrieval'}</span></button>
         </div>
-        <span className="pointer-events-none absolute left-1/2 hidden max-w-[24vw] -translate-x-1/2 truncate text-sm text-[#aaa] xl:block">{muse}</span>
+        <div className="absolute left-1/2 hidden -translate-x-1/2 text-sm xl:block"><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} /></div>
         <div className="relative ml-auto flex items-center gap-1 text-[#777]">
           <button type="button" disabled={!previousNote} onClick={() => previousNote && void leaveWorkspace(previousNote)} aria-label="Previous note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
           <button type="button" disabled={!nextNote} onClick={() => nextNote && void leaveWorkspace(nextNote)} aria-label="Next note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
@@ -1057,7 +1100,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, onBack,
       <div className={`grid min-h-0 flex-1 overflow-y-auto rounded-xl border border-[#d8d8d8] bg-[#f7f7f9] shadow-[0_2px_9px_rgba(0,0,0,0.13)] xl:overflow-hidden ${contextOpen ? 'xl:grid-cols-[minmax(0,1.05fr)_minmax(300px,.9fr)_300px]' : 'grid-cols-1'}`}>
         <section className="relative flex min-h-[520px] min-w-0 flex-col overflow-hidden bg-white xl:min-h-0">
           <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-24 pt-12 sm:px-12 xl:px-[8%]">
-            {editing ? <div className="mx-auto max-w-3xl"><input autoFocus maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" className="w-full bg-transparent text-2xl font-semibold outline-none" /><textarea ref={bodyRef} maxLength={4000} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="mx-auto max-w-3xl"><button type="button" onClick={() => setEditing(true)} className="block w-full rounded-md px-2 py-1 text-left outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><h1 className="text-2xl font-semibold">{title}</h1></button><div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]"><button type="button" onClick={openMuse} className="hover:text-[#477bea]">Note in {muse}</button><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div><button type="button" onClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="mt-9 block w-full rounded-md px-2 py-2 text-left text-base leading-[1.7] outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><span className="whitespace-pre-wrap">{body || note.raw_text || 'Tap to start writing.'}</span></button></article>}
+            {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" className="w-full bg-transparent text-2xl font-semibold outline-none" /><textarea ref={bodyRef} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="mx-auto max-w-3xl"><button type="button" onClick={() => setEditing(true)} className="block w-full rounded-md px-2 py-1 text-left outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><h1 className="break-words text-2xl font-semibold">{title}</h1></button><div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]"><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div><button type="button" onClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="mt-9 block w-full rounded-md px-2 py-2 text-left text-base leading-[1.7] outline-none hover:bg-[#f8f8f8] focus-visible:ring-2 focus-visible:ring-[#477bea]/20"><span className="whitespace-pre-wrap break-words">{body || note.raw_text || 'Tap to start writing.'}</span></button></article>}
           </div>
           <ReadingFormatBar onFormat={applyReadingFormat} onDone={() => setEditing(false)} editing={editing} />
           <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
@@ -1670,8 +1713,8 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
         </header>}
         <div className="relative flex min-h-0 flex-1">
           <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${domainCapture ? 'items-center px-8 pb-8 pt-[10vh]' : 'px-8 pb-5 pt-10 sm:px-16 sm:pt-12'}`}>
-            <input maxLength={120} value={state.title} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, title: event.target.value })} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); setEditingStarted(true); bodyRef.current?.focus(); } }} placeholder={domainCapture ? 'Title' : 'What’s on your mind?'} aria-label="Note title" className={`w-full shrink-0 bg-transparent outline-none placeholder:text-[#555] ${domainCapture ? 'max-w-2xl text-xl font-semibold sm:text-2xl' : 'text-xl font-medium italic sm:text-2xl'}`} />
-            <textarea ref={bodyRef} maxLength={2000} value={state.body} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, body: event.target.value })} placeholder={editingStarted ? '' : domainCapture ? 'Knowledge is what makes people special, and special people do special things, so make this one count.' : "For example: Someone made the point that we mostly don't choose our beliefs, we absorb them and backfill reasons after. Uncomfortable but I can't argue with it. Makes me wonder how much of what I think is actually mine."} aria-label="Note body" className={`mt-5 min-h-0 w-full flex-1 resize-none bg-transparent text-base leading-relaxed outline-none placeholder:text-[#aaa] ${domainCapture ? 'max-w-2xl sm:text-lg sm:leading-[1.65]' : ''}`} />
+            <input value={state.title} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, title: event.target.value })} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); setEditingStarted(true); bodyRef.current?.focus(); } }} placeholder={domainCapture ? 'Title' : 'What’s on your mind?'} aria-label="Note title" className={`w-full shrink-0 bg-transparent outline-none placeholder:text-[#555] ${domainCapture ? 'max-w-2xl text-xl font-semibold sm:text-2xl' : 'text-xl font-medium italic sm:text-2xl'}`} />
+            <textarea ref={bodyRef} value={state.body} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, body: event.target.value })} placeholder={editingStarted ? '' : domainCapture ? 'Knowledge is what makes people special, and special people do special things, so make this one count.' : "For example: Someone made the point that we mostly don't choose our beliefs, we absorb them and backfill reasons after. Uncomfortable but I can't argue with it. Makes me wonder how much of what I think is actually mine."} aria-label="Note body" className={`mt-5 min-h-0 w-full flex-1 resize-none bg-transparent text-base leading-relaxed outline-none placeholder:text-[#aaa] ${domainCapture ? 'max-w-2xl sm:text-lg sm:leading-[1.65]' : ''}`} />
           </div>
           {panelOpen && <RelevantNotesPanel notes={notes} relevance={relevance} loading={relevanceLoading} progress={relevanceProgress} error={relevanceError} stale={draftChangedSinceSearch} page={relevancePage} onPageChange={setRelevancePage} onRetry={() => void runRelevanceSearch()} onClose={() => setPanelOpen(false)} />}
         </div>

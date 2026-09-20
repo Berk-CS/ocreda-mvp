@@ -8,6 +8,12 @@ const nextConfig = {
     ignoreDuringBuilds: true,
   },
   images: { unoptimized: true },
+  async rewrites() {
+    return [
+      { source: '/terms', destination: '/ocreda-terms-of-service.html' },
+      { source: '/privacy', destination: '/ocreda-privacy-notice.html' },
+    ];
+  },
   webpack(config, { dev }) {
     // Next 13's persistent development cache can race its own temporary pack
     // files on macOS, producing repeated ENOENT rename warnings. Development
