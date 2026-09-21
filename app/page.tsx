@@ -1030,6 +1030,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [notesOpen, setNotesOpen] = useState(true);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [flippedReasonById, setFlippedReasonById] = useState<Record<string, boolean>>({});
   const [retrieval, setRetrieval] = useState<RelevanceSearch | null>(null);
   const [retrievalLoading, setRetrievalLoading] = useState(false);
   const [retrievalProgress, setRetrievalProgress] = useState<RelevanceProgress | null>(null);
@@ -1186,33 +1187,41 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
           <div className="space-y-4">
             {surfacedNotes.map((item) => {
               const content = splitNote(item);
-              const retrievalReason = relevanceByNoteId.get(item.id)?.explanation.trim() ?? '';
-              return <button
+              const retrievalResult = relevanceByNoteId.get(item.id);
+              const retrievalReason = retrievalResult?.explanation.trim() ?? '';
+              const retrievalSummary = retrievalResult?.gist.trim() ?? '';
+              const badge = retrievalResult?.relation_type ? RELATION_BADGES[retrievalResult.relation_type] : null;
+              const flipped = Boolean(flippedReasonById[item.id]);
+              return <div
                 key={item.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onMouseEnter={() => setSelectedNoteId(item.id)}
                 onFocus={() => setSelectedNoteId(item.id)}
                 onClick={() => setSelectedNoteId(item.id)}
                 onDoubleClick={() => void leaveWorkspace(item)}
-                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void leaveWorkspace(item); } }}
+                onKeyDown={(event) => { if (event.target === event.currentTarget && event.key === 'Enter') { event.preventDefault(); void leaveWorkspace(item); } }}
                 aria-label={`${content.title}${retrievalReason ? `. Retrieval reason: ${retrievalReason}` : ''}. Double-click or press Enter to open`}
-                title={retrievalReason ? 'Hover to see why this note was retrieved. Double-click to open.' : 'Double-click to open note'}
+                title="Double-click to open note"
                 aria-pressed={selectedNote?.id === item.id}
-                className={`group block h-[190px] w-full overflow-hidden rounded-md border bg-[#f7f7f9] p-2 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}
+                className={`block w-full cursor-pointer rounded-lg border bg-[#fafafb] p-3 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}
               >
-                <span className="relative block h-[142px] overflow-hidden rounded bg-white">
-                  <span className={`absolute inset-0 block p-4 transition-opacity duration-150 motion-reduce:transition-none ${retrievalReason ? 'group-hover:opacity-0 group-focus:opacity-0' : ''}`}>
-                    <span className="float-right text-[11px] text-[#477bea]">note</span>
-                    <strong className="block max-w-[80%] truncate text-sm">{content.title}</strong>
-                    <span className="mt-3 block line-clamp-4 text-xs leading-relaxed text-[#777]">{content.body || notePreview(item)}</span>
-                  </span>
-                  {retrievalReason && <span className="absolute inset-0 flex flex-col bg-[#edf3ff] p-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus:opacity-100 motion-reduce:transition-none">
-                    <span className="text-[11px] font-medium text-[#477bea]">Why this was retrieved</span>
-                    <span className="mt-3 block line-clamp-5 text-xs italic leading-relaxed text-[#56637a]">{retrievalReason}</span>
-                  </span>}
-                </span>
-                <span className="mt-2 flex items-center justify-between px-2 text-[11px] text-[#aaa]"><span className="truncate">Domain: {cleanCategory(item.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span>
-              </button>;
+                <div className="flex items-start justify-between gap-2">
+                  <strong className="min-w-0 flex-1 truncate text-sm text-[#222]">{content.title}</strong>
+                  {badge ? <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>{badge.label}</span> : <span className="shrink-0 text-[11px] text-[#477bea]">note</span>}
+                </div>
+                <p className="mt-2 line-clamp-3 text-[13px] leading-relaxed text-[#333]">{content.body || notePreview(item)}</p>
+                {retrievalReason && (retrievalSummary ? <AnnotationFlip
+                  summary={retrievalSummary}
+                  relevance={retrievalReason}
+                  flipped={flipped}
+                  onFlip={() => setFlippedReasonById((current) => ({ ...current, [item.id]: !flipped }))}
+                /> : <div className="mt-2.5 rounded-md bg-[#f4f7ff] px-2.5 py-2">
+                  <p className="text-[9px] font-semibold uppercase tracking-[0.09em] text-[#8ba0d8]">Why it’s relevant</p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-[#5d6b85]">{retrievalReason}</p>
+                </div>)}
+                <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#aaa]"><span className="truncate">Domain: {cleanCategory(item.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(item.created_at)}</span></div>
+              </div>;
             })}
             {!surfacedNotes.length && !retrievalLoading && !retrievalError && !noteTooShortForRetrieval && hasOtherNotes && <p className="px-4 py-12 text-center text-sm leading-relaxed text-[#999]">No related notes found yet.</p>}
           </div>
