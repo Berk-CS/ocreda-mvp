@@ -1094,6 +1094,10 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
 
   const selectedNote = surfacedNotes.find((item) => item.id === selectedNoteId) ?? surfacedNotes[0] ?? null;
   const noteById = useMemo(() => new Map(allNotes.map((item) => [item.id, item])), [allNotes]);
+  const relevanceByNoteId = useMemo(
+    () => new Map((retrieval?.results ?? []).map((result) => [result.note_id, result])),
+    [retrieval]
+  );
   const surfacedNoteIds = new Set(surfacedNotes.map((item) => item.id));
   const summaries = (retrieval?.results ?? [])
     .filter((result) => surfacedNoteIds.has(result.note_id))
@@ -1182,6 +1186,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
           <div className="space-y-4">
             {surfacedNotes.map((item) => {
               const content = splitNote(item);
+              const retrievalReason = relevanceByNoteId.get(item.id)?.explanation.trim() ?? '';
               return <button
                 key={item.id}
                 type="button"
@@ -1190,12 +1195,22 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
                 onClick={() => setSelectedNoteId(item.id)}
                 onDoubleClick={() => void leaveWorkspace(item)}
                 onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void leaveWorkspace(item); } }}
-                aria-label={`${content.title}. Double-click or press Enter to open`}
-                title="Double-click to open note"
+                aria-label={`${content.title}${retrievalReason ? `. Retrieval reason: ${retrievalReason}` : ''}. Double-click or press Enter to open`}
+                title={retrievalReason ? 'Hover to see why this note was retrieved. Double-click to open.' : 'Double-click to open note'}
                 aria-pressed={selectedNote?.id === item.id}
-                className={`block h-[190px] w-full overflow-hidden rounded-md border bg-[#f7f7f9] p-2 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}
+                className={`group block h-[190px] w-full overflow-hidden rounded-md border bg-[#f7f7f9] p-2 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}
               >
-                <span className="block h-[142px] overflow-hidden rounded bg-white p-4"><span className="float-right text-[11px] text-[#477bea]">note</span><strong className="block max-w-[80%] truncate text-sm">{content.title}</strong><span className="mt-3 block line-clamp-4 text-xs leading-relaxed text-[#777]">{content.body || notePreview(item)}</span></span>
+                <span className="relative block h-[142px] overflow-hidden rounded bg-white">
+                  <span className={`absolute inset-0 block p-4 transition-opacity duration-150 motion-reduce:transition-none ${retrievalReason ? 'group-hover:opacity-0 group-focus:opacity-0' : ''}`}>
+                    <span className="float-right text-[11px] text-[#477bea]">note</span>
+                    <strong className="block max-w-[80%] truncate text-sm">{content.title}</strong>
+                    <span className="mt-3 block line-clamp-4 text-xs leading-relaxed text-[#777]">{content.body || notePreview(item)}</span>
+                  </span>
+                  {retrievalReason && <span className="absolute inset-0 flex flex-col bg-[#edf3ff] p-4 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus:opacity-100 motion-reduce:transition-none">
+                    <span className="text-[11px] font-medium text-[#477bea]">Why this was retrieved</span>
+                    <span className="mt-3 block line-clamp-5 text-xs italic leading-relaxed text-[#56637a]">{retrievalReason}</span>
+                  </span>}
+                </span>
                 <span className="mt-2 flex items-center justify-between px-2 text-[11px] text-[#aaa]"><span className="truncate">Domain: {cleanCategory(item.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span>
               </button>;
             })}
