@@ -62,8 +62,13 @@ function stableHash(value: string): number {
   return hash;
 }
 
+// Bump the version whenever the wording of saved summaries or reasons changes,
+// so notes opened before the change are retrieved again instead of showing the
+// old text. v2: summaries and gists speak to the user in the second person.
+const SAVED_RETRIEVAL_VERSION = 'v2';
+
 function savedRetrievalKey(userId: string, noteId: string): string {
-  return `ocreda-saved-retrieval:${userId}:${noteId}`;
+  return `ocreda-saved-retrieval:${SAVED_RETRIEVAL_VERSION}:${userId}:${noteId}`;
 }
 
 function noteSignature(note: Note): string {
