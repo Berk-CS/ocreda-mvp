@@ -79,6 +79,9 @@ function readSavedRetrieval(userId: string, note: Note): { mode: 'similar' | 're
     if (!saved.search.results.every((result) => result && typeof result.note_id === 'string' && typeof result.gist === 'string')) return null;
     if (saved.search.summary !== undefined && typeof saved.search.summary !== 'string') return null;
     if (saved.mode !== 'similar' && saved.mode !== 'relevant') return null;
+    // Older similarity-only responses have empty explanations. Do not reuse
+    // them in the annotated reading view, where every card needs a reason.
+    if (saved.mode === 'relevant' && !saved.search.results.every((result) => typeof result.explanation === 'string' && result.explanation.trim())) return null;
     return { mode: saved.mode, search: saved.search };
   } catch {
     return null;
@@ -171,7 +174,7 @@ export default function OcredaHome() {
   const [displayName, setDisplayName] = useState('');
   const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
-  const [activeNoteRetrievalMode, setActiveNoteRetrievalMode] = useState<'similar' | 'relevant'>('similar');
+  const [activeNoteRetrievalMode, setActiveNoteRetrievalMode] = useState<'similar' | 'relevant'>('relevant');
   const [museEditor, setMuseEditor] = useState<MuseEditorState | null>(null);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -302,7 +305,7 @@ export default function OcredaHome() {
     setView('muses');
   }, []);
   const openNewNote = (muse = AUTOMATIC_MUSE) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
-  const openExistingNote = (note: Note) => { setError(''); setActiveNoteRetrievalMode('similar'); setActiveNoteId(note.id); };
+  const openExistingNote = (note: Note) => { setError(''); setActiveNoteRetrievalMode('relevant'); setActiveNoteId(note.id); };
   const createMuseFromEditor = (value: string) => {
     const requested = cleanCategory(value);
     if (!requested) return;
@@ -333,7 +336,7 @@ export default function OcredaHome() {
         processNote(created.id).catch(() => {});
         savedNoteId = created.id;
       }
-      setNoteEditor(null); setActiveNoteRetrievalMode(findRelevant ? 'relevant' : 'similar'); setActiveNoteId(savedNoteId);
+      setNoteEditor(null); setActiveNoteRetrievalMode('relevant'); setActiveNoteId(savedNoteId);
       if (!findRelevant) flashSaved();
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this note.')); }
     finally { setSaving(false); }
@@ -1189,7 +1192,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
               const content = splitNote(item);
               const retrievalResult = relevanceByNoteId.get(item.id);
               const retrievalReason = retrievalResult?.explanation.trim() ?? '';
-              const retrievalSummary = retrievalResult?.gist.trim() ?? '';
+              const retrievalSummary = retrievalResult?.gist.trim() || item.summary?.trim() || notePreview(item);
               const badge = retrievalResult?.relation_type ? RELATION_BADGES[retrievalResult.relation_type] : null;
               const flipped = Boolean(flippedReasonById[item.id]);
               return <div
@@ -1481,19 +1484,19 @@ const RELATION_BADGES: Partial<Record<NoteRelationType, { label: string; classNa
 };
 
 /**
- * The tinted annotation under a relevant note, with the summary on its front
- * and why-it's-relevant on its back. Both faces share one grid cell, so the
+ * The tinted annotation under a relevant note, with why-it's-relevant on its
+ * front and the note summary on its back. Both faces share one grid cell, so the
  * panel is as tall as the longer of the two and nothing below it jumps when it
  * turns over.
  */
 function AnnotationFlip({ summary, relevance, flipped, onFlip }: {
   summary: string; relevance: string; flipped: boolean; onFlip: () => void;
 }) {
-  // Each face carries its own tint: blue restates the note, green explains how
-  // it bears on the draft, so which side is showing reads at a glance.
+  // Each face carries its own tint: green explains how the note bears on the
+  // draft first; blue restates the note after the reader deliberately flips it.
   const faces = [
-    { key: 'summary', label: 'Summary', text: summary, action: 'Why it’s relevant', hidden: flipped, back: false, panel: 'bg-[#f4f7ff]', labelColor: 'text-[#8ba0d8]', textColor: 'text-[#5d6b85]' },
-    { key: 'relevance', label: 'Why it’s relevant', text: relevance, action: 'Summary', hidden: !flipped, back: true, panel: 'bg-[#e4f2e8]', labelColor: 'text-[#6aa37c]', textColor: 'text-[#4a6b55]' },
+    { key: 'relevance', label: 'Why it’s relevant', text: relevance, action: 'Summary', hidden: flipped, back: false, panel: 'bg-[#e4f2e8]', labelColor: 'text-[#6aa37c]', textColor: 'text-[#4a6b55]' },
+    { key: 'summary', label: 'Summary', text: summary, action: 'Why it’s relevant', hidden: !flipped, back: true, panel: 'bg-[#f4f7ff]', labelColor: 'text-[#8ba0d8]', textColor: 'text-[#5d6b85]' },
   ];
   return (
     <div className="mt-2.5 [perspective:900px]">
