@@ -27,7 +27,7 @@ async function summarizeMatches(results: RelevanceResult[], apiKey: string): Pro
   const fallback = gists.join(" ");
   try {
     const summary = await generateWithGemini(
-      "Summarize the supplied notes together in 2-4 plain sentences. Cover the distinct ideas across all of them, including any tension between them. Use only the supplied facts. Do not mention the search, relevance scores, or the act of summarizing. Return only the summary text.",
+      "These are the person's own notes. Talk to them about what the notes add up to, the way a thoughtful friend would, in 2-4 plain sentences. Speak directly to them in the second person: \"you wrote\", \"you keep coming back to\", \"you seem torn between\". Never call them \"the author\", \"the writer\", or \"the user\", and never describe the notes from the outside (\"these notes discuss\"). Anyone else mentioned keeps their name. Cover the distinct ideas across all of them, including any tension between them. Use only the supplied facts. Do not mention the search, relevance scores, or the act of summarizing. Return only the summary text.",
       [{ role: "user", content: gists.map((gist, index) => `Note ${index + 1}: ${gist}`).join("\n") }],
       apiKey,
       undefined,
