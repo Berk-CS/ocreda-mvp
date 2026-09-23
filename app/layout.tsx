@@ -10,8 +10,8 @@ import AppChrome from '@/components/AppChrome';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Ocreda — Stop organizing. Start using.',
-  description: 'Your AI-powered personal knowledge base',
+  title: 'Ocreda: You don\'t look for notes, they come to you',
+  description: 'You shouldn\'t have to struggle to remember your own knowledge',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
