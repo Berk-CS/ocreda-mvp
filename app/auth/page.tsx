@@ -89,7 +89,7 @@ export default function AuthPage() {
             <Image src="/ocreda-logo.png" alt="Ocreda" width={48} height={48} className="object-contain" />
           </div>
           <h1 className="text-2xl font-bold text-foreground">Access Ocreda</h1>
-          <p className="text-sm text-muted-foreground mt-1">Stop organizing. Start using.</p>
+          <p className="text-sm text-muted-foreground mt-1">You don’t look for your notes, they come to you</p>
         </div>
 
         {error && (
