@@ -11,7 +11,7 @@ import { useAuth } from '@/lib/auth-context';
 import { createNote, deleteNote, findRelevantNotes, findSimilarNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
 import { supabase } from '@/lib/supabase';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
-import { Note, NoteRelationType, RelevanceCoverage, RelevanceResult } from '@/lib/types';
+import { DomainGoal, Note, NoteInsight, NoteRelationType, RelevanceCoverage, RelevanceResult } from '@/lib/types';
 
 type MuseMeta = { title: string; description: string; createdAt: string };
 type ProjectPage = { id: string; title: string; content: string; sourceNoteIds: string[]; createdAt: string; updatedAt: string };
@@ -31,6 +31,17 @@ const AUTOMATIC_MUSE = '__automatic__';
 function cleanCategory(value: string | null | undefined): string | null {
   const clean = value?.trim().replace(/\s+/g, ' ') ?? '';
   return clean || null;
+}
+
+/**
+ * The Domain a search is made from, with its description standing in as the
+ * goal. Null for notes outside any Domain, which are searched on their text alone.
+ */
+function domainGoalFor(category: string | null | undefined, muses: MuseMeta[]): DomainGoal | null {
+  const name = cleanCategory(category);
+  if (!name || name === AUTOMATIC_MUSE) return null;
+  const meta = muses.find((muse) => muse.title.toLowerCase() === name.toLowerCase());
+  return { name, goal: meta?.description.trim() ?? '' };
 }
 
 /** Longer than this, a first line is prose the writer never meant as a heading. */
@@ -89,22 +100,24 @@ function stableHash(value: string): number {
 // Bump the version whenever the wording of saved summaries or reasons changes,
 // so notes opened before the change are retrieved again instead of showing the
 // old text. v2: summaries and gists speak to the user in the second person.
-const SAVED_RETRIEVAL_VERSION = 'v2';
+// v3: results carry a goal-aware insight, and the goal is part of the signature.
+const SAVED_RETRIEVAL_VERSION = 'v3';
 
 function savedRetrievalKey(userId: string, noteId: string): string {
   return `ocreda-saved-retrieval:${SAVED_RETRIEVAL_VERSION}:${userId}:${noteId}`;
 }
 
-function noteSignature(note: Note): string {
-  return `${note.raw_text.length}:${stableHash(note.raw_text)}`;
+/** Changing either the note or its Domain's goal changes what a search would return. */
+function noteSignature(note: Note, goal: string): string {
+  return `${note.raw_text.length}:${stableHash(note.raw_text)}:${stableHash(goal)}`;
 }
 
-function readSavedRetrieval(userId: string, note: Note): { mode: 'similar' | 'relevant'; search: RelevanceSearch } | null {
+function readSavedRetrieval(userId: string, note: Note, goal: string): { mode: 'similar' | 'relevant'; search: RelevanceSearch } | null {
   try {
     const saved = JSON.parse(localStorage.getItem(savedRetrievalKey(userId, note.id)) ?? 'null') as {
       signature?: string; mode?: string; search?: RelevanceSearch;
     } | null;
-    if (saved?.signature !== noteSignature(note) || !Array.isArray(saved.search?.results) || !saved.search?.coverage) return null;
+    if (saved?.signature !== noteSignature(note, goal) || !Array.isArray(saved.search?.results) || !saved.search?.coverage) return null;
     if (!saved.search.results.every((result) => result && typeof result.note_id === 'string' && typeof result.gist === 'string')) return null;
     if (saved.search.summary !== undefined && typeof saved.search.summary !== 'string') return null;
     if (saved.mode !== 'similar' && saved.mode !== 'relevant') return null;
@@ -117,9 +130,9 @@ function readSavedRetrieval(userId: string, note: Note): { mode: 'similar' | 're
   }
 }
 
-function persistSavedRetrieval(userId: string, note: Note, mode: 'similar' | 'relevant', search: RelevanceSearch): void {
+function persistSavedRetrieval(userId: string, note: Note, goal: string, mode: 'similar' | 'relevant', search: RelevanceSearch): void {
   try {
-    localStorage.setItem(savedRetrievalKey(userId, note.id), JSON.stringify({ signature: noteSignature(note), mode, search }));
+    localStorage.setItem(savedRetrievalKey(userId, note.id), JSON.stringify({ signature: noteSignature(note, goal), mode, search }));
   } catch {
     // A full or disabled browser store should not prevent the note itself from being saved.
   }
@@ -1093,6 +1106,10 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
   const nextNote = noteIndex > 0 ? orderedNotes[noteIndex - 1] : null;
   const noteTooShortForRetrieval = note.raw_text.trim().length < MIN_RELEVANCE_DRAFT_CHARS;
   const hasOtherNotes = allNotes.some((item) => item.id !== note.id);
+  const domainGoal = domainGoalFor(note.category, muses);
+  // Primitives, so a new muses array with the same content does not rerun the search.
+  const domainName = domainGoal?.name ?? '';
+  const goalText = domainGoal?.goal ?? '';
 
   useEffect(() => {
     // The editor autosaves while typing. Wait until editing finishes before
@@ -1100,7 +1117,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
     if (editing) return;
     let active = true;
     setRetrieval(null); setRetrievalError(''); setRetrievalProgress(null); setSelectedNoteId(null);
-    const saved = retrievalAttempt === 0 ? readSavedRetrieval(userId, note) : null;
+    const saved = retrievalAttempt === 0 ? readSavedRetrieval(userId, note, goalText) : null;
     if (saved && (retrievalMode === 'similar' || saved.mode === 'relevant')) {
       setRetrieval(saved.search);
       setRetrievalLoading(false);
@@ -1108,13 +1125,16 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
     }
     if (noteTooShortForRetrieval || !hasOtherNotes) { setRetrievalLoading(false); return; }
     setRetrievalLoading(true);
-    const search = retrievalMode === 'relevant' ? findRelevantNotes : findSimilarNotes;
-    search(note.raw_text, note.id, (progress) => { if (active) setRetrievalProgress(progress); }, allNotes)
-      .then((response) => { if (active) { setRetrieval(response); persistSavedRetrieval(userId, note, retrievalMode, response); } })
+    const onProgress = (progress: RelevanceProgress) => { if (active) setRetrievalProgress(progress); };
+    const search = retrievalMode === 'relevant'
+      ? findRelevantNotes(note.raw_text, note.id, onProgress, domainName ? { name: domainName, goal: goalText } : null)
+      : findSimilarNotes(note.raw_text, note.id, onProgress, allNotes);
+    search
+      .then((response) => { if (active) { setRetrieval(response); persistSavedRetrieval(userId, note, goalText, retrievalMode, response); } })
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
     return () => { active = false; };
-  }, [allNotes, editing, hasOtherNotes, note, noteTooShortForRetrieval, retrievalAttempt, retrievalMode, userId]);
+  }, [allNotes, domainName, editing, goalText, hasOtherNotes, note, noteTooShortForRetrieval, retrievalAttempt, retrievalMode, userId]);
 
   const surfacedNotes = useMemo(() => {
     const notesById = new Map(allNotes.map((item) => [item.id, item]));
@@ -1493,7 +1513,7 @@ function InstantRetrievalOverlay({ notes, projects, initialQuery = '', saving, o
   );
 }
 
-type RelevanceSearch = { results: RelevanceResult[]; coverage: RelevanceCoverage; summary?: string };
+type RelevanceSearch = { results: RelevanceResult[]; coverage: RelevanceCoverage; summary?: string; insight?: NoteInsight | null; goal_suggestions?: string[] };
 
 // Five per page rather than ten, so each card has room to preview the note's
 // own text under the explanation instead of only its title.
@@ -1783,13 +1803,17 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
     if (draftTooShort || relevanceLoading) return;
     setPanelOpen(true); setRelevanceError(''); setRelevancePage(0);
 
-    const cached = relevanceCache.current.get(draftText);
+    const domain = domainGoalFor(state.muse, muses);
+    const cacheKey = `${domain?.name ?? ''}
+${domain?.goal ?? ''}
+${draftText}`;
+    const cached = relevanceCache.current.get(cacheKey);
     if (cached) { setRelevance(cached); setSearchedDraft(draftText); return; }
 
     setRelevanceProgress(null); setRelevanceLoading(true);
     try {
-      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress);
-      relevanceCache.current.set(draftText, response);
+      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, domain);
+      relevanceCache.current.set(cacheKey, response);
       setRelevance(response); setSearchedDraft(draftText);
     } catch (err) {
       setRelevance(null);

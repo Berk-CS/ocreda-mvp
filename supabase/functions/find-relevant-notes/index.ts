@@ -10,18 +10,35 @@ import {
 } from "../_shared/gemini.ts";
 import {
   condenseDraft,
+  findInsight,
   mergeAgentResults,
+  readGoalContext,
   runRelevanceAgents,
   streamRelevanceSearch,
   DEFAULT_AGENT_CONCURRENCY,
   DEFAULT_AGENT_COUNT,
   MIN_DRAFT_CHARS,
+  type GoalContext,
+  type InsightOutcome,
   type NoteLike,
   type RelevanceResult,
 } from "../_shared/relevance.ts";
 
 const MAX_NOTES = 1000;
 const MAX_RESULTS = 50;
+
+/**
+ * The combined "Summary of related notes" is switched off: the insight card
+ * replaced it. The code is kept so it can come back without a redeploy - set
+ * the RELEVANCE_COMBINED_SUMMARY secret to "on". It costs one extra model call
+ * per search while on.
+ */
+const COMBINED_SUMMARY_ENABLED = Deno.env.get("RELEVANCE_COMBINED_SUMMARY") === "on";
+
+/** Same reasoning as SUMMARY_TOKEN_BUDGET below: headroom for a thinking model. */
+const INSIGHT_TOKEN_BUDGET = 3000;
+const INSIGHT_SYSTEM_PROMPT =
+  "You help a person act on their own past notes. You respond with a JSON object and nothing else.";
 /**
  * A ceiling, not a target: only generated tokens are billed, and the summary
  * itself needs ~150. The headroom is for a thinking model's reasoning, which
@@ -39,10 +56,11 @@ const AGENT_SYSTEM_PROMPT =
  * on real traffic. Operator-only: never add this to a response body. It holds
  * counts only, no note text and no user id.
  */
-function logUsage(usage: TokenUsage, notesTotal: number, startedAt: number): void {
+function logUsage(usage: TokenUsage, notesTotal: number, startedAt: number, context: GoalContext): void {
   console.log(JSON.stringify({
     event: "find_relevant_notes_usage",
     notes_total: notesTotal,
+    has_goal: Boolean(context.goal),
     llm_calls: usage.calls,
     input_tokens: usage.inputTokens,
     cached_input_tokens: usage.cachedInputTokens,
@@ -51,6 +69,43 @@ function logUsage(usage: TokenUsage, notesTotal: number, startedAt: number): voi
     cost_usd: Number(usage.costUsd.toFixed(6)),
     duration_ms: Date.now() - startedAt,
   }));
+}
+
+async function findMatchInsight(
+  draft: string,
+  context: GoalContext,
+  notes: NoteLike[],
+  results: RelevanceResult[],
+  excludeNoteId: string | null,
+  apiKey: string,
+  usage: TokenUsage,
+): Promise<InsightOutcome> {
+  try {
+    return await findInsight({
+      draft,
+      context,
+      notes,
+      results,
+      excludeNoteId,
+      generate: async (prompt) => {
+        const { text, truncated, usage: callUsage } = await generateWithGeminiResult(
+          INSIGHT_SYSTEM_PROMPT,
+          [{ role: "user", content: prompt }],
+          apiKey,
+          undefined,
+          { responseMimeType: "application/json", temperature: 0.2, maxOutputTokens: INSIGHT_TOKEN_BUDGET },
+        );
+        addTokenUsage(usage, callUsage);
+        // Cut-off JSON will not parse, which drops the insight; say why in the logs.
+        if (truncated) console.error("find-relevant-notes insight hit the token budget");
+        return text;
+      },
+    });
+  } catch (error) {
+    // The matches are still worth showing without an insight.
+    console.error("find-relevant-notes insight failed:", error instanceof Error ? error.message : error);
+    return { insight: null, goal_suggestions: [] };
+  }
 }
 
 async function summarizeMatches(results: RelevanceResult[], apiKey: string, usage: TokenUsage): Promise<string> {
@@ -117,6 +172,7 @@ Deno.serve(async (req: Request) => {
     const body = await req.json().catch(() => null);
     const draftText = typeof body?.draft_text === "string" ? body.draft_text.trim() : "";
     const excludeNoteId = typeof body?.exclude_note_id === "string" ? body.exclude_note_id : null;
+    const goalContext = readGoalContext(body?.domain);
 
     if (draftText.length < MIN_DRAFT_CHARS) {
       return json({ error: "Write a little more before searching for related notes." }, 400);
@@ -127,7 +183,7 @@ Deno.serve(async (req: Request) => {
 
     let query = supabase
       .from("notes")
-      .select("id, raw_text, summary, created_at")
+      .select("id, raw_text, summary, created_at, category")
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(MAX_NOTES);
@@ -146,9 +202,16 @@ Deno.serve(async (req: Request) => {
 
     const startedAt = Date.now();
     const usage = emptyTokenUsage();
+    const draft = condenseDraft(draftText);
+    const summarize = COMBINED_SUMMARY_ENABLED
+      ? (results: RelevanceResult[]) => summarizeMatches(results, apiKey, usage)
+      : undefined;
+    const insightFor = (results: RelevanceResult[]) =>
+      findMatchInsight(draft, goalContext, notes, results, excludeNoteId, apiKey, usage);
     const agentOptions = {
-      draft: condenseDraft(draftText),
+      draft,
       notes,
+      goal: goalContext.goal,
       agentCount: DEFAULT_AGENT_COUNT,
       concurrency: DEFAULT_AGENT_CONCURRENCY,
       isRetryable: isRetryableGeminiError,
@@ -171,7 +234,8 @@ Deno.serve(async (req: Request) => {
       const stream = streamRelevanceSearch({
         ...agentOptions,
         maxResults: MAX_RESULTS,
-        summarize: (results) => summarizeMatches(results, apiKey, usage),
+        summarize,
+        findInsight: insightFor,
         allFailedMessage: "Relevance search is unavailable right now. Please try again.",
         failedMessage: "Relevance search failed. Please try again.",
         onError: (error) =>
@@ -179,7 +243,7 @@ Deno.serve(async (req: Request) => {
       });
       // Log once the stream has ended, when every call has been counted.
       const logged = stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-        flush: () => logUsage(usage, notes.length, startedAt),
+        flush: () => logUsage(usage, notes.length, startedAt, goalContext),
       }));
       return new Response(logged, {
         headers: { ...corsHeaders, "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" },
@@ -194,15 +258,20 @@ Deno.serve(async (req: Request) => {
     // Every agent failed: report an outage rather than an empty result set,
     // which would read as "nothing in your notes is related".
     if (notesSearched === 0) {
-      logUsage(usage, notes.length, startedAt);
+      logUsage(usage, notes.length, startedAt, goalContext);
       return json({ error: "Relevance search is unavailable right now. Please try again." }, 502);
     }
 
-    const summary = await summarizeMatches(results, apiKey, usage);
-    logUsage(usage, notes.length, startedAt);
+    const [summary, outcome] = await Promise.all([
+      summarize && results.length ? summarize(results) : Promise.resolve(""),
+      insightFor(results),
+    ]);
+    logUsage(usage, notes.length, startedAt, goalContext);
     return json({
       results,
-      summary,
+      ...(summary ? { summary } : {}),
+      insight: outcome.insight,
+      goal_suggestions: outcome.goal_suggestions,
       coverage: {
         notes_searched: notesSearched,
         notes_total: notes.length,

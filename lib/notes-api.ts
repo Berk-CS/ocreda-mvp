@@ -14,6 +14,7 @@ import {
   Note,
   Question,
   ConversationMessage,
+  DomainGoal,
   RelevanceProgress,
   RelevantNotesResponse,
 } from './types';
@@ -538,9 +539,10 @@ export async function findSimilarNotes(
 export async function findRelevantNotes(
   draftText: string,
   excludeNoteId?: string | null,
-  onProgress?: (progress: RelevanceProgress) => void
+  onProgress?: (progress: RelevanceProgress) => void,
+  domain?: DomainGoal | null
 ): Promise<RelevantNotesResponse> {
-  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress);  // DEV-LOCAL-MODE
+  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress, domain);  // DEV-LOCAL-MODE
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (sessionError || !accessToken) {
@@ -556,7 +558,8 @@ export async function findRelevantNotes(
         apikey: SUPABASE_ANON_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null, stream: true }),
+      // The Domain's goal lives in this browser, so it travels with the search.
+      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null, domain: domain ?? null, stream: true }),
     });
   } catch (error) {
     // A missing Edge Function or failed CORS preflight surfaces as an opaque
