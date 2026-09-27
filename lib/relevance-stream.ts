@@ -23,7 +23,14 @@ function readInsight(value: unknown, resultIds: Set<string>): NoteInsight | null
 function toRelevantNotesResponse(payload: Record<string, unknown> | null): RelevantNotesResponse {
   const results = payload && Array.isArray(payload.results) ? (payload.results as RelevanceResult[]) : [];
   const rawCoverage = payload?.coverage as Partial<RelevanceCoverage> | undefined;
-  const insight = readInsight(payload?.insight, new Set(results.map((result) => result.note_id)));
+  const resultIds = new Set(results.map((result) => result.note_id));
+  // Servers from before there could be several send one "insight" instead.
+  const rawInsights = !payload ? undefined
+    : Array.isArray(payload.insights) ? payload.insights
+      : 'insight' in payload ? [payload.insight] : undefined;
+  const insights = rawInsights
+    ?.map((item) => readInsight(item, resultIds))
+    .filter((item): item is NoteInsight => Boolean(item));
   const rawSuggestions = payload?.goal_suggestions;
   const goalSuggestions = Array.isArray(rawSuggestions)
     ? rawSuggestions.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map((item) => item.trim())
@@ -31,7 +38,7 @@ function toRelevantNotesResponse(payload: Record<string, unknown> | null): Relev
   return {
     results,
     summary: typeof payload?.summary === 'string' ? payload.summary.trim() : undefined,
-    ...(insight !== undefined ? { insight } : {}),
+    ...(insights ? { insights } : {}),
     ...(goalSuggestions.length ? { goal_suggestions: goalSuggestions } : {}),
     coverage: {
       notes_searched: Number(rawCoverage?.notes_searched ?? 0),

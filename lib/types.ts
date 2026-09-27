@@ -41,7 +41,7 @@ export interface ConversationMessage {
  * "parallel" is the one that is not topical: the same pattern or way of seeing
  * turning up somewhere else in the person's life.
  */
-export type NoteRelationType = 'supports' | 'extends' | 'contradicts' | 'question' | 'parallel';
+export type NoteRelationType = 'supports' | 'extends' | 'contradicts' | 'question' | 'parallel' | 'helps' | 'solves';
 
 export interface RelevanceResult {
   note_id: string;
@@ -100,10 +100,11 @@ export interface RelevantNotesResponse {
   /** A short synthesis of the related notes as a group, when the server has it switched on. */
   summary?: string;
   /**
-   * Undefined when the server ran no insight step (similar-notes mode, or an
-   * older server). Null when it ran and found nothing worth saying.
+   * Up to three, each about a different passage. Undefined when the server
+   * ran no insight step (similar-notes mode, or an older server); empty when
+   * it ran and found nothing worth saying.
    */
-  insight?: NoteInsight | null;
+  insights?: NoteInsight[];
   /** Guesses at the Domain's goal, offered only when it has none. */
   goal_suggestions?: string[];
 }

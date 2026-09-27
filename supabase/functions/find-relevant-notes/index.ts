@@ -11,6 +11,7 @@ import {
 import {
   condenseDraft,
   findInsight,
+  insightFields,
   mergeAgentResults,
   readGoalContext,
   runRelevanceAgents,
@@ -25,7 +26,8 @@ import {
 } from "../_shared/relevance.ts";
 
 const MAX_NOTES = 1000;
-const MAX_RESULTS = 50;
+/** The per-note cap from the retrieval workflow: more than this is a list nobody reads. */
+const MAX_RESULTS = 10;
 
 /**
  * The combined "Summary of related notes" is switched off: the insight card
@@ -123,7 +125,7 @@ async function findMatchInsight(
   } catch (error) {
     // The matches are still worth showing without an insight.
     console.error("find-relevant-notes insight failed:", error instanceof Error ? error.message : error);
-    return { insight: null, goal_suggestions: [] };
+    return { insights: [], goal_suggestions: [] };
   }
 }
 
@@ -303,8 +305,7 @@ Deno.serve(async (req: Request) => {
     return json({
       results,
       ...(summary ? { summary } : {}),
-      insight: outcome.insight,
-      goal_suggestions: outcome.goal_suggestions,
+      ...insightFields(outcome),
       coverage: {
         notes_searched: notesSearched,
         notes_total: notes.length,

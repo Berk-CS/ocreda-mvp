@@ -4,8 +4,31 @@
  * and network calls so it can be exercised directly by tests.
  */
 
-export const RELATION_TYPES = ["supports", "extends", "contradicts", "question", "parallel"] as const;
+export const RELATION_TYPES = ["supports", "extends", "contradicts", "question", "parallel", "helps", "solves"] as const;
 export type RelationType = (typeof RELATION_TYPES)[number];
+
+/**
+ * Each relation has its own bar, set by the cost of being wrong rather than by
+ * how often it occurs: a false contradiction makes the app look broken, while
+ * a slightly-off "extends" costs almost nothing. Quality is tuned by moving
+ * these numbers, not by rewriting the prompt. Anything under its bar is
+ * dropped, never relabelled as something weaker and shown anyway.
+ */
+export const RELATION_MIN_SCORE: Record<RelationType, number> = {
+  contradicts: 0.85,
+  parallel: 0.8,
+  solves: 0.7,
+  helps: 0.7,
+  question: 0.7,
+  supports: 0.65,
+  extends: 0.6,
+};
+
+/**
+ * How much each earlier pick of the same relation costs a candidate, so three
+ * notes that all "support" do not crowd out a slightly weaker contradiction.
+ */
+export const VARIETY_PENALTY = 0.05;
 
 /**
  * Chunking policy, shared by the Edge Function, the local dev route, and the
@@ -37,7 +60,6 @@ export const MIN_DRAFT_CHARS = 20;
 export const MAX_EXPLANATION_CHARS = 320;
 /** One sentence restating the note, shown when the card is flipped to its summary. */
 export const MAX_GIST_CHARS = 220;
-export const SCORE_FLOOR = 0.5;
 
 export interface NoteLike {
   id: string;
@@ -136,6 +158,8 @@ Below 0.50 - Leave it out of your response entirely.
 GOAL - you may also be told what the person is working toward in this area. When you are, a note that would help them toward it - a past attempt and how it went, advice they recorded, a decision they made, a fact that changes the picture - deserves a higher score than one that is merely on the same subject. Never include a note only because it matches the goal; it must still bear on the draft.
 
 RELATION TYPE - pick exactly one:
+"solves" - the note answers the problem or open question the draft raises: a fix, a method, or an answer that would settle it.
+"helps" - the note is useful toward what the draft is trying to do without settling it: advice, a technique, a lesson, or a past attempt and how it went.
 "supports" - the note gives grounds for what the draft says or feels: evidence, an example, a lived experience, or reasoning that makes it sturdier.
 "extends" - the note stands on the same ground and carries it further: more detail, a consequence, a next step, or a fuller version of the same thought.
 "contradicts" - the note pulls against the draft: it states something incompatible, names a cost the draft ignores, or records a position the draft is reversing.
@@ -152,6 +176,7 @@ CRITICAL RULES:
 - Many candidate notes will be irrelevant. Returning [] is correct when nothing connects. Do not pad your response.
 - Never include a note merely because it shares words, names, or a broad category with the draft. The connection must be about substance.
 - Leave out echoes. A note that says what the draft already says, without adding a fact, example, outcome, consequence, or counterpoint the draft lacks, tells the person nothing new however close the topic is. A note is not an echo if it shows the same thing actually happening, or happening before.
+- Only call a note "contradicts" when the two really cannot both be true, or the note records a position the draft reverses. A difference in emphasis is not a contradiction.
 - A "parallel" must name the specific shared structure. An abstraction that both notes merely belong to - "both are about time", "both express awe" - is not a parallel. If the same explanation could be written about a dozen other pairs of notes, leave the note out.
 - Use the exact ID string as given. Never invent an ID, and never return one that is not listed above.
 
@@ -161,7 +186,7 @@ Worked examples:
 - Draft: the pricing one again. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted entirely: it shares the word "pricing" but has nothing to do with the draft's argument.
 
 OUTPUT - a JSON array and nothing else, in this shape:
-[{"note_id": "<exact id>", "relevance_score": <number>, "relation_type": "<supports|extends|contradicts|question|parallel>", "gist": "<one sentence>", "explanation": "<one or two short sentences>"}]
+[{"note_id": "<exact id>", "relevance_score": <number>, "relation_type": "<solves|helps|supports|extends|contradicts|question|parallel>", "gist": "<one sentence>", "explanation": "<one or two short sentences>"}]
 
 ========================================
 
@@ -215,12 +240,12 @@ export function parseAgentResponse(raw: string, allowedIds: Set<string>): Releva
     const noteId = typeof row.note_id === "string" ? row.note_id : null;
     if (!noteId || !allowedIds.has(noteId) || seen.has(noteId)) continue;
 
-    const score = Number(row.relevance_score);
-    if (!Number.isFinite(score) || score < SCORE_FLOOR) continue;
-
     const relationType = RELATION_TYPES.includes(row.relation_type as RelationType)
       ? (row.relation_type as RelationType)
       : "extends";
+
+    const score = Number(row.relevance_score);
+    if (!Number.isFinite(score) || score < RELATION_MIN_SCORE[relationType]) continue;
 
     const explanation = typeof row.explanation === "string" ? row.explanation.trim() : "";
     if (!explanation) continue;
@@ -357,15 +382,37 @@ export function mergeAgentResults(
     }
   }
 
-  const results = Array.from(merged.values())
-    .sort(
-      (a, b) =>
-        b.relevance_score - a.relevance_score ||
-        (createdAtById.get(b.note_id) ?? "").localeCompare(createdAtById.get(a.note_id) ?? "")
-    )
-    .slice(0, maxResults);
+  const ranked = Array.from(merged.values()).sort(
+    (a, b) =>
+      b.relevance_score - a.relevance_score ||
+      (createdAtById.get(b.note_id) ?? "").localeCompare(createdAtById.get(a.note_id) ?? "")
+  );
 
-  return { results, notesSearched };
+  return { results: diversifyByRelation(ranked, maxResults), notesSearched };
+}
+
+/**
+ * Re-picks an already ranked list so one relation cannot fill the top: each
+ * earlier pick of the same relation costs a candidate VARIETY_PENALTY. A
+ * clearly stronger match still wins; only near-ties give way to variety.
+ * Equal adjusted scores keep their incoming order. Stops after `limit` picks.
+ */
+export function diversifyByRelation(ranked: RelevanceResult[], limit = ranked.length, penalty = VARIETY_PENALTY): RelevanceResult[] {
+  const remaining = [...ranked];
+  const picked: RelevanceResult[] = [];
+  const counts = new Map<RelationType, number>();
+  while (remaining.length && picked.length < limit) {
+    let best = 0;
+    let bestScore = -Infinity;
+    remaining.forEach((result, index) => {
+      const adjusted = result.relevance_score - penalty * (counts.get(result.relation_type) ?? 0);
+      if (adjusted > bestScore) { bestScore = adjusted; best = index; }
+    });
+    const [chosen] = remaining.splice(best, 1);
+    picked.push(chosen);
+    counts.set(chosen.relation_type, (counts.get(chosen.relation_type) ?? 0) + 1);
+  }
+  return picked;
 }
 
 // ------------------------------------------------------------------ insight
@@ -395,14 +442,19 @@ export interface Insight {
 }
 
 export interface InsightOutcome {
-  /** null means nothing in the notes would change their next step. */
-  insight: Insight | null;
+  /**
+   * Up to MAX_INSIGHTS, each about a different passage of the draft. Empty
+   * means nothing in the notes would change their next step.
+   */
+  insights: Insight[];
   /** Guesses at the Domain's goal, only when it has none. */
   goal_suggestions: string[];
 }
 
 /** Only strong matches are worth building an insight on. */
 export const INSIGHT_MIN_SCORE = 0.7;
+/** One trigger per issue the draft raises, but never a margin full of them. */
+export const MAX_INSIGHTS = 3;
 export const MAX_INSIGHT_NOTES = 6;
 export const MAX_DOMAIN_CONTEXT_NOTES = 10;
 const MAX_CONTEXT_NOTE_CHARS = 200;
@@ -516,22 +568,21 @@ A past note that says the same thing as the draft is NOT useful. Reminding someo
 
 GOAL - if they have said what they are working toward in this area, use it to decide what helps. If not, infer it from the draft and their recent notes in the area. If you still cannot tell, offer only something that helps whatever the goal is: a contradiction, a repeated pattern, or a hard number.
 
-If nothing clears that bar, set "insight" to null. That is a normal, frequent, and correct answer. Do not stretch.
+HOW MANY - a note can raise several separate issues. Give one insight per issue that clears the bar, at most ${MAX_INSIGHTS}, strongest first. Each must be about a different passage of the note, and must not repeat another insight's point. One insight is often right, and an empty list is a normal, frequent, and correct answer. Do not stretch to fill the slots.
 
-When something does:
-ANCHOR - copy, word for word, the shortest phrase or sentence from the note being written that your insight is about, at most 25 words. Copy it exactly: do not paraphrase, fix typos, or add quotation marks.
+For each insight:
+ANCHOR - copy, word for word, the shortest phrase or sentence from the note being written that this insight is about, at most 25 words. Copy it exactly: do not paraphrase, fix typos, or add quotation marks. Two insights never share or overlap an anchor.
 TEXT - one or two plain sentences saying what their past notes add. Name the specifics: people, numbers, what happened. Do not restate the note being written.
 ACTION - one concrete next step, starting with a verb, that they could do this week. Fit it to the intent: for "stuck", a way forward; for "planning", something to add or check; for "deciding", the consideration they are missing; for "capturing", what to do with this (a follow-up, a question for next time); for "reflecting", a question worth answering. Never generic advice like "keep going" or "reflect on this".
-NOTE_IDS - the IDs of the past notes your insight rests on, only from the list given.
+NOTE_IDS - the IDs of the past notes this insight rests on, only from the list given.
 ${askForGoal ? `
-GOAL_SUGGESTIONS - they have not said what this area is for. Offer 2 or 3 short guesses at it, 2 to 6 words each and starting with a verb ("Validate pricing", "Find first 10 users"), based on the note and their recent notes in the area. Include these even when insight is null.
+GOAL_SUGGESTIONS - they have not said what this area is for. Offer 2 or 3 short guesses at it, 2 to 6 words each and starting with a verb ("Validate pricing", "Find first 10 users"), based on the note and their recent notes in the area. Include these even when there are no insights.
 ` : ""}
 VOICE - these are their own notes. Speak to them as "you", like a friend who remembers everything they have written. Plain words, no jargon. Never say "the user", "the author", or "this note highlights".
 
 OUTPUT - a JSON object and nothing else, in this shape:
-{"intent": "<stuck|planning|deciding|capturing|reflecting>", "insight": null${askForGoal ? ', "goal_suggestions": ["<guess>"]' : ""}}
-or
-{"intent": "<...>", "insight": {"anchor": "<exact quote>", "text": "<one or two sentences>", "action": "<one step>", "note_ids": ["<id>"]}${askForGoal ? ', "goal_suggestions": ["<guess>"]' : ""}}
+{"intent": "<stuck|planning|deciding|capturing|reflecting>", "insights": [{"anchor": "<exact quote>", "text": "<one or two sentences>", "action": "<one step>", "note_ids": ["<id>"]}]${askForGoal ? ', "goal_suggestions": ["<guess>"]' : ""}}
+with "insights" as [] when nothing clears the bar.
 
 ========================================
 
@@ -569,13 +620,15 @@ function cleanLine(value: unknown, limit: number): string {
  * Turns the insight model's reply into something safe to show. An insight
  * without text, an action, or a single real citation is dropped rather than
  * shown half-formed. A quote that is not actually in the draft only loses its
- * highlight, since the card is still worth showing.
+ * highlight, since the card is still worth showing. An insight whose passage
+ * overlaps an earlier one is about the same issue, so it is dropped.
+ * Older replies with a single "insight" object are still read.
  */
 export function parseInsightResponse(
   raw: string,
   { draft, allowedNoteIds, askForGoal }: { draft: string; allowedNoteIds: Set<string>; askForGoal: boolean },
 ): InsightOutcome {
-  const empty: InsightOutcome = { insight: null, goal_suggestions: [] };
+  const empty: InsightOutcome = { insights: [], goal_suggestions: [] };
   const jsonText = extractJsonObject(raw);
   if (!jsonText) return empty;
   let parsed: unknown;
@@ -593,23 +646,40 @@ export function parseInsightResponse(
     : [];
 
   const intent = INSIGHT_INTENTS.includes(row.intent as InsightIntent) ? (row.intent as InsightIntent) : "reflecting";
-  const card = row.insight && typeof row.insight === "object" && !Array.isArray(row.insight)
-    ? (row.insight as Record<string, unknown>)
-    : null;
-  if (!card) return { insight: null, goal_suggestions: goalSuggestions };
+  const cards = Array.isArray(row.insights) ? row.insights : row.insight ? [row.insight] : [];
 
-  const text = cleanLine(card.text, MAX_INSIGHT_TEXT_CHARS);
-  const action = cleanLine(card.action, MAX_ACTION_CHARS);
-  const noteIds = Array.isArray(card.note_ids)
-    ? [...new Set(card.note_ids.filter((id): id is string => typeof id === "string" && allowedNoteIds.has(id)))]
-    : [];
-  if (!text || !action || noteIds.length === 0) return { insight: null, goal_suggestions: goalSuggestions };
+  const insights: Insight[] = [];
+  const spans: { start: number; end: number }[] = [];
+  const seenText = new Set<string>();
+  for (const entry of cards) {
+    if (insights.length >= MAX_INSIGHTS) break;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const card = entry as Record<string, unknown>;
 
-  const quoted = typeof card.anchor === "string" ? card.anchor : "";
-  const span = findAnchor(draft, quoted.slice(0, MAX_ANCHOR_CHARS * 2));
-  const anchor = span && span.end - span.start <= MAX_ANCHOR_CHARS ? draft.slice(span.start, span.end) : "";
+    const text = cleanLine(card.text, MAX_INSIGHT_TEXT_CHARS);
+    const action = cleanLine(card.action, MAX_ACTION_CHARS);
+    const noteIds = Array.isArray(card.note_ids)
+      ? [...new Set(card.note_ids.filter((id): id is string => typeof id === "string" && allowedNoteIds.has(id)))]
+      : [];
+    if (!text || !action || noteIds.length === 0 || seenText.has(text.toLowerCase())) continue;
 
-  return { insight: { anchor, intent, text, action, note_ids: noteIds }, goal_suggestions: goalSuggestions };
+    const quoted = typeof card.anchor === "string" ? card.anchor : "";
+    const found = findAnchor(draft, quoted.slice(0, MAX_ANCHOR_CHARS * 2));
+    const span = found && found.end - found.start <= MAX_ANCHOR_CHARS ? found : null;
+    if (span && spans.some((taken) => span.start < taken.end && taken.start < span.end)) continue;
+    if (span) spans.push(span);
+    seenText.add(text.toLowerCase());
+
+    const cardIntent = INSIGHT_INTENTS.includes(card.intent as InsightIntent) ? (card.intent as InsightIntent) : intent;
+    insights.push({ anchor: span ? draft.slice(span.start, span.end) : "", intent: cardIntent, text, action, note_ids: noteIds });
+  }
+
+  return { insights, goal_suggestions: goalSuggestions };
+}
+
+/** The response fields for an insight outcome, including the single-insight field older clients read. */
+export function insightFields(outcome: InsightOutcome): { insights: Insight[]; insight: Insight | null; goal_suggestions: string[] } {
+  return { insights: outcome.insights, insight: outcome.insights[0] ?? null, goal_suggestions: outcome.goal_suggestions };
 }
 
 export interface FindInsightOptions {
@@ -630,7 +700,7 @@ export interface FindInsightOptions {
 export async function findInsight(options: FindInsightOptions): Promise<InsightOutcome> {
   const { draft, context, notes, results, excludeNoteId, generate } = options;
   const matches = selectInsightMatches(results, notes);
-  if (!matches.length) return { insight: null, goal_suggestions: [] };
+  if (!matches.length) return { insights: [], goal_suggestions: [] };
   const prompt = buildInsightPrompt({
     draft,
     context,
@@ -657,7 +727,9 @@ export type RelevanceStreamEvent =
       results: RelevanceResult[];
       coverage: { notes_searched: number; notes_total: number; complete: boolean };
       summary?: string;
-      /** Present whenever an insight step ran; null means it found nothing worth saying. */
+      /** Present whenever an insight step ran; empty means it found nothing worth saying. */
+      insights?: Insight[];
+      /** The first insight, for clients from before there could be several. */
       insight?: Insight | null;
       goal_suggestions?: string[];
     }
@@ -721,7 +793,7 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
             findInsight
               ? findInsight(results).catch((error): InsightOutcome => {
                 onError?.(error);
-                return { insight: null, goal_suggestions: [] };
+                return { insights: [], goal_suggestions: [] };
               })
               : Promise.resolve(null),
           ]);
@@ -730,7 +802,7 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
             results,
             coverage: { notes_searched: notesSearched, notes_total: notesTotal, complete: notesSearched === notesTotal },
             ...(summary ? { summary } : {}),
-            ...(outcome ? { insight: outcome.insight, goal_suggestions: outcome.goal_suggestions } : {}),
+            ...(outcome ? insightFields(outcome) : {}),
           });
         }
       } catch (error) {
