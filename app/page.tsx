@@ -98,7 +98,8 @@ function stableHash(value: string): number {
 // old text. v2: summaries and gists speak to the user in the second person.
 // v3: results carry a goal-aware insight, and the goal is part of the signature.
 // v4: up to three insights, and relations gain helps and solves.
-const SAVED_RETRIEVAL_VERSION = 'v4';
+// v5: every match says which way help flows (inbound or outbound).
+const SAVED_RETRIEVAL_VERSION = 'v5';
 
 function savedRetrievalKey(userId: string, noteId: string): string {
   return `ocreda-saved-retrieval:${SAVED_RETRIEVAL_VERSION}:${userId}:${noteId}`;
@@ -1268,6 +1269,8 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
 
   /** The relation of an insight's strongest cited note, so its highlight says what it opens. */
   const relationOf = (item: NoteInsight) => item.note_ids.map((id) => relevanceByNoteId.get(id)?.relation_type).find(Boolean) ?? null;
+  /** The insight rests only on notes this one helps, so its card points at where the lesson applies. */
+  const isOutbound = (item: NoteInsight) => item.note_ids.every((id) => relevanceByNoteId.get(id)?.direction === 'outbound');
 
   const selectInsight = (index: number) => {
     setSelectedInsightIndex(index);
@@ -1389,6 +1392,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
                 insight={insight}
                 notesById={noteById}
                 relation={relationOf(insight)}
+                outbound={isOutbound(insight)}
                 position={insights.length > 1 ? { index: insights.indexOf(insight), total: insights.length, onSelect: selectInsight } : undefined}
                 onSelectNote={showCitedNote}
               />
@@ -1429,8 +1433,9 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
                 aria-pressed={selectedNote?.id === item.id}
                 className={`block w-full cursor-pointer rounded-lg border bg-[#fafafb] p-3 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedNote?.id === item.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e0e0e0]'}`}
               >
-                <div className="flex items-start justify-between gap-2">
-                  {content.hasTitle ? <strong className="min-w-0 flex-1 truncate text-sm text-[#222]">{content.title}</strong> : <span className="min-w-0 flex-1" />}
+                <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
+                  {content.hasTitle ? <strong className={`min-w-0 flex-1 truncate text-sm text-[#222] ${retrievalResult?.direction === 'outbound' ? 'basis-full' : ''}`}>{content.title}</strong> : <span className="min-w-0 flex-1" />}
+                  {retrievalResult?.direction === 'outbound' && <span title="This note is a problem your lesson applies to" className="shrink-0 rounded bg-[#fff4d6] px-1.5 py-0.5 text-[10px] font-medium text-[#8a6100]">Lesson applies</span>}
                   {badge ? <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>{badge.label}</span> : <span className="shrink-0 text-[11px] text-[#477bea]">note</span>}
                 </div>
                 <p className="mt-2 line-clamp-3 text-[13px] leading-relaxed text-[#333]">{content.body || notePreview(item)}</p>
@@ -1721,6 +1726,7 @@ const INTENT_LABELS: Record<InsightIntent, string> = {
   deciding: 'You’re deciding',
   capturing: 'You’re logging what happened',
   reflecting: 'You’re thinking it through',
+  learning: 'You saved a lesson',
 };
 
 /**
@@ -1728,8 +1734,10 @@ const INTENT_LABELS: Record<InsightIntent, string> = {
  * what those notes add, and a step to take. The cited notes are listed so the
  * claim can be checked against the person's own words.
  */
-function InsightCard({ insight, notesById, relation = null, position, compact = false, showAnchor = true, onSelectNote }: {
+function InsightCard({ insight, notesById, relation = null, outbound = false, position, compact = false, showAnchor = true, onSelectNote }: {
   insight: NoteInsight; notesById: Map<string, Note>; relation?: NoteRelationType | null; compact?: boolean; showAnchor?: boolean;
+  /** True when this note is the lesson and the cited notes are where it applies. */
+  outbound?: boolean;
   /** Present when the note has several insights, to step between them from the card. */
   position?: { index: number; total: number; onSelect: (index: number) => void };
   onSelectNote: (noteId: string) => void;
@@ -1752,7 +1760,7 @@ function InsightCard({ insight, notesById, relation = null, position, compact = 
         <p className="mt-1 text-[13px] leading-relaxed text-[#1f3b73]">{insight.action}</p>
       </div>
       {cited.length > 0 && <div className="mt-4">
-        <p className="text-[11px] text-[#999]">From your notes</p>
+        <p className="text-[11px] text-[#999]">{outbound ? 'Where this applies' : 'From your notes'}</p>
         <ul className="mt-1.5 flex flex-wrap gap-1.5">
           {cited.map((note) => <li key={note.id} className="min-w-0">
             <button type="button" onClick={() => onSelectNote(note.id)} title={noteLabel(note)} className="block max-w-[240px] truncate rounded-md border border-[#e0e0e0] bg-[#fafafb] px-2 py-1 text-[11px] text-[#555] hover:border-[#8fb1ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">{noteLabel(note)}</button>
@@ -1960,6 +1968,7 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
               compact
               insight={item}
               relation={item.note_ids.map((id) => results.find((result) => result.note_id === id)?.relation_type).find(Boolean) ?? null}
+              outbound={item.note_ids.every((id) => results.find((result) => result.note_id === id)?.direction === 'outbound')}
               notesById={noteById}
               onSelectNote={(noteId) => {
                 const index = results.findIndex((result) => result.note_id === noteId);

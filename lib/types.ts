@@ -43,11 +43,20 @@ export interface ConversationMessage {
  */
 export type NoteRelationType = 'supports' | 'extends' | 'contradicts' | 'question' | 'parallel' | 'helps' | 'solves';
 
+/**
+ * Which way help flows. "inbound": the related note helps the one being read.
+ * "outbound": the note being read (a lesson or solution) helps the related
+ * one, usually an earlier problem it applies to.
+ */
+export type NoteDirection = 'inbound' | 'outbound';
+
 export interface RelevanceResult {
   note_id: string;
   relevance_score: number;
   /** Null when semantic retrieval has not classified the relationship. */
   relation_type: NoteRelationType | null;
+  /** Missing from similarity-only results, which do not judge direction. */
+  direction?: NoteDirection;
   /** One-sentence summary of the note itself. Empty when the model omitted it. */
   gist: string;
   /** How the note bears on the draft. */
@@ -75,7 +84,7 @@ export interface RelevanceProgress {
 }
 
 /** What the note being written is doing; it decides which kind of action helps. */
-export type InsightIntent = 'stuck' | 'planning' | 'deciding' | 'capturing' | 'reflecting';
+export type InsightIntent = 'stuck' | 'planning' | 'deciding' | 'capturing' | 'reflecting' | 'learning';
 
 /** The one thing from past notes that should change what the person does next. */
 export interface NoteInsight {

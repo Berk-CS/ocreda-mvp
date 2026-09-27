@@ -229,7 +229,7 @@ async function main() {
     const pick = picks.get(result.note_id);
     const tag = picks.size ? (pick ? `[#${String(pick.order).padStart(2)}]` : '[ --]') : '';
     const pct = `${Math.round(result.relevance_score * 100)}%`;
-    console.log(`\n${String(index + 1).padStart(2)}. ${tag} ${pct.padStart(4)}  ${RELATION_SHORT[result.relation_type]} ${result.note_id} ${titleOf(textById.get(result.note_id))}`);
+    console.log(`\n${String(index + 1).padStart(2)}. ${tag} ${pct.padStart(4)}  ${RELATION_SHORT[result.relation_type]} ${result.direction === 'outbound' ? 'OUT' : 'in '} ${result.note_id} ${titleOf(textById.get(result.note_id))}`);
     if (result.gist) console.log(wrap(`Gist: ${result.gist}`, 72, '      '));
     console.log(wrap(`AI:  ${result.explanation}`, 72, '      '));
     if (pick && pick.why) console.log(wrap(`You: ${pick.why}`, 72, '      '));

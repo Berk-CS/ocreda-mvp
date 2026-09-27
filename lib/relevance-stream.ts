@@ -1,6 +1,6 @@
 import { InsightIntent, NoteInsight, RelevanceCoverage, RelevanceProgress, RelevanceResult, RelevantNotesResponse } from '@/lib/types';
 
-const INTENTS: InsightIntent[] = ['stuck', 'planning', 'deciding', 'capturing', 'reflecting'];
+const INTENTS: InsightIntent[] = ['stuck', 'planning', 'deciding', 'capturing', 'reflecting', 'learning'];
 
 /** Undefined when the server sent no insight field at all, null when it sent an explicit "nothing". */
 function readInsight(value: unknown, resultIds: Set<string>): NoteInsight | null | undefined {

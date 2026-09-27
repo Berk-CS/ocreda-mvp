@@ -21,6 +21,7 @@ const {
   recentDomainNotes,
   selectInsightMatches,
   diversifyByRelation,
+  recencyBoost,
 } = require('../.relevance-build/relevance.js');
 
 let passed = 0;
@@ -269,11 +270,6 @@ test('all agents succeeding counts every note', () => {
   assert.strictEqual(mergeAgentResults(outcomes, new Map(), 50).notesSearched, 500);
 });
 
-test('ties break toward the newer note', () => {
-  const createdAt = new Map([['older', '2026-01-01'], ['newer', '2026-06-01']]);
-  const { results } = mergeAgentResults([{ chunkSize: 2, results: [res('older', 0.8), res('newer', 0.8)] }], createdAt, 50);
-  assert.deepStrictEqual(results.map((r) => r.note_id), ['newer', 'older']);
-});
 
 test('caps the returned list at maxResults', () => {
   const many = Array.from({ length: 80 }, (_, i) => res(`n-${i}`, 0.5 + i / 1000));
@@ -591,6 +587,58 @@ test('without an insight step, "done" has no insight fields at all', async () =>
   const events = await readEvents(streamRelevanceSearch(streamOptions()));
   assert.ok(!('insight' in events.at(-1)));
   assert.ok(!('insights' in events.at(-1)));
+});
+
+// ------------------------------------------------------------ direction
+
+const NOW = Date.parse('2026-06-15');
+const aged = new Map([['older', '2025-01-01'], ['newer', '2026-06-01']]);
+const dir = (id, score, direction, relation = 'extends') => ({ ...res(id, score), direction, relation_type: relation });
+
+test('outbound: between equally strong problems, the recent one wins', () => {
+  const { results } = mergeAgentResults([{ chunkSize: 2, results: [dir('older', 0.8, 'outbound'), dir('newer', 0.8, 'outbound')] }], aged, 50, NOW);
+  assert.deepStrictEqual(results.map((r) => r.note_id), ['newer', 'older']);
+});
+
+test('inbound: solutions are not aged, so a tie keeps its order', () => {
+  const { results } = mergeAgentResults([{ chunkSize: 2, results: [dir('older', 0.8, 'inbound'), dir('newer', 0.8, 'inbound')] }], aged, 50, NOW);
+  assert.deepStrictEqual(results.map((r) => r.note_id), ['older', 'newer']);
+});
+
+test('contradictions ignore recency even when outbound', () => {
+  const { results } = mergeAgentResults([{ chunkSize: 2, results: [
+    dir('older', 0.9, 'outbound', 'contradicts'), dir('newer', 0.9, 'outbound', 'contradicts'),
+  ] }], aged, 50, NOW);
+  assert.deepStrictEqual(results.map((r) => r.note_id), ['older', 'newer']);
+});
+
+test('recency is a boost, never enough to beat a clearly stronger match', () => {
+  const { results } = mergeAgentResults([{ chunkSize: 2, results: [dir('older', 0.9, 'outbound'), dir('newer', 0.8, 'outbound')] }], aged, 50, NOW);
+  assert.deepStrictEqual(results.map((r) => r.note_id), ['older', 'newer']);
+});
+
+test('the recency boost fades with age and needs a date', () => {
+  const r = dir('x', 0.8, 'outbound');
+  assert.strictEqual(recencyBoost(r, '2026-06-01', NOW), 0.03);
+  assert.strictEqual(recencyBoost(r, '2026-04-01', NOW), 0.015);
+  assert.strictEqual(recencyBoost(r, '2025-01-01', NOW), 0);
+  assert.strictEqual(recencyBoost(r, undefined, NOW), 0);
+  assert.strictEqual(recencyBoost(dir('x', 0.8, 'inbound'), '2026-06-01', NOW), 0);
+});
+
+test('direction is read from the agent, defaulting to inbound', () => {
+  assert.strictEqual(parseAgentResponse(row({ direction: 'outbound' }), allowed)[0].direction, 'outbound');
+  assert.strictEqual(parseAgentResponse(row(), allowed)[0].direction, 'inbound');
+  assert.strictEqual(parseAgentResponse(row({ direction: 'sideways' }), allowed)[0].direction, 'inbound');
+});
+
+test('the insight prompt tells the model which way each note points', () => {
+  const prompt = buildInsightPrompt({
+    draft: 'd', context: { domain: null, goal: 'g' }, recentNotes: [],
+    matches: [{ note: note('a'), result: { ...hit('a', 0.9), direction: 'outbound' } }],
+  });
+  assert.ok(prompt.includes('Direction: outbound'));
+  assert.ok(prompt.includes('"learning"'));
 });
 
 // ------------------------------------------------------ relation bars, variety
