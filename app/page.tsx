@@ -218,6 +218,9 @@ export default function OcredaHome() {
   const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [activeNoteRetrievalMode, setActiveNoteRetrievalMode] = useState<'similar' | 'relevant'>('relevant');
+  // False when a note is only being looked at, e.g. opened from another note's
+  // related notes, so reading it does not spend an AI search.
+  const [activeNoteAutoSearch, setActiveNoteAutoSearch] = useState(true);
   const [museEditor, setMuseEditor] = useState<MuseEditorState | null>(null);
   const [projectEditor, setProjectEditor] = useState<ProjectEditorState | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -358,7 +361,7 @@ export default function OcredaHome() {
     setView('muses');
   }, []);
   const openNewNote = (muse = AUTOMATIC_MUSE) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
-  const openExistingNote = (note: Note) => { setError(''); setActiveNoteRetrievalMode('relevant'); setActiveNoteId(note.id); };
+  const openExistingNote = (note: Note, autoSearch = true) => { setError(''); setActiveNoteRetrievalMode('relevant'); setActiveNoteAutoSearch(autoSearch); setActiveNoteId(note.id); };
   const createMuseFromEditor = (value: string) => {
     const requested = cleanCategory(value);
     if (!requested) return;
@@ -389,7 +392,7 @@ export default function OcredaHome() {
         processNote(created.id).catch(() => {});
         savedNoteId = created.id;
       }
-      setNoteEditor(null); setActiveNoteRetrievalMode('relevant'); setActiveNoteId(savedNoteId);
+      setNoteEditor(null); setActiveNoteRetrievalMode('relevant'); setActiveNoteAutoSearch(true); setActiveNoteId(savedNoteId);
       if (!findRelevant) flashSaved();
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this note.')); }
     finally { setSaving(false); }
@@ -581,7 +584,7 @@ export default function OcredaHome() {
   return (
     <main className="light h-[100dvh] w-full overflow-hidden bg-white text-[#141414]">
       <section className="relative flex h-full w-full flex-col overflow-hidden bg-white">
-        {activeNoteId && notes.find((note) => note.id === activeNoteId) ? <NoteReadingWorkspace key={activeNoteId} note={notes.find((note) => note.id === activeNoteId)!} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={user?.id ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} onBack={() => setActiveNoteId(null)} onAddNote={() => openNewNote(cleanCategory(notes.find((note) => note.id === activeNoteId)?.category) ?? AUTOMATIC_MUSE)} onOpenNote={(note) => openExistingNote(note)} onOpenPage={(project, page) => { setActiveNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNoteId, category)} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />
+        {activeNoteId && notes.find((note) => note.id === activeNoteId) ? <NoteReadingWorkspace key={activeNoteId} note={notes.find((note) => note.id === activeNoteId)!} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={user?.id ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onBack={() => setActiveNoteId(null)} onAddNote={() => openNewNote(cleanCategory(notes.find((note) => note.id === activeNoteId)?.category) ?? AUTOMATIC_MUSE)} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch)} onOpenPage={(project, page) => { setActiveNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNoteId, category)} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />
           : activeProject && activePage ? <ProjectPageWorkspace key={activePage.id} project={activeProject} page={activePage} notes={notes} muses={muses} projects={projects} saving={saving} onBack={() => setActivePageId(null)} onChange={(page) => updateProjectPage(activeProject.id, page)} onAddNote={() => openNewNote()} onOpenNote={openExistingNote} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onDelete={() => removeProjectPage(activeProject.id, activePage.id)} onSaveRetrieval={saveInstantRetrieval} />
           : activeProject ? <ProjectPagesGrid project={activeProject} onBack={() => { setActiveProjectId(null); setActivePageId(null); }} onAddPage={() => createProjectPage(activeProject.id)} onOpenPage={(page) => setActivePageId(page.id)} onEdit={() => setProjectEditor({ project: activeProject, title: activeProject.title, description: activeProject.description })} onDelete={() => removeProject(activeProject.id)} />
           : isEmpty ? <EmptyWorkspace displayName={displayName} userEmail={user?.email ?? ''} onAddNote={() => openNewNote()} onImport={handleImport} onOpenImport={() => setImportOpen(true)} importError={importError} progress={importProgress} />
@@ -1072,9 +1075,9 @@ function NoteDomainPicker({ category, muses, saving, onChange, showPrefix = fals
   );
 }
 
-function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId, initialRetrievalMode, onBack, onAddNote, onOpenNote, onOpenPage, onUpdate, onChangeDomain, onDelete, onSaveRetrieval, onSetDomainGoal }: {
-  note: Note; allNotes: Note[]; muses: MuseMeta[]; projects: CortexProject[]; saving: boolean; userId: string; initialRetrievalMode: 'similar' | 'relevant';
-  onBack: () => void; onAddNote: () => void; onOpenNote: (note: Note) => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void;
+function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId, initialRetrievalMode, autoSearch, onBack, onAddNote, onOpenNote, onOpenPage, onUpdate, onChangeDomain, onDelete, onSaveRetrieval, onSetDomainGoal }: {
+  note: Note; allNotes: Note[]; muses: MuseMeta[]; projects: CortexProject[]; saving: boolean; userId: string; initialRetrievalMode: 'similar' | 'relevant'; autoSearch: boolean;
+  onBack: () => void; onAddNote: () => void; onOpenNote: (note: Note, autoSearch?: boolean) => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void;
   onUpdate: (noteId: string, rawText: string) => Promise<void>; onChangeDomain: (category: string | null) => void; onDelete: (note: Note) => Promise<void>;
   onSaveRetrieval: (queryText: string, resultNotes: Note[], projectId: string, newProjectTitle?: string) => Promise<void>;
   onSetDomainGoal: (domainTitle: string, goal: string) => void;
@@ -1094,6 +1097,9 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
   const [retrievalError, setRetrievalError] = useState('');
   const [retrievalAttempt, setRetrievalAttempt] = useState(0);
   const [retrievalMode, setRetrievalMode] = useState(initialRetrievalMode);
+  // Starts false for a note opened just to read it. Asking for a search, or
+  // editing the note, turns it on.
+  const [searchRequested, setSearchRequested] = useState(autoSearch);
   const [searchRequest, setSearchRequest] = useState<KnowledgeSearchRequest | null>(null);
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -1139,7 +1145,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
       setRetrievalLoading(false);
       return;
     }
-    if (noteTooShortForRetrieval || !hasOtherNotes) { setRetrievalLoading(false); return; }
+    if (noteTooShortForRetrieval || !hasOtherNotes || !searchRequested) { setRetrievalLoading(false); return; }
     setRetrievalLoading(true);
     const onProgress = (progress: RelevanceProgress) => { if (active) setRetrievalProgress(progress); };
     const search = retrievalMode === 'relevant'
@@ -1150,7 +1156,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
     return () => { active = false; };
-  }, [allNotes, domainName, editing, goalText, hasOtherNotes, note, noteTooShortForRetrieval, retrievalAttempt, retrievalMode, userId]);
+  }, [allNotes, domainName, editing, goalText, hasOtherNotes, note, noteTooShortForRetrieval, retrievalAttempt, retrievalMode, searchRequested, userId]);
 
   const surfacedNotes = useMemo(() => {
     const notesById = new Map(allNotes.map((item) => [item.id, item]));
@@ -1224,18 +1230,19 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
     />
     : null;
 
-  const leaveWorkspace = async (next?: Note | null) => {
+  const leaveWorkspace = async (next?: Note | null, autoSearch = true) => {
     if (rawText && rawText !== note.raw_text.trim()) {
       setSaveState('saving');
       try { await latestSaveRef.current(note.id, rawText); setSaveState('saved'); }
       catch { setSaveState('error'); return; }
     }
-    if (next) onOpenNote(next); else onBack();
+    if (next) onOpenNote(next, autoSearch); else onBack();
   };
 
   const finishEditing = () => {
     setEditing(false);
     if (!rawText || rawText === note.raw_text.trim()) return;
+    setSearchRequested(true);
     setSaveState('saving');
     latestSaveRef.current(note.id, rawText)
       .then(() => setSaveState('saved'))
@@ -1327,6 +1334,8 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
             // the related notes here instead is exactly the echo it avoids.
             : retrieval?.insight === null && !retrieval.summary && surfacedNotes.length ? <div className="flex h-full items-center justify-center text-center"><div><h2 className="text-lg font-semibold">Nothing here changes your next step</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">Your related notes are alongside, but none of them adds something this note doesn’t already say.</p>{goalPrompt && <div className="mx-auto mt-8 max-w-sm">{goalPrompt}</div>}</div></div>
             : retrieval?.summary || summaries.length ? <article className="mx-auto max-w-xl"><h2 className="text-lg font-semibold leading-snug">Summary of related notes</h2><div className="mt-7 space-y-4 text-sm leading-[1.7] text-[#333]">{retrieval?.summary ? <p>{retrieval.summary}</p> : summaries.map((summary, index) => <p key={index}>{summary}</p>)}</div></article>
+            // Opened just to read it, with nothing saved from an earlier search.
+            : !retrieval && !searchRequested && !noteTooShortForRetrieval && hasOtherNotes ? <div className="flex h-full items-center justify-center text-center"><div><h2 className="text-lg font-semibold">See what your notes say about this</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">Search your other notes for anything that connects to this one.</p><button type="button" onClick={() => setSearchRequested(true)} className="mt-5 rounded-md bg-[#477bea] px-4 py-2 text-sm text-white hover:bg-[#3d6ed7]">Find related notes</button></div></div>
             : surfacedNotes.length ? <div className="flex h-full items-center justify-center text-center"><div><h2 className="text-lg font-semibold">Summarize related notes</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">{retrievalMode === 'relevant' ? 'A summary was not returned for these notes.' : 'Find relevant notes to create a summary of the notes shown here.'}</p><button type="button" onClick={() => { setRetrievalMode('relevant'); setRetrievalAttempt((attempt) => attempt + 1); }} className="mt-5 rounded-md bg-[#477bea] px-4 py-2 text-sm text-white hover:bg-[#3d6ed7]">{retrievalMode === 'relevant' ? 'Try again' : 'Find relevant notes'}</button></div></div>
             : <div className="flex h-full items-center justify-center text-center"><div><h2 className="text-lg font-semibold">{noteTooShortForRetrieval ? 'Keep writing to retrieve notes' : !hasOtherNotes ? 'Your next note could connect here' : 'No related notes yet'}</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">{noteTooShortForRetrieval ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters, then save to find related notes.` : !hasOtherNotes ? 'Once you have another note, Ocreda can look for connections.' : 'No notes matched this one yet.'}</p></div></div>}
         </section>}
@@ -1348,8 +1357,8 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
                 onMouseEnter={() => setSelectedNoteId(item.id)}
                 onFocus={() => setSelectedNoteId(item.id)}
                 onClick={() => setSelectedNoteId(item.id)}
-                onDoubleClick={() => void leaveWorkspace(item)}
-                onKeyDown={(event) => { if (event.target === event.currentTarget && event.key === 'Enter') { event.preventDefault(); void leaveWorkspace(item); } }}
+                onDoubleClick={() => void leaveWorkspace(item, false)}
+                onKeyDown={(event) => { if (event.target === event.currentTarget && event.key === 'Enter') { event.preventDefault(); void leaveWorkspace(item, false); } }}
                 aria-label={`${noteLabel(item)}${retrievalReason ? `. Retrieval reason: ${retrievalReason}` : ''}. Double-click or press Enter to open`}
                 title="Double-click to open note"
                 aria-pressed={selectedNote?.id === item.id}
@@ -1372,7 +1381,7 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
                 <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#aaa]"><span className="truncate">Domain: {cleanCategory(item.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(item.created_at)}</span></div>
               </div>;
             })}
-            {!surfacedNotes.length && !retrievalLoading && !retrievalError && !noteTooShortForRetrieval && hasOtherNotes && <p className="px-4 py-12 text-center text-sm leading-relaxed text-[#999]">No related notes found yet.</p>}
+            {!surfacedNotes.length && !retrievalLoading && !retrievalError && !noteTooShortForRetrieval && hasOtherNotes && <p className="px-4 py-12 text-center text-sm leading-relaxed text-[#999]">{retrieval || searchRequested ? 'No related notes found yet.' : 'Not searched yet.'}</p>}
           </div>
           {retrieval?.coverage.complete === false && <p className="mt-4 text-center text-xs text-[#999]">Only some notes could be searched. Results may be incomplete.</p>}
         </aside>}
