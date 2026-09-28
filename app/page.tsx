@@ -1222,7 +1222,12 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
       ? findRelevantNotes(note.raw_text, note.id, onProgress, domainName ? { name: domainName, goal: goalText } : null)
       : findSimilarNotes(note.raw_text, note.id, onProgress, allNotes);
     search
-      .then((response) => { if (active) { setRetrieval(response); persistSavedRetrieval(userId, note, goalText, retrievalMode, response); } })
+      .then((response) => {
+        if (!active) return;
+        setRetrieval(response);
+        // A failed insight step is not saved, so opening the note again retries it.
+        if (!response.insight_failed) persistSavedRetrieval(userId, note, goalText, retrievalMode, response);
+      })
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
     return () => { active = false; };
@@ -1399,9 +1404,13 @@ function NoteReadingWorkspace({ note, allNotes, muses, projects, saving, userId,
               {goalPrompt}
               {retrieval?.summary && <article><h2 className="text-lg font-semibold leading-snug">Summary of related notes</h2><p className="mt-7 text-sm leading-[1.7] text-[#333]">{retrieval.summary}</p></article>}
             </div>
+            // The insight step broke. Saying "nothing here" would pass a failure off as a verdict.
+            : retrieval?.insight_failed && !insights.length && surfacedNotes.length ? <div className="flex h-full items-center justify-center text-center" role="alert"><div><h2 className="text-lg font-semibold">Couldn’t write an insight this time</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">Your related notes were found and are alongside, but the step that reads them for you didn’t finish.</p><button type="button" onClick={() => setRetrievalAttempt((attempt) => attempt + 1)} className="mt-5 rounded-md bg-[#477bea] px-4 py-2 text-sm text-white hover:bg-[#3d6ed7]">Try again</button></div></div>
             // The insight step ran and found nothing worth acting on. Restating
             // the related notes here instead is exactly the echo it avoids.
-            : retrieval?.insights && !retrieval.insights.length && !retrieval.summary && surfacedNotes.length ? <div className="flex h-full items-center justify-center text-center"><div><h2 className="text-lg font-semibold">Nothing here changes your next step</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">Your related notes are alongside, but none of them adds something this note doesn’t already say.</p>{goalPrompt && <div className="mx-auto mt-8 max-w-sm">{goalPrompt}</div>}</div></div>
+            : retrieval?.insights && !retrieval.insights.length && !retrieval.summary && surfacedNotes.length ? <div className="flex h-full items-center justify-center text-center"><div>{retrieval.note_intent === 'learning'
+              ? <><h2 className="text-lg font-semibold">Nothing to apply this to yet</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">None of your notes describes a problem or plan this lesson would change. Related notes are alongside.</p></>
+              : <><h2 className="text-lg font-semibold">Nothing here changes your next step</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">Your related notes are alongside, but none of them adds something this note doesn’t already say.</p></>}{goalPrompt && <div className="mx-auto mt-8 max-w-sm">{goalPrompt}</div>}</div></div>
             : retrieval?.summary || summaries.length ? <article className="mx-auto max-w-xl"><h2 className="text-lg font-semibold leading-snug">Summary of related notes</h2><div className="mt-7 space-y-4 text-sm leading-[1.7] text-[#333]">{retrieval?.summary ? <p>{retrieval.summary}</p> : summaries.map((summary, index) => <p key={index}>{summary}</p>)}</div></article>
             // Opened just to read it, with nothing saved from an earlier search.
             : !retrieval && !searchRequested && !noteTooShortForRetrieval && hasOtherNotes ? <div className="flex h-full items-center justify-center text-center"><div><h2 className="text-lg font-semibold">See what your notes say about this</h2><p className="mt-3 max-w-sm text-sm leading-relaxed text-[#777]">Search your other notes for anything that connects to this one.</p><button type="button" onClick={() => setSearchRequested(true)} className="mt-5 rounded-md bg-[#477bea] px-4 py-2 text-sm text-white hover:bg-[#3d6ed7]">Find related notes</button></div></div>
@@ -1689,7 +1698,7 @@ function InstantRetrievalOverlay({ notes, projects, initialQuery = '', saving, o
   );
 }
 
-type RelevanceSearch = { results: RelevanceResult[]; coverage: RelevanceCoverage; summary?: string; insights?: NoteInsight[]; goal_suggestions?: string[] };
+type RelevanceSearch = { results: RelevanceResult[]; coverage: RelevanceCoverage; summary?: string; insights?: NoteInsight[]; goal_suggestions?: string[]; note_intent?: InsightIntent | null; insight_failed?: boolean };
 
 // Five per page rather than ten, so each card has room to preview the note's
 // own text under the explanation instead of only its title.

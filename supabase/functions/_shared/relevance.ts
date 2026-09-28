@@ -496,7 +496,22 @@ export interface InsightOutcome {
   insights: Insight[];
   /** Guesses at the Domain's goal, only when it has none. */
   goal_suggestions: string[];
+  /**
+   * What the draft is doing, even when there are no insights, so an empty
+   * result can be worded for it. Null when the step was skipped or failed.
+   */
+  intent: InsightIntent | null;
+  /**
+   * The insight call errored or its reply could not be read. Distinct from an
+   * empty list, which means the model looked and found nothing worth saying.
+   */
+  failed: boolean;
 }
+
+/** No strong matches, so the insight call never ran. */
+export const SKIPPED_INSIGHT: InsightOutcome = { insights: [], goal_suggestions: [], intent: null, failed: false };
+/** The insight call errored or returned something unreadable. */
+export const FAILED_INSIGHT: InsightOutcome = { insights: [], goal_suggestions: [], intent: null, failed: true };
 
 /** Only strong matches are worth building an insight on. */
 export const INSIGHT_MIN_SCORE = 0.7;
@@ -678,16 +693,17 @@ export function parseInsightResponse(
   raw: string,
   { draft, allowedNoteIds, askForGoal }: { draft: string; allowedNoteIds: Set<string>; askForGoal: boolean },
 ): InsightOutcome {
-  const empty: InsightOutcome = { insights: [], goal_suggestions: [] };
+  // A reply that cannot be read, including one cut off at the token budget,
+  // is a failure rather than a verdict of "nothing useful".
   const jsonText = extractJsonObject(raw);
-  if (!jsonText) return empty;
+  if (!jsonText) return FAILED_INSIGHT;
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
   } catch {
-    return empty;
+    return FAILED_INSIGHT;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return empty;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return FAILED_INSIGHT;
   const row = parsed as Record<string, unknown>;
 
   const goalSuggestions = askForGoal && Array.isArray(row.goal_suggestions)
@@ -695,7 +711,8 @@ export function parseInsightResponse(
       .slice(0, MAX_GOAL_SUGGESTIONS)
     : [];
 
-  const intent = INSIGHT_INTENTS.includes(row.intent as InsightIntent) ? (row.intent as InsightIntent) : "reflecting";
+  const statedIntent = INSIGHT_INTENTS.includes(row.intent as InsightIntent) ? (row.intent as InsightIntent) : null;
+  const intent = statedIntent ?? "reflecting";
   const cards = Array.isArray(row.insights) ? row.insights : row.insight ? [row.insight] : [];
 
   const insights: Insight[] = [];
@@ -724,12 +741,20 @@ export function parseInsightResponse(
     insights.push({ anchor: span ? draft.slice(span.start, span.end) : "", intent: cardIntent, text, action, note_ids: noteIds });
   }
 
-  return { insights, goal_suggestions: goalSuggestions };
+  return { insights, goal_suggestions: goalSuggestions, intent: statedIntent, failed: false };
 }
 
 /** The response fields for an insight outcome, including the single-insight field older clients read. */
-export function insightFields(outcome: InsightOutcome): { insights: Insight[]; insight: Insight | null; goal_suggestions: string[] } {
-  return { insights: outcome.insights, insight: outcome.insights[0] ?? null, goal_suggestions: outcome.goal_suggestions };
+export function insightFields(outcome: InsightOutcome): {
+  insights: Insight[]; insight: Insight | null; goal_suggestions: string[]; note_intent: InsightIntent | null; insight_failed: boolean;
+} {
+  return {
+    insights: outcome.insights,
+    insight: outcome.insights[0] ?? null,
+    goal_suggestions: outcome.goal_suggestions,
+    note_intent: outcome.intent,
+    insight_failed: outcome.failed,
+  };
 }
 
 export interface FindInsightOptions {
@@ -750,7 +775,7 @@ export interface FindInsightOptions {
 export async function findInsight(options: FindInsightOptions): Promise<InsightOutcome> {
   const { draft, context, notes, results, excludeNoteId, generate } = options;
   const matches = selectInsightMatches(results, notes);
-  if (!matches.length) return { insights: [], goal_suggestions: [] };
+  if (!matches.length) return SKIPPED_INSIGHT;
   const prompt = buildInsightPrompt({
     draft,
     context,
@@ -782,6 +807,10 @@ export type RelevanceStreamEvent =
       /** The first insight, for clients from before there could be several. */
       insight?: Insight | null;
       goal_suggestions?: string[];
+      /** What the draft is doing, even with no insights; null when the step was skipped or failed. */
+      note_intent?: InsightIntent | null;
+      /** The insight step errored, as opposed to finding nothing. */
+      insight_failed?: boolean;
     }
   | { type: "error"; error: string };
 
@@ -843,7 +872,7 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
             findInsight
               ? findInsight(results).catch((error): InsightOutcome => {
                 onError?.(error);
-                return { insights: [], goal_suggestions: [] };
+                return FAILED_INSIGHT;
               })
               : Promise.resolve(null),
           ]);

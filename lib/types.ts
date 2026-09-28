@@ -116,4 +116,8 @@ export interface RelevantNotesResponse {
   insights?: NoteInsight[];
   /** Guesses at the Domain's goal, offered only when it has none. */
   goal_suggestions?: string[];
+  /** What the note is doing, even when there are no insights. Null when the step was skipped or failed. */
+  note_intent?: InsightIntent | null;
+  /** The insight step errored, as opposed to finding nothing worth saying. */
+  insight_failed?: boolean;
 }

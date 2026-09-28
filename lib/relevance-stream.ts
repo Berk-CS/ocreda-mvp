@@ -40,6 +40,8 @@ function toRelevantNotesResponse(payload: Record<string, unknown> | null): Relev
     summary: typeof payload?.summary === 'string' ? payload.summary.trim() : undefined,
     ...(insights ? { insights } : {}),
     ...(goalSuggestions.length ? { goal_suggestions: goalSuggestions } : {}),
+    ...(INTENTS.includes(payload?.note_intent as InsightIntent) ? { note_intent: payload?.note_intent as InsightIntent } : {}),
+    ...(payload?.insight_failed === true ? { insight_failed: true } : {}),
     coverage: {
       notes_searched: Number(rawCoverage?.notes_searched ?? 0),
       notes_total: Number(rawCoverage?.notes_total ?? 0),

@@ -12,6 +12,7 @@ import {
   condenseDraft,
   findInsight,
   insightFields,
+  FAILED_INSIGHT,
   mergeAgentResults,
   readGoalContext,
   runRelevanceAgents,
@@ -125,7 +126,7 @@ async function findMatchInsight(
   } catch (error) {
     // The matches are still worth showing without an insight.
     console.error("find-relevant-notes insight failed:", error instanceof Error ? error.message : error);
-    return { insights: [], goal_suggestions: [] };
+    return FAILED_INSIGHT;
   }
 }
 

@@ -3,6 +3,7 @@ import {
   condenseDraft,
   findInsight,
   insightFields,
+  FAILED_INSIGHT,
   mergeAgentResults,
   readGoalContext,
   runRelevanceAgents,
@@ -166,7 +167,7 @@ export async function POST(request: Request) {
 
     const outcome = await insightFor(results).catch((error) => {
       console.error('[local] insight failed:', error instanceof Error ? error.message : error);
-      return { insights: [], goal_suggestions: [] };
+      return FAILED_INSIGHT;
     });
     return NextResponse.json({
       results,

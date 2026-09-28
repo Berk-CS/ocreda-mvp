@@ -460,9 +460,19 @@ test('a well-formed insight is kept, with its anchor taken from the draft itself
   assert.deepStrictEqual(insight.note_ids, ['n1']);
 });
 
-test('an empty insights list is a valid answer', () => {
-  const raw = JSON.stringify({ intent: 'reflecting', insights: [] });
-  assert.deepStrictEqual(parseInsightResponse(raw, parseOpts()), { insights: [], goal_suggestions: [] });
+test('an empty insights list is a valid answer, not a failure, and still says what the note is doing', () => {
+  const raw = JSON.stringify({ intent: 'learning', insights: [] });
+  assert.deepStrictEqual(parseInsightResponse(raw, parseOpts()), { insights: [], goal_suggestions: [], intent: 'learning', failed: false });
+});
+
+test('a missing or unknown note intent is reported as null, not guessed', () => {
+  assert.strictEqual(parseInsightResponse(JSON.stringify({ insights: [] }), parseOpts()).intent, null);
+  assert.strictEqual(parseInsightResponse(JSON.stringify({ intent: 'daydreaming', insights: [] }), parseOpts()).intent, null);
+});
+
+test('a reply cut off mid-JSON is a failure, not "nothing useful"', () => {
+  const cut = '{"intent": "capturing", "insights": [{"anchor": "she would pay';
+  assert.strictEqual(parseInsightResponse(cut, parseOpts()).failed, true);
 });
 
 test('an older single "insight" reply is still read', () => {
@@ -520,8 +530,8 @@ test('goal suggestions are kept only when asked for, deduplicated and capped at 
   assert.deepStrictEqual(parseInsightResponse(raw, parseOpts(false)).goal_suggestions, []);
 });
 
-test('unparseable insight output yields nothing rather than throwing', () => {
-  assert.deepStrictEqual(parseInsightResponse('no json here', parseOpts(true)), { insights: [], goal_suggestions: [] });
+test('unparseable insight output is reported as a failure rather than throwing', () => {
+  assert.deepStrictEqual(parseInsightResponse('no json here', parseOpts(true)), { insights: [], goal_suggestions: [], intent: null, failed: true });
 });
 
 const hit = (id, score, relation = 'supports') => ({ note_id: id, relevance_score: score, relation_type: relation, gist: '', explanation: 'why' });
@@ -556,19 +566,21 @@ test('no strong matches means no insight call at all', async () => {
     generate: async () => { calls++; return '{}'; },
   });
   assert.strictEqual(calls, 0);
-  assert.deepStrictEqual(out, { insights: [], goal_suggestions: [] });
+  assert.deepStrictEqual(out, { insights: [], goal_suggestions: [], intent: null, failed: false }, 'skipped is not failed');
 });
 
 test('stream carries the insights, the first one alone for older clients, and goal suggestions', async () => {
   const insight = { anchor: 'a', intent: 'capturing', text: 't', action: 'x', note_ids: ['id-0'] };
   const events = await readEvents(streamRelevanceSearch(streamOptions({
-    findInsight: async () => ({ insights: [insight], goal_suggestions: ['Find users'] }),
+    findInsight: async () => ({ insights: [insight], goal_suggestions: ['Find users'], intent: 'capturing', failed: false }),
   })));
   const done = events.at(-1);
   assert.strictEqual(done.type, 'done');
   assert.deepStrictEqual(done.insights, [insight]);
   assert.deepStrictEqual(done.insight, insight);
   assert.deepStrictEqual(done.goal_suggestions, ['Find users']);
+  assert.strictEqual(done.note_intent, 'capturing');
+  assert.strictEqual(done.insight_failed, false);
   assert.strictEqual(done.summary, undefined);
 });
 
@@ -581,6 +593,7 @@ test('a failing insight step still delivers the matches', async () => {
   assert.ok(done.results.length > 0);
   assert.deepStrictEqual(done.insights, []);
   assert.strictEqual(done.insight, null);
+  assert.strictEqual(done.insight_failed, true, 'the app must be able to tell a failure from "nothing useful"');
 });
 
 test('without an insight step, "done" has no insight fields at all', async () => {
