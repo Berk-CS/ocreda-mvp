@@ -567,9 +567,11 @@ export async function findRelevantNotes(
   draftText: string,
   excludeNoteId?: string | null,
   onProgress?: (progress: RelevanceProgress) => void,
-  domain?: DomainGoal | null
+  domain?: DomainGoal | null,
+  /** Aborting it hangs up, and the server stops the search before its next model call. */
+  signal?: AbortSignal,
 ): Promise<RelevantNotesResponse> {
-  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress, domain);  // DEV-LOCAL-MODE
+  if (IS_LOCAL_MODE) return localFindRelevantNotes(draftText, excludeNoteId, onProgress, domain, signal);  // DEV-LOCAL-MODE
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (sessionError || !accessToken) {
@@ -580,6 +582,7 @@ export async function findRelevantNotes(
   try {
     response = await fetch(`${SUPABASE_URL}/functions/v1/find-relevant-notes`, {
       method: 'POST',
+      signal,
       headers: {
         Authorization: `Bearer ${accessToken}`,
         apikey: SUPABASE_ANON_KEY,

@@ -12,7 +12,8 @@ import { createNote, deleteNote, findRelevantNotes, findSimilarNotes, getNotes, 
 import { supabase } from '@/lib/supabase';
 import { prepareImportedNoteText } from '@/lib/import-note-content';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
-import { DomainGoal, InsightIntent, Note, NoteInsight, NoteRelationType, RelevanceCoverage, RelevanceResult, RelevanceSection } from '@/lib/types';
+import { CardChoice, CardDecision, CardKind, DomainGoal, IncomingCardDecision, InsightIntent, Note, NoteInsight, NoteRelationType, RelevanceCoverage, RelevanceResult, RelevanceSection, SuggestionKind } from '@/lib/types';
+import { loadCardDecisions, saveCardDecision } from '@/lib/card-decisions';
 import { findAnchor, splitIntoParagraphs } from '@/supabase/functions/_shared/relevance';
 import { getAiMode, useAiMode } from '@/lib/ai-mode';
 
@@ -64,12 +65,25 @@ function splitNote(note: Note): { title: string; body: string; hasTitle: boolean
   return { title: heading, body, hasTitle: Boolean(heading) };
 }
 
-/** A one-line label for a note in lists and menus, where something must show. */
+const MAX_LABEL_CHARS = 60;
+
+/** Cuts text to a label's length at a word break, so a long first line reads as a name. */
+function shortLabel(text: string): string {
+  if (text.length <= MAX_LABEL_CHARS) return text;
+  const cut = text.slice(0, MAX_LABEL_CHARS + 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > MAX_LABEL_CHARS / 2 ? cut.slice(0, lastSpace) : cut.slice(0, MAX_LABEL_CHARS)).replace(/[\s,.;:!?-]+$/, '')}…`;
+}
+
+/**
+ * A one-line label for a note in lists, menus, and cards, where something must
+ * show. A note's first line is its title, but a note with no real title has a
+ * whole sentence there, so every label is kept short.
+ */
 function noteLabel(note: Note): string {
   const { title, hasTitle } = splitNote(note);
-  if (hasTitle) return title;
-  const preview = notePreview(note);
-  return preview.length > 60 ? `${preview.slice(0, 60).trimEnd()}...` : preview || 'Untitled note';
+  if (hasTitle) return shortLabel(title);
+  return shortLabel(notePreview(note)) || 'Untitled note';
 }
 
 function notePreview(note: Note): string {
@@ -102,8 +116,10 @@ function stableHash(value: string): number {
 // v5: every match says which way help flows (inbound or outbound).
 // v6: one search splits the note into ideas and tags each match with its idea.
 // v7: results also carry the exact passage used from every retrieved note.
+// v8: cards quote the person's own words and name their kind and action.
+// v9: a note can be the solution to an earlier note's problem.
 // The AI mode is part of the signature, so switching Basic/Best searches again.
-const SAVED_RETRIEVAL_VERSION = 'v7';
+const SAVED_RETRIEVAL_VERSION = 'v9';
 
 function savedRetrievalKey(userId: string, noteId: string): string {
   return `ocreda-saved-retrieval:${SAVED_RETRIEVAL_VERSION}:${userId}:${noteId}`;
@@ -696,7 +712,7 @@ export default function OcredaHome() {
           : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
-      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={user?.id ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? AUTOMATIC_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />}
+      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={user?.id ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteAutoSearch(false); setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? AUTOMATIC_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />}
       {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onFindRelevantNotes={() => void saveNote(true)} onImport={() => { setImportError(''); setImportOpen(true); }} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
       {museEditor && <MuseEditor state={museEditor} saving={saving} error={error} onChange={setMuseEditor} onClose={() => { setMuseEditor(null); setError(''); }} onSave={() => void saveMuse()} />}
       {projectEditor && <ProjectEditor state={projectEditor} error={error} onChange={setProjectEditor} onClose={() => { setProjectEditor(null); setError(''); }} onSave={saveProject} />}
@@ -1213,29 +1229,38 @@ function NoteDomainPicker({ category, muses, saving, onChange, showPrefix = fals
   );
 }
 
-/** Shows the exact candidate-note passage the retrieval used, in place. */
-function RetrievalMatchedBody({ text, matchedText }: { text: string; matchedText: string }) {
+/**
+ * Shows a passage of the note in place: the words a card quoted when the note
+ * was opened from one, scrolled into view, or else the passage the retrieval used.
+ */
+function RetrievalMatchedBody({ text, matchedText, label }: { text: string; matchedText: string; label: string }) {
+  const markRef = useRef<HTMLElement>(null);
   const span = matchedText ? findAnchor(text, matchedText) : null;
+  useEffect(() => { markRef.current?.scrollIntoView({ block: 'center' }); }, [matchedText]);
   if (!span) return <FormattedNoteBody text={text} />;
   return <div className="whitespace-pre-wrap break-words">
     {text.slice(0, span.start)}
-    <mark className="rounded-sm bg-[#fff4c7] px-0.5 text-inherit underline decoration-[#e5b72f] decoration-2 underline-offset-4 [box-decoration-break:clone]" title="Text used for retrieval">
+    <mark ref={markRef} className="rounded-sm bg-[#fff4c7] px-0.5 text-inherit underline decoration-[#e5b72f] decoration-2 underline-offset-4 [box-decoration-break:clone]" title={label}>
       {text.slice(span.start, span.end)}
     </mark>
-    <span className="ml-1 inline-block rounded bg-[#fff7d8] px-1 align-[1px] text-[10px] font-medium leading-4 text-[#9a7300]">Used for retrieval</span>
+    <span className="ml-1 inline-block rounded bg-[#fff7d8] px-1 align-[1px] text-[10px] font-medium leading-4 text-[#9a7300]">{label}</span>
     {text.slice(span.end)}
   </div>;
 }
 
-function RelatedNotePanel({ note, relevance, onClose, onOpenFull }: {
+function RelatedNotePanel({ note, relevance, focusText = '', onClose, onOpenFull }: {
   note: Note;
   relevance?: RelevanceResult;
+  /** Words a card quoted from this note; shown in place of the retrieval passage. */
+  focusText?: string;
   onClose: () => void;
   onOpenFull: () => void;
 }) {
   const content = splitNote(note);
   const reason = relevance?.explanation.trim() ?? '';
-  const matchedText = relevance?.matched_text?.trim() ?? '';
+  // A quote can come from the title, which the body below does not show.
+  const focusInBody = focusText && content.body && findAnchor(content.body, focusText) ? focusText : '';
+  const matchedText = focusInBody || (relevance?.matched_text?.trim() ?? '');
   const relation = relevance?.relation_type ? RELATION_BADGES[relevance.relation_type] : null;
 
   return <div className="flex min-h-0 flex-1 flex-col bg-[#f7f7f9]">
@@ -1256,7 +1281,7 @@ function RelatedNotePanel({ note, relevance, onClose, onOpenFull }: {
           <h2 className="min-w-0 flex-1 break-words text-2xl font-semibold text-[#171717]">{content.title || 'Untitled note'}</h2>
           {relation && <span className={`shrink-0 rounded px-2 py-1 text-[10px] font-medium ${relation.className}`}>{relation.label}</span>}
         </div>
-        {content.body && <div className="mt-8 text-base leading-[1.7] text-[#2d2d2d]"><RetrievalMatchedBody text={content.body} matchedText={matchedText} /></div>}
+        {content.body && <div className="mt-8 text-base leading-[1.7] text-[#2d2d2d]"><RetrievalMatchedBody text={content.body} matchedText={matchedText} label={focusInBody ? 'Quoted in your card' : 'Used for retrieval'} /></div>}
       </article>
     </div>
     {reason && <div className="shrink-0 border-t border-[#e4e4e4] bg-white px-5 py-4">
@@ -1281,7 +1306,11 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [panelNoteId, setPanelNoteId] = useState<string | null>(null);
   const [panelRelevance, setPanelRelevance] = useState<RelevanceResult | null>(null);
-  const [insightActionStates, setInsightActionStates] = useState<InsightActionStates>(() => readInsightActionStates(userId, note.id));
+  // Words a card quoted from the note open in the side panel, to show them in place.
+  const [panelFocus, setPanelFocus] = useState('');
+  const [decisions, setDecisions] = useState<CardDecisions>({});
+  // Choices made on other notes that mark this one, such as a later note's answer to a problem here.
+  const [incomingDecisions, setIncomingDecisions] = useState<IncomingCardDecision[]>([]);
   const [retrieval, setRetrieval] = useState<RelevanceSearch | null>(null);
   // Avoid briefly showing "Not searched yet" before an automatic search starts.
   const [retrievalLoading, setRetrievalLoading] = useState(autoSearch);
@@ -1296,7 +1325,6 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [selectedInsightIndex, setSelectedInsightIndex] = useState(0);
-  const [openNotesUsedId, setOpenNotesUsedId] = useState<string | null>(null);
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
   const aiMode = useAiMode();
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -1328,9 +1356,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   retrievalInputsRef.current = { note, allNotes, domainName, goalText, aiMode, rawText };
 
   useEffect(() => {
-    if (!searchRequested) return;
     let active = true;
-    setRetrievalError(''); setRetrievalProgress(null);
     const inputs = retrievalInputsRef.current;
     const requestNote = { ...inputs.note, raw_text: inputs.rawText || inputs.note.raw_text };
     const requestSignature = retrievalInputSignature(requestNote.raw_text, inputs.goalText, inputs.aiMode);
@@ -1343,11 +1369,15 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     const availableNoteIds = new Set(inputs.allNotes.filter((item) => item.id !== requestNote.id).map((item) => item.id));
     const savedHasVisibleNotes = Boolean(saved?.search.results.some((result) => availableNoteIds.has(result.note_id)));
     const savedMatchesMode = Boolean(saved && (retrievalMode === 'similar' || saved.mode === 'relevant'));
+    // A saved search costs nothing to show, so it shows even for a note opened
+    // only to read it. A new search runs only when one was asked for.
     if (saved && savedHasVisibleNotes && savedMatchesMode) {
       setRetrieval(saved.search);
       setRetrievalLoading(false);
       return;
     }
+    if (!searchRequested) return;
+    setRetrievalError(''); setRetrievalProgress(null);
     // Empty retrievals and caches whose notes no longer exist are not useful
     // completed searches. Retry instead of leaving the panel blank forever.
     setRetrieval(null);
@@ -1355,24 +1385,38 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     const requestHasOtherNotes = inputs.allNotes.some((item) => item.id !== requestNote.id);
     if (requestTooShort || !requestHasOtherNotes) { setRetrievalLoading(false); return; }
     setRetrievalLoading(true);
-    const onProgress = (progress: RelevanceProgress) => { if (active) setRetrievalProgress(progress); };
+    // Whether every agent has reported back, which decides what leaving does.
+    let agentsFinished = false;
+    const onProgress = (progress: RelevanceProgress) => {
+      agentsFinished = progress.agents_total > 0 && progress.agents_done >= progress.agents_total;
+      if (active) setRetrievalProgress(progress);
+    };
+    // Leaving the note (or searching again) before the agents finish hangs up,
+    // and the server stops before its next model call. After they finish, the
+    // costly part is paid for and only the insight call is left, so the search
+    // finishes in the background and is saved for the next time the note opens.
+    const cancel = new AbortController();
     // One search for the whole note. In relevant mode the server splits it
     // into its ideas and keeps up to three notes for each, reading every note
     // once however many ideas there are.
     const search = retrievalMode === 'relevant'
-      ? findRelevantNotes(searchedText, requestNote.id, onProgress, inputs.domainName ? { name: inputs.domainName, goal: inputs.goalText } : null)
+      ? findRelevantNotes(searchedText, requestNote.id, onProgress, inputs.domainName ? { name: inputs.domainName, goal: inputs.goalText } : null, cancel.signal)
       : findSimilarNotes(searchedText, requestNote.id, onProgress, inputs.allNotes);
     search
       .then((found) => {
-        if (!active) return;
         const response: RelevanceSearch = { ...found, sections: sectionsInBody(found.sections, searchedText, requestBody) };
-        setRetrieval(response);
-        // A failed insight step is not saved, so opening the note again retries it.
+        // Saved even when the person has already left, so the note shows it
+        // next time without searching again. A failed insight step is not
+        // saved, so opening the note again retries it.
         if (!response.insight_failed) persistSavedRetrieval(userId, requestNote, inputs.goalText, retrievalMode, response, requestSignature);
+        if (active) setRetrieval(response);
       })
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
-    return () => { active = false; };
+    return () => {
+      active = false;
+      if (!agentsFinished) cancel.abort();
+    };
   }, [note.id, retrievalAttempt, retrievalMode, searchRequested, userId]);
 
   const requestReretrieval = (mode: 'similar' | 'relevant' = retrievalMode) => {
@@ -1400,7 +1444,22 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const panelNote = panelNoteId ? allNotes.find((item) => item.id === panelNoteId) ?? null : null;
   const displayedBody = body || note.raw_text;
   const noteSections = useMemo(() => noteSectionsFor(displayedBody, retrieval?.sections), [displayedBody, retrieval]);
-  const insights = useMemo(() => retrieval?.insights ?? [], [retrieval]);
+  /** The relation of an insight's strongest cited note, for cards from servers that predate card kinds. */
+  const relationOf = useCallback((item: NoteInsight) =>
+    item.note_ids.map((id) => relevanceByNoteId.get(id)?.relation_type).find(Boolean) ?? null, [relevanceByNoteId]);
+  /**
+   * The cards to show: this search's, and any the person acted on in an
+   * earlier search, so what they chose stays on the note after a new one.
+   */
+  const cards = useMemo(() => {
+    const current = (retrieval?.insights ?? []).map((item) => ({ id: insightActionId(item, relationOf(item)), item }));
+    const currentIds = new Set(current.map((card) => card.id));
+    const earlier = Object.entries(decisions)
+      .filter(([id, decision]) => !currentIds.has(id) && decision.choice !== 'rejected')
+      .map(([id, decision]) => ({ id, item: decision.insight }));
+    return [...current, ...earlier];
+  }, [decisions, relationOf, retrieval]);
+  const insights = useMemo(() => cards.map((card) => card.item), [cards]);
   const insight = insights[Math.min(selectedInsightIndex, insights.length - 1)] ?? null;
   /**
    * Where each insight sits: its passage, looked for first inside the idea the
@@ -1414,56 +1473,143 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     const section = (span && noteSections.find((candidate) => span.start >= candidate.start && span.start < candidate.end)) || tagged || noteSections[0] || null;
     return { span, section };
   }), [displayedBody, insights, noteSections]);
-  const sectionOfInsight = useCallback((item: NoteInsight) => insightPlacements[insights.indexOf(item)]?.section ?? null, [insightPlacements, insights]);
-  /** The relation of an insight's strongest cited note, so its highlight says what it opens. */
-  const relationOf = useCallback((item: NoteInsight) =>
-    item.note_ids.map((id) => relevanceByNoteId.get(id)?.relation_type).find(Boolean) ?? null, [relevanceByNoteId]);
   /** The insight rests only on notes this one helps, so its card points at where the lesson applies. */
   const isOutbound = (item: NoteInsight) => item.note_ids.every((id) => relevanceByNoteId.get(id)?.direction === 'outbound');
   const formattedBody = hasNoteFormatting(displayedBody);
-  // One highlight per insight whose passage is visible, in reading order.
-  // Never while editing, and never two on overlapping text.
-  const highlights = useMemo(() => {
-    if (editing) return [];
-    const found: { start: number; end: number; index: number }[] = [];
-    insights.forEach((item, index) => {
-      const actionId = insightActionId(item, relationOf(item));
-      if (insightActionStates[actionId]?.status === 'dismissed') return;
-      const span = insightPlacements[index]?.span;
-      if (span && !found.some((taken) => span.start < taken.end && taken.start < span.end)) found.push({ ...span, index });
+
+  /**
+   * Each card with what the person chose, the kind it now shows as, and how it
+   * marks the note. A card waiting on them is a highlight on its passage; once
+   * they act, the highlight goes and their choice shows over the note instead:
+   * a box under the line for a solution, an idea, or merged words, and a chip
+   * at the end of the sentence for an extension, a contradiction, or a pattern.
+   * A waiting card on a passage they already acted on is a repeat from a newer
+   * search, so it is left out.
+   */
+  const cardLayout = useMemo(() => {
+    const sectionAtOffset = (offset: number) => noteSections.find((section) => offset >= section.start && offset < section.end) ?? null;
+    const views: CardView[] = cards.map((card, index) => {
+      const decision = decisions[card.id] as CardDecision | undefined;
+      const kind = decision?.kind ?? baseKindOf(card.item, relationOf(card.item));
+      const placement = insightPlacements[index];
+      return { ...card, index, decision, kind, span: placement?.span ?? null, section: placement?.section ?? noteSections[0] ?? null, fromNoteId: null };
     });
-    return found.sort((x, y) => x.start - y.start);
-  }, [editing, insightActionStates, insightPlacements, insights, relationOf]);
+    // A later note that solved a problem here: its Solution box goes beside the problem.
+    const incoming = incomingDecisions.flatMap((decision) => {
+      const problem = decision.choice === 'solved' ? decision.insight.problem : null;
+      const span = problem ? findAnchor(displayedBody, problem.text) : null;
+      if (!span) return [];
+      const view: CardView = { id: `from:${decision.fromNoteId}:${decision.cardId}`, item: decision.insight, index: -1, decision, kind: 'solution', span, section: sectionAtOffset(span.start), fromNoteId: decision.fromNoteId };
+      return [view];
+    });
+    const actedSpans = [...views.filter((view) => isActedCard(view.decision) && view.span), ...incoming].map((view) => view.span!);
+    const overlapsActed = (span: { start: number; end: number }) => actedSpans.some((taken) => span.start < taken.end && taken.start < span.end);
+    const shown = views.filter((view) => view.decision?.choice !== 'rejected' && !(isPendingCard(view.decision) && view.span && overlapsActed(view.span)));
 
-  // A new note/search starts on the first section that has something useful to
-  // show. Afterwards the reader's gray section rail controls this selection.
+    const highlights: { start: number; end: number; index: number }[] = [];
+    const overlays: { type: 'chip' | 'block'; at: number; view: (typeof views)[number] }[] = [];
+    if (!editing) {
+      for (const view of [...shown, ...incoming]) {
+        const span = view.span;
+        if (!span) continue;
+        if (!view.fromNoteId && isPendingCard(view.decision)) {
+          if (!highlights.some((taken) => span.start < taken.end && taken.start < span.end)) highlights.push({ ...span, index: view.index });
+          continue;
+        }
+        const limit = view.section?.end ?? displayedBody.length;
+        const sentenceEnd = Math.min(sentenceEndAfter(displayedBody, span.end), limit);
+        const lineEnd = Math.min(lineEndAfter(displayedBody, span.end), limit);
+        const choice = view.decision?.choice;
+        // When this note answered an earlier one, the box goes on that note; here a chip points to it.
+        const answeredElsewhere = !view.fromNoteId && choice === 'solved' && view.item.direction === 'outbound';
+        if ((choice === 'solved' || choice === 'helped') && !answeredElsewhere) overlays.push({ type: 'block', at: lineEnd, view });
+        else if (choice === 'merged') overlays.push({ type: 'chip', at: sentenceEnd, view }, { type: 'block', at: lineEnd, view });
+        else overlays.push({ type: 'chip', at: sentenceEnd, view });
+      }
+    }
+    highlights.sort((x, y) => x.start - y.start);
+    overlays.sort((x, y) => x.at - y.at || (x.type === 'chip' ? -1 : 1));
+    return { views, shown, highlights, overlays };
+  }, [cards, decisions, displayedBody, editing, incomingDecisions, insightPlacements, noteSections, relationOf]);
+  const { highlights, overlays } = cardLayout;
+
   useEffect(() => {
-    const firstWithInsight = noteSections.find((section) => insightPlacements.some((placement) => placement.section?.id === section.id))?.id;
-    setSelectedSectionId(firstWithInsight ?? noteSections[0]?.id ?? null);
-    setSelectedInsightIndex(0);
-    setOpenNotesUsedId(null);
-  }, [note.id, retrieval, noteSections, insightPlacements]);
+    let active = true;
+    loadCardDecisions(note.id)
+      .then((loaded) => {
+        if (!active) return;
+        setDecisions(loaded.own);
+        setIncomingDecisions(loaded.incoming);
+      })
+      .catch(() => { if (active) setSaveState('error'); });
+    return () => { active = false; };
+  }, [note.id]);
 
-  const updateInsightAction = (actionId: string, next: InsightActionState) => {
-    setInsightActionStates((current) => {
-      const updated = { ...current, [actionId]: next };
-      persistInsightActionStates(userId, note.id, updated);
+  /**
+   * Records a choice, or clears it. The screen changes at once; if saving
+   * fails, it goes back to how it was and says so.
+   */
+  const decide = (view: (typeof cardLayout.views)[number], choice: CardChoice | null, text?: string) => {
+    const previous = decisions[view.id];
+    // Solving an earlier note's problem also marks that earlier note.
+    const target = choice === 'solved' && view.item.direction === 'outbound' ? view.item.problem?.note_id : undefined;
+    const next: CardDecision | null = choice
+      ? {
+        choice,
+        // A dismissed solution carries on as a Helps card; anything else keeps its kind.
+        kind: choice === 'downgraded' ? 'helps' : view.kind,
+        insight: view.item,
+        ...(text !== undefined ? { text } : {}),
+        ...(target ? { targetNoteId: target } : {}),
+      }
+      : null;
+    const apply = (decision: CardDecision | null | undefined) => setDecisions((current) => {
+      const updated = { ...current };
+      if (decision) updated[view.id] = decision;
+      else delete updated[view.id];
       return updated;
+    });
+    apply(next);
+    saveCardDecision(note.id, view.id, next).catch(() => {
+      apply(previous);
+      setSaveState('error');
     });
   };
 
-  const allVisibleInsightEntries = insights
-    .map((item, index) => {
-      const relation = relationOf(item);
-      const actionId = insightActionId(item, relation);
-      return { item, index, relation, actionId, section: sectionOfInsight(item) ?? noteSections[0] ?? null, actionState: insightActionStates[actionId] ?? IDLE_INSIGHT_ACTION };
-    })
-    .filter((entry) => entry.actionState.status !== 'dismissed');
+  // A new note or search starts on the first section with something to show.
+  // Afterwards the gray section rail controls this, so a choice on a card, or
+  // typing in the note, never moves the reader somewhere else.
+  useEffect(() => {
+    const firstWithCard = noteSections.find((section) => cardLayout.shown.some((view) => view.section?.id === section.id))?.id;
+    setSelectedSectionId(firstWithCard ?? noteSections[0]?.id ?? null);
+    setSelectedInsightIndex(cardLayout.shown[0]?.index ?? 0);
+    // Only a new note or a new search should reset the selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note.id, retrieval]);
+
+  const allVisibleInsightEntries = cardLayout.shown;
   const visibleInsightEntries = allVisibleInsightEntries.filter((entry) => entry.section?.id === selectedSectionId);
+
+  /**
+   * Notes the search matched that no card cites. The insight step writes a
+   * card only when a note would change what the person does next, so without
+   * this list a search that found related notes could look empty. Matches for
+   * one part show with that part; matches for the note as a whole, or for a
+   * part that no longer lines up with the text, always show.
+   */
+  const relatedNotes = useMemo(() => {
+    const cited = new Set(cardLayout.shown.flatMap((view) => view.item.note_ids));
+    const sectionIds = new Set(noteSections.map((section) => section.id));
+    const uncited = (retrieval?.results ?? []).filter((result) => result.note_id !== note.id && !cited.has(result.note_id) && noteById.has(result.note_id));
+    return {
+      forSection: (sectionId: string | null) => uncited.filter((result) => result.section_id && result.section_id === sectionId),
+      forWholeNote: uncited.filter((result) => !result.section_id || !sectionIds.has(result.section_id)),
+    };
+  }, [cardLayout.shown, note.id, noteById, noteSections, retrieval]);
+  const relatedHere = relatedNotes.forSection(selectedSectionId);
 
   const selectSection = (sectionId: string) => {
     setSelectedSectionId(sectionId);
-    setOpenNotesUsedId(null);
     const first = allVisibleInsightEntries.find((entry) => entry.section?.id === sectionId);
     if (first) setSelectedInsightIndex(first.index);
   };
@@ -1476,28 +1622,16 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     requestAnimationFrame(() => document.getElementById(`suggestion-card-${index}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
   };
 
-  const showCitedNote = (noteId: string) => {
+  /** Opens a past note in the side panel, scrolled to the words a card quoted from it. */
+  const showCitedNote = (noteId: string, focus = '') => {
     setPanelRelevance(relevanceByNoteId.get(noteId) ?? null);
+    setPanelFocus(focus);
     setPanelNoteId(noteId);
+    setSummaryOpen(true);
   };
 
-  const applyInsightToCurrentNote = async (item: NoteInsight, kind: SuggestionKind, proposal: string): Promise<boolean> => {
-    const nextBody = insertActionIntoNote(body, item.anchor, proposal, kind);
-    if (nextBody === body) return Boolean(proposal.trim() && body.includes(proposal.trim()));
-    const nextRawText = title.trim() && nextBody.trim() ? `${title.trim()}\n\n${nextBody.trim()}` : title.trim() || nextBody.trim();
-    if (!nextRawText) return false;
-    setBody(nextBody);
-    setSaveState('saving');
-    try {
-      await latestSaveRef.current(note.id, nextRawText);
-      setSaveState('saved');
-      return true;
-    } catch {
-      setBody(body);
-      setSaveState('error');
-      return false;
-    }
-  };
+  /** The sentence of this note a card is about, with its key part picked out. */
+  const triggerFor = (span: { start: number; end: number } | null) => span ? triggerSentence(displayedBody, span) : null;
 
   const [dismissedGoalDomains, setDismissedGoalDomains] = useState(() => readGoalPromptDismissed(userId));
   const goalSuggestions = retrieval?.goal_suggestions ?? [];
@@ -1512,7 +1646,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     />
     : null;
 
-  const leaveWorkspace = async (next?: Note | null, autoSearch = true) => {
+  /** Saves any edit, then opens `next` (without a search unless asked) or closes the note. */
+  const leaveWorkspace = async (next?: Note | null, autoSearch = false) => {
     if (rawText && rawText !== note.raw_text.trim()) {
       setSaveState('saving');
       try { await latestSaveRef.current(note.id, rawText); setSaveState('saved'); }
@@ -1563,38 +1698,103 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
 
   const openDate = () => setSearchRequest({ query: '', filter: { kind: 'date', value: localDateKey(note.created_at), label: fullNoteDate(note.created_at) } });
 
+  /**
+   * What an acted-on card leaves over the note. Clicking one opens the past
+   * note it came from at the quoted spot, or, for a choice that has no single
+   * spot (both are true, a pattern), reopens the card.
+   */
+  const renderOverlay = (overlay: (typeof overlays)[number], key: string) => {
+    const { view } = overlay;
+    const style = SUGGESTION_STYLES[view.kind];
+    const choice = view.decision?.choice;
+    const item = view.item;
+    // Where the mark leads: for a box from a later note, that note's answer; for
+    // this note's answer to an earlier problem, that problem; otherwise the
+    // past words the card quoted. An answer with an empty note id is this note's own.
+    const outboundAnswer = item.direction === 'outbound' && choice === 'solved' && !view.fromNoteId;
+    const sourceId = view.fromNoteId
+      ?? (outboundAnswer ? item.problem?.note_id : undefined)
+      ?? (item.answer?.note_id || item.quotes?.[0]?.note_id || item.note_ids[0]);
+    const source = sourceId ? noteById.get(sourceId) : undefined;
+    const sourceTitle = source ? noteLabel(source) : 'earlier note';
+    const focus = view.fromNoteId ? item.answer?.text ?? ''
+      : outboundAnswer ? item.problem?.text ?? ''
+        : (item.answer?.note_id ? item.answer.text : '') || item.quotes?.[0]?.text || '';
+    const reopenCard = choice === 'both' || choice === 'confirmed';
+    const open = () => { if (reopenCard) selectInsight(view.index); else if (sourceId) showCitedNote(sourceId, focus); };
+    const handlers = {
+      role: 'button' as const,
+      tabIndex: 0,
+      onClick: (event: React.MouseEvent) => { event.stopPropagation(); open(); },
+      onKeyDown: (event: React.KeyboardEvent) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); open(); } },
+      title: reopenCard ? 'Open the card' : `Open “${sourceTitle}”`,
+    };
+    if (overlay.type === 'chip') {
+      const label = choice === 'merged' ? 'Extended'
+        : outboundAnswer ? `Solves ${sourceTitle}`
+        : choice === 'today' ? `Updates ${sourceTitle}`
+          : choice === 'earlier' ? `${sourceTitle} holds`
+            : choice === 'confirmed' ? `Pattern · ${sourceTitle}`
+              : sourceTitle;
+      return <span key={key} {...handlers} className={`ml-1.5 inline-block max-w-[16rem] cursor-pointer truncate rounded-full border px-2 align-[2px] text-[11px] font-medium leading-5 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${style.chip}`}>{label}</span>;
+    }
+    const words = choice === 'merged'
+      ? view.decision?.text ?? item.answer?.text ?? item.action
+      : choice === 'solved' ? item.answer?.text ?? item.action
+        : item.kind === 'helps' ? `Might help to ${item.action}` : `Might help: “${item.answer?.text ?? item.action}”`;
+    return <span key={key} {...handlers} className={`my-2 block cursor-pointer rounded-lg border px-3 py-2 text-[15px] leading-relaxed hover:brightness-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${choice === 'merged' ? 'border-y-0 border-r-0 border-l-[3px] border-[#c8acea] bg-[#fbf8ff] text-[#3d2a57]' : `border-dashed ${style.outline} text-[#2d2d2d]`}`}>
+      {choice === 'solved' && <span className={`mr-1.5 text-[12px] font-semibold ${style.actionText}`}>Solution:</span>}
+      {words}
+      <span className="mt-0.5 block text-[11px] text-[#999]">From “{sourceTitle}”{source ? ` · ${formatDate(source.created_at)}` : ''} ↗</span>
+    </span>;
+  };
+
+  /**
+   * A section's text with its marks: a highlight on each passage waiting on the
+   * person, and their choices drawn over it. The text itself is never changed.
+   */
   const renderSectionContent = (section: NoteSection) => {
-    const sectionHighlights = highlights.filter((span) => span.start >= section.start && span.end <= section.end);
-    if (!sectionHighlights.length) return formattedBody ? <FormattedNoteBody text={section.text} /> : <span className="whitespace-pre-wrap break-words">{section.text}</span>;
-    return <span className="whitespace-pre-wrap break-words">{sectionHighlights.map((span, position) => {
-      const item = insights[span.index];
-      const relation = relationOf(item);
-      const actionState = insightActionStates[insightActionId(item, relation)] ?? IDLE_INSIGHT_ACTION;
-      const effectiveRelation = actionState.status === 'helps' ? 'helps' : relation;
-      const relationLabel = actionState.status === 'solved' ? 'Solved' : effectiveRelation ? RELATION_LABELS[effectiveRelation] : '';
-      const relationClass = actionState.status === 'solved'
-        ? 'bg-[#e0f4e6] text-[#287141]'
-        : actionState.status === 'helps'
-          ? 'bg-[#e0f4e6] text-[#2c7b45]'
-          : effectiveRelation ? RELATION_BADGES[effectiveRelation]?.className ?? 'bg-[#eef1f6] text-[#5d6b85]' : '';
-      const highlightStyle = HIGHLIGHT_STYLES[suggestionKindFor(effectiveRelation)];
-      const active = item === insight;
-      const openInsight = () => selectInsight(span.index);
-      const previousEnd = position === 0 ? section.start : sectionHighlights[position - 1].end;
-      return <Fragment key={`${section.id}-${span.index}`}>
-        {displayedBody.slice(previousEnd, span.start)}
-        <mark
-          role="button"
-          tabIndex={0}
-          onClick={(event) => { event.stopPropagation(); openInsight(); }}
-          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); openInsight(); } }}
-          aria-pressed={active}
-          title="See what your notes say about this"
-          className={`cursor-pointer rounded-sm px-0.5 text-inherit underline decoration-2 underline-offset-4 [box-decoration-break:clone] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${active ? highlightStyle.active : `${highlightStyle.idle} hover:brightness-[0.98]`}`}
-        >{displayedBody.slice(span.start, span.end)}{relationLabel && <span className={`ml-1 inline-block rounded px-1 align-[1px] text-[10px] font-medium leading-4 ${relationClass}`}>{relationLabel}</span>}</mark>
-        {position === sectionHighlights.length - 1 ? displayedBody.slice(span.end, section.end) : null}
-      </Fragment>;
-    })}</span>;
+    const marks = highlights.filter((span) => span.start >= section.start && span.end <= section.end);
+    const inserts = overlays.filter((overlay) => overlay.at >= section.start && overlay.at <= section.end && overlay.view.section?.id === section.id);
+    if (!marks.length && !inserts.length) return formattedBody ? <FormattedNoteBody text={section.text} /> : <span className="whitespace-pre-wrap break-words">{section.text}</span>;
+    const events = [
+      ...marks.map((mark) => ({ at: mark.start, mark })),
+      ...inserts.map((overlay) => ({ at: overlay.at, overlay })),
+    ].sort((x, y) => x.at - y.at || ('mark' in x ? -1 : 1));
+    const nodes: React.ReactNode[] = [];
+    let cursor = section.start;
+    events.forEach((event, position) => {
+      // Anything placed inside a passage already drawn goes just after it.
+      const at = Math.max(event.at, cursor);
+      if (at > cursor) nodes.push(displayedBody.slice(cursor, at));
+      cursor = at;
+      if ('overlay' in event && event.overlay) {
+        nodes.push(renderOverlay(event.overlay, `${section.id}-o${position}`));
+        // A box already ends the line, so its line break would leave a gap.
+        if (event.overlay.type === 'block' && displayedBody[cursor] === '\n') cursor++;
+        return;
+      }
+      const mark = 'mark' in event ? event.mark : null;
+      if (!mark || mark.start < cursor) return;
+      const view = cardLayout.views[mark.index];
+      const style = SUGGESTION_STYLES[view.kind];
+      const highlightStyle = HIGHLIGHT_STYLES[view.kind];
+      const active = view.item === insight;
+      const openInsight = () => selectInsight(mark.index);
+      nodes.push(<mark
+        key={`${section.id}-m${mark.index}`}
+        role="button"
+        tabIndex={0}
+        onClick={(clickEvent) => { clickEvent.stopPropagation(); openInsight(); }}
+        onKeyDown={(keyEvent) => { if (keyEvent.key === 'Enter' || keyEvent.key === ' ') { keyEvent.preventDefault(); keyEvent.stopPropagation(); openInsight(); } }}
+        aria-pressed={active}
+        title="See what your notes say about this"
+        className={`cursor-pointer rounded-sm px-0.5 text-inherit underline decoration-2 underline-offset-4 [box-decoration-break:clone] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${active ? highlightStyle.active : `${highlightStyle.idle} hover:brightness-[0.98]`}`}
+      >{displayedBody.slice(mark.start, mark.end)}<span className={`ml-1 inline-block rounded px-1 align-[1px] text-[10px] font-medium leading-4 ${style.badge}`}>{style.label}</span></mark>);
+      cursor = mark.end;
+    });
+    if (cursor < section.end) nodes.push(displayedBody.slice(cursor, section.end));
+    return <span className="whitespace-pre-wrap break-words">{nodes}</span>;
   };
 
   return (
@@ -1612,12 +1812,12 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
           {usedInNotes.length > 0 && <div className="relative mr-2">
             <button type="button" onClick={() => setUsedInMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={usedInMenuOpen} className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#666] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea]">Used in other notes</button>
             {usedInMenuOpen && <div role="menu" className="absolute right-0 top-10 z-40 w-72 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 shadow-xl">
-              {usedInNotes.map((item) => <button key={item.id} role="menuitem" type="button" onClick={() => { setUsedInMenuOpen(false); void leaveWorkspace(item); }} className="block w-full truncate px-4 py-2.5 text-left text-sm text-[#333] hover:bg-[#edf3ff] hover:text-[#315fc5]">{noteLabel(item)}</button>)}
+              {usedInNotes.map((item) => <button key={item.id} role="menuitem" type="button" onClick={() => { setUsedInMenuOpen(false); void leaveWorkspace(item, false); }} className="block w-full truncate px-4 py-2.5 text-left text-sm text-[#333] hover:bg-[#edf3ff] hover:text-[#315fc5]">{noteLabel(item)}</button>)}
             </div>}
           </div>}
           <button type="button" disabled={retrievalLoading} onClick={() => requestReretrieval()} aria-label="Reload related notes" title="Reload related notes" className="flex h-9 w-9 items-center justify-center rounded-md border border-[#dedede] bg-white shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] disabled:cursor-wait disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
-          <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote)} aria-label="Newer note" title="Newer note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
-          <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote)} aria-label="Older note" title="Older note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
+          <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote, false)} aria-label="Newer note" title="Newer note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
+          <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote, false)} aria-label="Older note" title="Older note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
           <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><MoreHorizontal className="h-5 w-5" /></button>
           {menuOpen && <div className="absolute right-0 top-11 z-30 w-40 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl"><button type="button" disabled={saving} onClick={() => { setMenuOpen(false); void onDelete(note); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /> Delete note</button></div>}
         </div>
@@ -1649,8 +1849,9 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
           {panelNote ? <RelatedNotePanel
             note={panelNote}
             relevance={panelRelevance ?? relevanceByNoteId.get(panelNote.id)}
-            onClose={() => { setPanelNoteId(null); setPanelRelevance(null); }}
-            onOpenFull={() => void leaveWorkspace(panelNote)}
+            focusText={panelFocus}
+            onClose={() => { setPanelNoteId(null); setPanelRelevance(null); setPanelFocus(''); }}
+            onOpenFull={() => void leaveWorkspace(panelNote, false)}
           /> : <>
           <header className="sticky top-0 z-10 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-[#e2e2e2] bg-[#f7f7f9]/95 px-4 py-2 backdrop-blur">
             <div>{aiMode === 'basic' && <Link href="/profile" title="Searching with the cheaper Basic model. Change it in your profile." className="rounded-md border border-[#f0d9a8] bg-[#fff8e8] px-2.5 py-1.5 text-xs text-[#8a6100] hover:border-[#e3b341]">Basic AI</Link>}</div>
@@ -1666,18 +1867,20 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
                 <section aria-labelledby="suggestions-heading">
                   <div className="mb-4 flex items-center justify-between gap-3"><h2 id="suggestions-heading" className="text-sm font-medium text-[#555]">Suggestions</h2><span className="text-[11px] text-[#999]">Up to 3 notes per section</span></div>
                   <div className="space-y-4">
-                    {visibleInsightEntries.map(({ item, index, relation, actionId, actionState, section }, visibleIndex) => <Fragment key={actionId}>
+                    {visibleInsightEntries.map((view, visibleIndex) => { const { item, index, id, section } = view; return <Fragment key={id}>
                       {visibleIndex === 0 && section && noteSections.length > 1 && <button type="button" onClick={() => document.getElementById(`note-${section.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })} className="sticky top-0 z-[1] flex w-full items-center gap-2 bg-[#f7f7f9]/95 py-1 text-left text-[11px] font-medium uppercase tracking-[0.08em] text-[#999] backdrop-blur"><span className="h-px flex-1 bg-[#d8d8dc]" />Section {section.index + 1}<span className="h-px flex-1 bg-[#d8d8dc]" /></button>}
                       <div id={`suggestion-card-${index}`} onClick={() => setSelectedInsightIndex(index)} className={selectedInsightIndex === index ? 'rounded-xl ring-2 ring-[#477bea]/20' : ''}>
-                        <InsightCard insight={item} notesById={noteById} relation={relation} relevanceResults={retrieval?.results ?? []} outbound={isOutbound(item)} actionState={actionState} onActionChange={(next) => updateInsightAction(actionId, next)} onApplyToNote={(kind, text) => applyInsightToCurrentNote(item, kind, text)} notesOpen={openNotesUsedId === actionId} onNotesOpenChange={(open) => setOpenNotesUsedId(open ? actionId : null)} onSelectNote={(noteId) => showCitedNote(noteId)} />
+                        <SuggestionCard insight={item} kind={view.kind} decision={view.decision} notesById={noteById} trigger={triggerFor(view.span)} outbound={isOutbound(item)} onChoose={(choice, text) => decide(view, choice, text)} onOpenSource={showCitedNote} />
                       </div>
-                    </Fragment>)}
-                    {!visibleInsightEntries.length && insights.length > 0 && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">This section has no actionable connection. Select another section using its gray line.</div>}
+                    </Fragment>; })}
+                    {!visibleInsightEntries.length && allVisibleInsightEntries.length > 0 && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">No suggestions for this part of your note. Click a highlight in your note, or a gray bar beside it, to see the others.</div>}
                     {!insights.length && retrieval?.summary && <section className="rounded-xl border border-[#eadb99] bg-[#fffdf4] p-5 shadow-sm"><span className="rounded-md bg-[#fff2b8] px-2 py-1 text-xs font-medium text-[#8a6a00]">Insight</span><p className="mt-4 text-sm leading-relaxed text-[#3d3828]">{retrieval.summary}</p></section>}
                     {!retrieval && !searchRequested && !noteTooShortForRetrieval && hasOtherNotes && <div className="rounded-xl border border-dashed border-[#d5d9e3] bg-white p-7 text-center"><h3 className="font-medium">See what your notes suggest</h3><p className="mt-2 text-sm leading-relaxed text-[#777]">Search your other notes for contradictions, solutions, help, extensions, and insights.</p><button type="button" onClick={() => { setSearchRequested(true); setRetrievalAttempt((attempt) => attempt + 1); }} className="mt-4 rounded-md bg-[#477bea] px-4 py-2 text-sm text-white hover:bg-[#3d6ed7]">Find related notes</button></div>}
                     {retrieval?.insight_failed && !insights.length && surfacedNotes.length > 0 && <div className="rounded-xl border border-[#f0d9a8] bg-[#fff8e8] p-5"><h3 className="text-sm font-medium text-[#6f5100]">Suggestions did not finish</h3><p className="mt-2 text-xs leading-relaxed text-[#806b35]">The related notes are still available below.</p></div>}
-                    {retrieval && !retrieval.insight_failed && !insights.length && !retrieval.summary && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">No suggestion changes your next step yet.</div>}
+                    {retrieval && !retrieval.insight_failed && !insights.length && !retrieval.summary && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">{relatedHere.length || relatedNotes.forWholeNote.length ? 'No suggestions to act on yet, but these notes relate to it.' : 'No suggestion changes your next step yet.'}</div>}
                     {!retrieval && (noteTooShortForRetrieval || !hasOtherNotes) && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">{noteTooShortForRetrieval ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters, then choose Find related notes.` : 'Once you have another note, Ocreda can look for connections.'}</div>}
+                    {relatedHere.length > 0 && <RelatedNotesList heading={noteSections.length > 1 ? 'Also related to this part' : 'Also related'} results={relatedHere} notesById={noteById} onOpen={showCitedNote} />}
+                    {relatedNotes.forWholeNote.length > 0 && <RelatedNotesList heading={noteSections.length > 1 ? 'Also related to the whole note' : 'Also related'} results={relatedNotes.forWholeNote} notesById={noteById} onOpen={showCitedNote} />}
                     {goalPrompt}
                   </div>
                 </section>
@@ -1990,72 +2193,44 @@ const RELATION_BADGES: Partial<Record<NoteRelationType, { label: string; classNa
   solves: { label: 'Solves', className: 'bg-[#e6f4ea] text-[#1e7b3c]' },
 };
 
-/** Every relation's name, for the label on a highlight, which always says what it opens. */
-const RELATION_LABELS: Record<NoteRelationType, string> = {
-  supports: 'Supports',
-  extends: 'Extends',
-  contradicts: 'Contradicts',
-  question: 'Open question',
-  parallel: 'Parallel',
-  helps: 'Helps',
-  solves: 'Solves',
+type CardDecisions = Record<string, CardDecision>;
+
+/** A card as the note view lays it out, or a mark another note's choice left here. */
+type CardView = {
+  id: string;
+  item: NoteInsight;
+  /** Position in the note's card list; -1 for a mark from another note. */
+  index: number;
+  decision?: CardDecision;
+  kind: SuggestionKind;
+  span: { start: number; end: number } | null;
+  section: NoteSection | null;
+  /** Set for a mark left by a choice on another note's card: that note's id. */
+  fromNoteId: string | null;
 };
 
-const INTENT_LABELS: Record<InsightIntent, string> = {
-  stuck: 'You seem stuck',
-  planning: 'You’re planning',
-  deciding: 'You’re deciding',
-  capturing: 'You’re logging what happened',
-  reflecting: 'You’re thinking it through',
-  learning: 'You saved a lesson',
-};
+/** Waiting on the person: no choice yet, or a solution turned into a Helps card. */
+function isPendingCard(decision?: CardDecision): boolean {
+  return !decision || decision.choice === 'downgraded';
+}
 
-type SuggestionKind = 'contradiction' | 'solution' | 'helps' | 'extension' | 'insight';
-
-type InsightActionStatus = 'idle' | 'writing' | 'saved' | 'declined' | 'applied' | 'solved' | 'helps' | 'merging' | 'merged' | 'dismissed';
-type InsightActionState = { status: InsightActionStatus; response?: string };
-type InsightActionStates = Record<string, InsightActionState>;
-
-const IDLE_INSIGHT_ACTION: InsightActionState = { status: 'idle' };
+/** Acted on, so its mark shows over the note in place of the highlight. */
+function isActedCard(decision?: CardDecision): boolean {
+  return Boolean(decision && decision.choice !== 'downgraded' && decision.choice !== 'rejected');
+}
 
 function insightActionId(insight: NoteInsight, relation: NoteRelationType | null): string {
-  const source = `${suggestionKindFor(relation)}|${insight.anchor}|${insight.text}|${insight.action}|${insight.note_ids.join(',')}`;
-  return `${suggestionKindFor(relation)}:${Math.abs(stableHash(source))}`;
+  const kind = baseKindOf(insight, relation);
+  const source = `${kind}|${insight.anchor}|${insight.text}|${insight.action}|${insight.note_ids.join(',')}`;
+  return `${kind}:${Math.abs(stableHash(source))}`;
 }
 
-function insightActionsStorageKey(userId: string, noteId: string): string {
-  return `ocreda-insight-actions:v1:${userId}:${noteId}`;
-}
-
-function readInsightActionStates(userId: string, noteId: string): InsightActionStates {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(insightActionsStorageKey(userId, noteId)) ?? '{}') as Record<string, unknown>;
-    const statuses: InsightActionStatus[] = ['idle', 'writing', 'saved', 'declined', 'applied', 'solved', 'helps', 'merging', 'merged', 'dismissed'];
-    return Object.fromEntries(Object.entries(parsed).flatMap(([key, value]) => {
-      if (!value || typeof value !== 'object') return [];
-      const candidate = value as { status?: unknown; response?: unknown };
-      if (typeof candidate.status !== 'string' || !statuses.includes(candidate.status as InsightActionStatus)) return [];
-      return [[key, { status: candidate.status as InsightActionStatus, ...(typeof candidate.response === 'string' ? { response: candidate.response } : {}) }]];
-    }));
-  } catch {
-    return {};
-  }
-}
-
-function persistInsightActionStates(userId: string, noteId: string, states: InsightActionStates): void {
-  try {
-    localStorage.setItem(insightActionsStorageKey(userId, noteId), JSON.stringify(states));
-  } catch {
-    // A disabled or full browser store should not block the note workspace.
-  }
-}
-
-const SUGGESTION_STYLES: Record<SuggestionKind, { label: string; border: string; badge: string; action: string; actionText: string }> = {
-  contradiction: { label: 'Contradiction', border: 'border-[#f3c2c2]', badge: 'bg-[#ffe1e1] text-[#c64747]', action: 'bg-[#fff0f0]', actionText: 'text-[#8f3c3c]' },
-  solution: { label: 'Solution', border: 'border-[#bfd2ff]', badge: 'bg-[#dfe9ff] text-[#3f6ed3]', action: 'bg-[#edf3ff]', actionText: 'text-[#315fc5]' },
-  helps: { label: 'Helps', border: 'border-[#bfe3ca]', badge: 'bg-[#e0f4e6] text-[#2c7b45]', action: 'bg-[#eef8f1]', actionText: 'text-[#28623b]' },
-  extension: { label: 'Extension', border: 'border-[#d8c4ef]', badge: 'bg-[#eee2fb] text-[#7348a7]', action: 'bg-[#f6f0fc]', actionText: 'text-[#62408a]' },
-  insight: { label: 'Insight', border: 'border-[#eadb99]', badge: 'bg-[#fff2b8] text-[#8a6a00]', action: 'bg-[#fff9df]', actionText: 'text-[#735d12]' },
+const SUGGESTION_STYLES: Record<SuggestionKind, { label: string; border: string; badge: string; action: string; actionText: string; quote: string; outline: string; chip: string }> = {
+  contradiction: { label: 'Contradiction', border: 'border-[#f3c2c2]', badge: 'bg-[#ffe1e1] text-[#c64747]', action: 'bg-[#fff0f0]', actionText: 'text-[#8f3c3c]', quote: 'decoration-[#df7777]', outline: 'border-[#e8a3a3] bg-[#fff8f8]', chip: 'border-[#f0b7b7] bg-[#fff0f0] text-[#b23b3b]' },
+  solution: { label: 'Solution', border: 'border-[#bfd2ff]', badge: 'bg-[#dfe9ff] text-[#3f6ed3]', action: 'bg-[#edf3ff]', actionText: 'text-[#315fc5]', quote: 'decoration-[#7ca2ff]', outline: 'border-[#9db8f5] bg-[#f6f9ff]', chip: 'border-[#b6cbf8] bg-[#edf3ff] text-[#315fc5]' },
+  helps: { label: 'Helps', border: 'border-[#bfe3ca]', badge: 'bg-[#e0f4e6] text-[#2c7b45]', action: 'bg-[#eef8f1]', actionText: 'text-[#28623b]', quote: 'decoration-[#72b987]', outline: 'border-[#95cfa6] bg-[#f5fbf7]', chip: 'border-[#a9d8b7] bg-[#eef8f1] text-[#28623b]' },
+  extension: { label: 'Extension', border: 'border-[#d8c4ef]', badge: 'bg-[#eee2fb] text-[#7348a7]', action: 'bg-[#f6f0fc]', actionText: 'text-[#62408a]', quote: 'decoration-[#ad83d1]', outline: 'border-[#c8acea] bg-[#fbf8ff]', chip: 'border-[#d8c4ef] bg-[#f6f0fc] text-[#62408a]' },
+  insight: { label: 'Insight', border: 'border-[#eadb99]', badge: 'bg-[#fff2b8] text-[#8a6a00]', action: 'bg-[#fff9df]', actionText: 'text-[#735d12]', quote: 'decoration-[#dfbf4f]', outline: 'border-[#e6d27c] bg-[#fffcef]', chip: 'border-[#eadb99] bg-[#fff9df] text-[#735d12]' },
 };
 
 const HIGHLIGHT_STYLES: Record<SuggestionKind, { idle: string; active: string }> = {
@@ -2074,195 +2249,338 @@ function suggestionKindFor(relation: NoteRelationType | null): SuggestionKind {
   return 'insight';
 }
 
-function noteActionHeading(kind: SuggestionKind): string {
-  if (kind === 'solution') return 'Solution';
-  if (kind === 'helps') return 'Next step';
-  if (kind === 'contradiction') return 'Clarification';
-  if (kind === 'insight') return 'Observation';
-  return '';
+const KIND_FOR_CARD: Record<CardKind, SuggestionKind> = {
+  solution: 'solution',
+  helps: 'helps',
+  extension: 'extension',
+  contradiction: 'contradiction',
+  pattern: 'insight',
+};
+
+/** The kind the server gave the card; older servers only sent the notes' relation. */
+function baseKindOf(insight: NoteInsight, relation: NoteRelationType | null): SuggestionKind {
+  return insight.kind ? KIND_FOR_CARD[insight.kind] : suggestionKindFor(relation);
 }
 
-/** Inserts a model proposal after the paragraph containing its anchor. */
-function insertActionIntoNote(text: string, anchor: string, proposal: string, kind: SuggestionKind): string {
-  const cleanProposal = proposal.trim();
-  if (!cleanProposal || text.includes(cleanProposal)) return text;
-  const span = anchor ? findAnchor(text, anchor) : null;
-  const followingBreak = span ? text.slice(span.end).match(/\n\s*\n/) : null;
-  const insertAt = span && followingBreak?.index !== undefined ? span.end + followingBreak.index : text.length;
-  const heading = noteActionHeading(kind);
-  const block = heading ? `**${heading}**\n${cleanProposal}` : cleanProposal;
-  const before = text.slice(0, insertAt).trimEnd();
-  const after = text.slice(insertAt).trimStart();
-  return `${before}${before ? '\n\n' : ''}${block}${after ? `\n\n${after}` : ''}`;
+/** Where the sentence holding `from` ends: after its full stop, or at the end of its line. */
+function sentenceEndAfter(text: string, from: number): number {
+  if (from > 0 && '.!?'.includes(text[from - 1])) return from;
+  for (let index = from; index < text.length; index++) {
+    if (text[index] === '\n') return index;
+    if ('.!?'.includes(text[index]) && (index + 1 === text.length || /\s/.test(text[index + 1]))) return index + 1;
+  }
+  return text.length;
 }
 
-function InsightActionBox({ kind, insight, state, onChange, onApplyToNote }: {
-  kind: SuggestionKind;
+function sentenceStartBefore(text: string, from: number): number {
+  for (let index = from - 1; index >= 0; index--) {
+    if (text[index] === '\n') return index + 1;
+    if ('.!?'.includes(text[index]) && /\s/.test(text[index + 1] ?? '')) {
+      let start = index + 1;
+      while (start < from && /\s/.test(text[start])) start++;
+      return start;
+    }
+  }
+  return 0;
+}
+
+function lineEndAfter(text: string, from: number): number {
+  const index = text.indexOf('\n', from);
+  return index === -1 ? text.length : index;
+}
+
+/** The whole sentence a card is about, with the part that needs the card picked out. */
+type TriggerSentence = { before: string; key: string; after: string };
+
+function triggerSentence(text: string, span: { start: number; end: number }): TriggerSentence {
+  const start = sentenceStartBefore(text, span.start);
+  const end = sentenceEndAfter(text, span.end);
+  return { before: text.slice(start, span.start), key: text.slice(span.start, span.end), after: text.slice(span.end, end) };
+}
+
+function sentenceCase(text: string): string {
+  return text ? `${text[0].toUpperCase()}${text.slice(1)}` : text;
+}
+
+/**
+ * The card's sentence: the model's connecting words, with the person's own
+ * words quoted inside it exactly as they wrote them. Each quote opens its note.
+ */
+function InsightSentence({ insight, kind, onOpenSource }: { insight: NoteInsight; kind: SuggestionKind; onOpenSource: (noteId: string, focus?: string) => void }) {
+  const quotes = insight.quotes ?? [];
+  if (!quotes.length) return <>{insight.text}</>;
+  return <>{insight.text.split(/(\{\d+\})/).map((part, index) => {
+    const quote = /^\{\d+\}$/.test(part) ? quotes[Number(part.slice(1, -1)) - 1] : undefined;
+    if (!quote) return <Fragment key={index}>{part}</Fragment>;
+    return <button
+      key={index}
+      type="button"
+      onClick={(event) => { event.stopPropagation(); onOpenSource(quote.note_id, quote.text); }}
+      title="Open the note this came from"
+      className={`inline rounded-sm text-left font-semibold underline decoration-2 underline-offset-4 hover:bg-black/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${SUGGESTION_STYLES[kind].quote}`}
+    >‘{quote.text}’</button>;
+  })}</>;
+}
+
+function UndoButton({ onUndo }: { onUndo: () => void }) {
+  return <button type="button" onClick={(event) => { event.stopPropagation(); onUndo(); }} className="text-xs font-medium text-[#777] underline-offset-2 hover:text-[#333] hover:underline">Undo</button>;
+}
+
+function IconChoice({ kind, accept, label, onClick }: { kind: SuggestionKind; accept: boolean; label: string; onClick: () => void }) {
+  const style = SUGGESTION_STYLES[kind];
+  return <button
+    type="button"
+    onClick={(event) => { event.stopPropagation(); onClick(); }}
+    aria-label={label}
+    title={label}
+    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${accept ? `${style.badge} hover:brightness-95` : 'border border-[#e2e2e2] bg-white text-[#777] hover:text-[#333]'}`}
+  >{accept ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}</button>;
+}
+
+/**
+ * The action under a card. Nothing here edits the note: every choice is kept
+ * beside it and drawn over it, and every choice can be undone.
+ */
+function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose, onOpenSource }: {
   insight: NoteInsight;
-  state: InsightActionState;
-  onChange: (state: InsightActionState) => void;
-  onApplyToNote: (text: string, kind?: SuggestionKind) => Promise<boolean>;
+  kind: SuggestionKind;
+  decision?: CardDecision;
+  sourceTitle: string;
+  sourceDate: string;
+  onChoose: (choice: CardChoice | null, text?: string) => void;
+  onOpenSource: (noteId: string, focus?: string) => void;
 }) {
-  const [draft, setDraft] = useState(state.response ?? (kind === 'extension' ? insight.action : ''));
+  const style = SUGGESTION_STYLES[kind];
+  const choice = decision?.choice;
+  const [draft, setDraft] = useState(decision?.text ?? '');
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { setDraft(decision?.text ?? ''); setEditing(false); }, [decision?.choice, decision?.text]);
+  const answer = insight.answer;
+  const openAnswer = () => { if (answer) onOpenSource(answer.note_id, answer.text); };
+  const box = `mt-4 rounded-lg px-4 py-3 ${style.action}`;
+  const heading = `text-[11px] font-medium ${style.actionText}`;
 
-  useEffect(() => {
-    if (state.status !== 'writing' && state.status !== 'merging') setDraft(state.response ?? (kind === 'extension' ? insight.action : ''));
-  }, [insight.action, kind, state.response, state.status]);
-
-  if (kind === 'helps') return <div className="mt-4 rounded-lg bg-[#eef8f1] px-3 py-3">
-    <p className="flex items-center gap-1.5 text-[11px] font-medium text-[#2c7b45]">{state.status === 'applied' || state.status === 'helps' ? <><Check className="h-3.5 w-3.5" /> Added to note</> : 'Add this next step'}</p>
-    <p className="mt-1 text-[13px] leading-relaxed text-[#28623b]">{insight.action}</p>
-    {state.status !== 'applied' && state.status !== 'helps' && <button type="button" onClick={async (event) => { event.stopPropagation(); if (await onApplyToNote(insight.action)) onChange({ status: 'applied', response: insight.action }); }} className="mt-3 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#2c7b45] shadow-sm hover:bg-[#e0f4e6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#72b987]">Add to note</button>}
-  </div>;
-
-  if (kind === 'insight') return <div className="mt-4 rounded-lg bg-[#fff9df] px-3 py-3">
-    <p className="flex items-center gap-1.5 text-[11px] font-medium text-[#8a6a00]">{state.status === 'applied' ? <><Check className="h-3.5 w-3.5" /> Added to note</> : 'Add this observation'}</p>
-    <p className="mt-1 text-[13px] leading-relaxed text-[#735d12]">{insight.action}</p>
-    {state.status !== 'applied' && <button type="button" onClick={async (event) => { event.stopPropagation(); if (await onApplyToNote(insight.action)) onChange({ status: 'applied', response: insight.action }); }} className="mt-3 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#8a6a00] shadow-sm hover:bg-[#fff2b8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#dfbf4f]">Add to note</button>}
-  </div>;
+  if (kind === 'solution' && insight.direction === 'outbound' && insight.problem) {
+    // This note is the answer; the problem is in the earlier note, so that is
+    // where Solved marks it. The answer is already quoted at the top of the
+    // card, as the sentence of this note the card is about, so it is not repeated here.
+    const problem = insight.problem;
+    const openProblem = () => onOpenSource(problem.note_id, problem.text);
+    if (choice === 'solved') return <div className={box}>
+      <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Your earlier note now shows this as its answer</p>
+      <div className="mt-2 flex gap-3">
+        <button type="button" onClick={(event) => { event.stopPropagation(); openProblem(); }} className="text-xs font-medium text-[#315fc5] hover:underline">See it ↗</button>
+        <UndoButton onUndo={() => onChoose(null)} />
+      </div>
+    </div>;
+    return <div className={box}>
+      <p className="text-[13px] leading-relaxed text-[#315078]">Click “Solved” and your earlier note will show this as its answer.</p>
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('solved'); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">Solved</button>
+        {/* As a Helps card it would only quote this note's own words back, so Dismiss removes it. */}
+        <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('rejected'); }} className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#666] shadow-sm hover:bg-[#f5f5f5]">Dismiss</button>
+      </div>
+    </div>;
+  }
 
   if (kind === 'solution') {
-    if (state.status === 'solved') return <div className="mt-4 rounded-lg border border-[#c7e7d0] bg-[#eef8f1] px-3 py-3">
-      <p className="flex items-center gap-1.5 text-[11px] font-medium text-[#287141]"><Check className="h-3.5 w-3.5" /> Solved</p>
-      <p className="mt-1 text-[13px] leading-relaxed text-[#28623b]">{insight.action}</p>
+    const answerText = answer?.text ?? insight.action;
+    if (choice === 'solved') return <div className={box}>
+      <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Solved · shown beside your sentence</p>
+      <p className="mt-1 text-[14px] leading-relaxed text-[#26467a]">{answerText}</p>
+      <div className="mt-2"><UndoButton onUndo={() => onChoose(null)} /></div>
     </div>;
-    if (state.status === 'applied') return <div className="mt-4 rounded-lg border border-[#bfd2ff] bg-[#edf3ff] px-3 py-3">
-      <p className="flex items-center gap-1.5 text-[11px] font-medium text-[#315fc5]"><Check className="h-3.5 w-3.5" /> Applied to note</p>
-      <p className="mt-1 text-[13px] leading-relaxed text-[#315078]">{state.response || insight.action}</p>
+    return <div className={box}>
+      <p className={heading}>Solution</p>
+      <p className="mt-1 text-[15px] leading-relaxed text-[#26467a]">{answerText}</p>
+      {answer && <button type="button" onClick={(event) => { event.stopPropagation(); openAnswer(); }} className="mt-1 text-[11px] text-[#5b7fc9] hover:underline">From “{sourceTitle}” · {sourceDate} ↗</button>}
       <div className="mt-3 flex gap-2">
-        <button type="button" onClick={(event) => { event.stopPropagation(); onChange({ status: 'solved', response: state.response || insight.action }); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7]">Mark solved</button>
-        <button type="button" onClick={(event) => { event.stopPropagation(); onChange({ status: 'helps', response: state.response || insight.action }); }} className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#555] shadow-sm hover:bg-[#f5f5f5]">Helpful, not solved</button>
+        <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('solved'); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">Solved</button>
+        <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('downgraded'); }} className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#666] shadow-sm hover:bg-[#f5f5f5]">Dismiss</button>
       </div>
     </div>;
-    return <div className="mt-4 rounded-lg bg-[#edf3ff] px-3 py-3">
-      <p className="text-[11px] font-medium text-[#315fc5]">Apply this solution</p>
-      <p className="mt-1 text-[13px] leading-relaxed text-[#315078]">{insight.action}</p>
-      <div className="mt-3 flex gap-2">
-        <button type="button" onClick={async (event) => { event.stopPropagation(); if (await onApplyToNote(insight.action)) onChange({ status: 'applied', response: insight.action }); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">Apply to note</button>
-        <button type="button" onClick={async (event) => { event.stopPropagation(); if (await onApplyToNote(insight.action, 'helps')) onChange({ status: 'helps', response: insight.action }); }} className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#777] shadow-sm hover:bg-[#f5f5f5]">Add as helpful</button>
+  }
+
+  if (kind === 'helps') {
+    // A dismissed solution has no idea of its own, so its answer stands in.
+    const idea = insight.kind === 'helps' ? sentenceCase(insight.action) : `“${answer?.text ?? insight.action}”`;
+    if (choice === 'helped') return <div className={box}>
+      <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Shown beside your sentence</p>
+      <p className="mt-1 text-[14px] font-medium leading-relaxed text-[#1f4d2e]">{idea}</p>
+      <div className="mt-2"><UndoButton onUndo={() => onChoose(choice === 'helped' && insight.kind === 'solution' ? 'downgraded' : null)} /></div>
+    </div>;
+    return <div className={`${box} flex items-center gap-3`}>
+      <div className="min-w-0 flex-1">
+        <p className={heading}>This might help</p>
+        <p className="mt-1 text-[15px] font-semibold leading-relaxed text-[#1f4d2e]">{idea}</p>
       </div>
+      <IconChoice kind={kind} accept={false} label="Not helpful" onClick={() => onChoose('rejected')} />
+      <IconChoice kind={kind} accept label="This helps" onClick={() => onChoose('helped')} />
     </div>;
   }
 
   if (kind === 'extension') {
-    if (state.status === 'merging') return <div className="mt-4 rounded-lg bg-[#f6f0fc] px-3 py-3">
-      <label className="text-[11px] font-medium text-[#7348a7]" htmlFor={`extension-${Math.abs(stableHash(insight.text))}`}>Edit what will be added</label>
-      <textarea id={`extension-${Math.abs(stableHash(insight.text))}`} autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onClick={(event) => event.stopPropagation()} rows={3} className="mt-2 w-full resize-y rounded-md border border-[#d8c4ef] bg-white px-3 py-2 text-[13px] leading-relaxed text-[#4d3569] outline-none focus:border-[#9a72c5] focus:ring-2 focus:ring-[#d8c4ef]" />
-      <div className="mt-2 flex gap-2">
-        <button type="button" disabled={!draft.trim()} onClick={async (event) => { event.stopPropagation(); if (await onApplyToNote(draft.trim())) onChange({ status: 'merged', response: draft.trim() }); }} className="rounded-md bg-[#8254b5] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#70449f] disabled:opacity-40">Add to note</button>
-        <button type="button" onClick={(event) => { event.stopPropagation(); onChange({ status: 'dismissed' }); }} aria-label="Dismiss extension" className="flex h-7 w-7 items-center justify-center rounded-md bg-white text-[#999] hover:text-[#555]"><X className="h-3.5 w-3.5" /></button>
-      </div>
+    const words = answer?.text ?? insight.action;
+    if (choice === 'merged') return <div className={box}>
+      <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Added below your sentence</p>
+      {editing
+        ? <>
+          <textarea autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onClick={(event) => event.stopPropagation()} rows={3} aria-label="Edit the added text" className="mt-2 w-full resize-y rounded-md border border-[#d8c4ef] bg-white px-3 py-2 text-[13px] leading-relaxed text-[#4d3569] outline-none focus:border-[#9a72c5] focus:ring-2 focus:ring-[#d8c4ef]" />
+          <div className="mt-2 flex gap-3">
+            <button type="button" disabled={!draft.trim()} onClick={(event) => { event.stopPropagation(); onChoose('merged', draft.trim()); }} className="rounded-md bg-[#8254b5] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#70449f] disabled:opacity-40">Save</button>
+            <button type="button" onClick={(event) => { event.stopPropagation(); setEditing(false); setDraft(decision?.text ?? ''); }} className="text-xs text-[#777] hover:underline">Cancel</button>
+          </div>
+        </>
+        : <p className="mt-1 whitespace-pre-wrap text-[14px] leading-relaxed text-[#4d3569]">“{decision?.text ?? words}”</p>}
+      {!editing && <div className="mt-2 flex gap-3"><button type="button" onClick={(event) => { event.stopPropagation(); setEditing(true); }} className="text-xs font-medium text-[#7348a7] hover:underline">Edit</button><UndoButton onUndo={() => onChoose(null)} /></div>}
     </div>;
-    if (state.status === 'merged') return <div className="mt-4 rounded-lg bg-[#f6f0fc] px-3 py-3">
-      <p className="flex items-center gap-1.5 text-[11px] font-medium text-[#7348a7]"><Check className="h-3.5 w-3.5" /> Added to note</p>
-      <p className="mt-1 text-[13px] leading-relaxed text-[#62408a]">{state.response || insight.action}</p>
-    </div>;
-    return <div className="mt-4 rounded-lg bg-[#f6f0fc] px-3 py-3">
-      <p className="text-[11px] font-medium text-[#7348a7]">Extends this</p>
-      <p className="mt-1 text-[13px] leading-relaxed text-[#62408a]">{insight.action}</p>
-      <div className="mt-3 flex gap-2">
-        <button type="button" onClick={(event) => { event.stopPropagation(); setDraft(insight.action); onChange({ status: 'merging', response: insight.action }); }} className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#7348a7] shadow-sm hover:bg-[#eee2fb]">Review and add</button>
-        <button type="button" onClick={(event) => { event.stopPropagation(); onChange({ status: 'dismissed' }); }} aria-label="Dismiss extension" title="Dismiss" className="flex h-8 w-8 items-center justify-center rounded-md bg-white text-[#999] hover:text-[#555]"><X className="h-4 w-4" /></button>
+    return <div className={`${box} flex items-center gap-3`}>
+      <div className="min-w-0 flex-1">
+        <p className={heading}>Merge adds to your note</p>
+        <p className="mt-1 text-[14px] leading-relaxed text-[#4d3569]">“{words}”</p>
+        <p className="mt-1 text-[11px] text-[#9a7fbf]">Word for word, linked to {sourceDate}</p>
       </div>
+      <IconChoice kind={kind} accept={false} label="Dismiss" onClick={() => onChoose('rejected')} />
+      <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('merged', words); }} className="shrink-0 rounded-md bg-[#8254b5] px-4 py-2 text-xs font-medium text-white hover:bg-[#70449f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8254b5] focus-visible:ring-offset-2">Merge</button>
     </div>;
   }
 
-  if (state.status === 'writing') return <div className="mt-4 rounded-lg bg-[#fff0f0] px-3 py-3">
-    <label className="text-[11px] font-medium text-[#c64747]" htmlFor={`contradiction-${Math.abs(stableHash(insight.text))}`}>Reconcile these beliefs</label>
-    <textarea id={`contradiction-${Math.abs(stableHash(insight.text))}`} autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onClick={(event) => event.stopPropagation()} rows={3} placeholder="Write what you believe now…" className="mt-2 w-full resize-y rounded-md border border-[#f3c2c2] bg-white px-3 py-2 text-[13px] leading-relaxed text-[#6f3333] outline-none focus:border-[#d47a7a] focus:ring-2 focus:ring-[#f3c2c2]" />
-    <div className="mt-2 flex gap-2">
-      <button type="button" disabled={!draft.trim()} onClick={async (event) => { event.stopPropagation(); if (await onApplyToNote(draft.trim())) onChange({ status: 'saved', response: draft.trim() }); }} className="rounded-md bg-[#d65d5d] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#c34f4f] disabled:opacity-40">Add to note</button>
-      <button type="button" onClick={(event) => { event.stopPropagation(); onChange({ status: 'declined' }); }} aria-label="Decline writing" className="flex h-7 w-7 items-center justify-center rounded-md bg-white text-[#999] hover:text-[#555]"><X className="h-3.5 w-3.5" /></button>
+  if (kind === 'contradiction') {
+    const options: { choice: CardChoice; label: string }[] = [
+      { choice: 'today', label: 'Today stands' },
+      { choice: 'earlier', label: `${sourceTitle} holds` },
+      { choice: 'both', label: 'Both are true' },
+    ];
+    return <div className={box}>
+      <p className={heading}>Which is true?</p>
+      <div className="mt-2 space-y-2">
+        {options.map((option) => <button
+          key={option.choice}
+          type="button"
+          aria-pressed={choice === option.choice}
+          onClick={(event) => { event.stopPropagation(); onChoose(option.choice, option.choice === 'both' ? decision?.text : undefined); }}
+          className={`block w-full truncate rounded-md border px-3 py-2 text-left text-[13px] font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#c64747] ${choice === option.choice ? 'border-[#a82c2c] bg-[#a82c2c] text-white' : 'border-[#f0c6c6] bg-white text-[#5a2b2b] hover:bg-[#fff6f6]'}`}
+        >{option.label}</button>)}
+      </div>
+      {choice === 'both' && <div className="mt-3">
+        <label className={heading} htmlFor={`both-${Math.abs(stableHash(insight.text))}`}>Why both are true</label>
+        <textarea id={`both-${Math.abs(stableHash(insight.text))}`} value={draft} onChange={(event) => setDraft(event.target.value)} onClick={(event) => event.stopPropagation()} rows={2} placeholder="Optional" className="mt-1 w-full resize-y rounded-md border border-[#f3c2c2] bg-white px-3 py-2 text-[13px] leading-relaxed text-[#6f3333] outline-none focus:border-[#d47a7a] focus:ring-2 focus:ring-[#f3c2c2]" />
+        {draft.trim() !== (decision?.text ?? '') && <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('both', draft.trim()); }} className="mt-1 rounded-md bg-[#d65d5d] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#c34f4f]">Save</button>}
+      </div>}
+      {choice && <div className="mt-2"><UndoButton onUndo={() => onChoose(null)} /></div>}
+    </div>;
+  }
+
+  if (choice === 'confirmed') return <div className={box}>
+    <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Marked as a pattern</p>
+    <p className="mt-1 text-[14px] font-medium leading-relaxed text-[#4f3f0c]">{insight.action}</p>
+    <div className="mt-2"><UndoButton onUndo={() => onChoose(null)} /></div>
+  </div>;
+  return <div className={`${box} flex items-center gap-3`}>
+    <div className="min-w-0 flex-1">
+      <p className={heading}>A pattern in your notes</p>
+      <p className="mt-1 text-[15px] font-semibold leading-relaxed text-[#4f3f0c]">{insight.action}</p>
     </div>
-  </div>;
-
-  if (state.status === 'saved') return <div className="mt-4 rounded-lg border border-[#f3c2c2] bg-[#fff0f0] px-3 py-3">
-    <p className="text-[11px] font-medium text-[#c64747]">How you reconcile it</p>
-    <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-[#6f3333]">{state.response}</p>
-    <button type="button" onClick={(event) => { event.stopPropagation(); setDraft(state.response ?? ''); onChange({ status: 'writing', response: state.response }); }} className="mt-2 text-xs font-medium text-[#a84444] hover:underline">Edit</button>
-  </div>;
-
-  if (state.status === 'declined') return <div className="mt-4 rounded-lg bg-[#fff0f0] px-3 py-3">
-    <p className="text-[11px] font-medium text-[#c64747]">Write about the contradiction</p>
-    <p className="mt-1 text-[12px] text-[#a97878]">You chose not to write about this right now.</p>
-  </div>;
-
-  return <div className="mt-4 rounded-lg bg-[#fff0f0] px-3 py-3">
-    <p className="text-[11px] font-medium text-[#c64747]">Write about the contradiction</p>
-    <p className="mt-1 text-[13px] leading-relaxed text-[#8f3c3c]">{insight.action}</p>
-    <div className="mt-3 flex gap-2">
-      <button type="button" onClick={(event) => { event.stopPropagation(); setDraft(''); onChange({ status: 'writing' }); }} className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#a84444] shadow-sm hover:bg-[#ffe1e1]">Write here</button>
-      <button type="button" onClick={(event) => { event.stopPropagation(); onChange({ status: 'declined' }); }} aria-label="Decline writing" title="Not now" className="flex h-8 w-8 items-center justify-center rounded-md bg-white text-[#999] hover:text-[#555]"><X className="h-4 w-4" /></button>
-    </div>
+    <IconChoice kind={kind} accept={false} label="Not a pattern" onClick={() => onChoose('rejected')} />
+    <IconChoice kind={kind} accept label="Yes, a pattern" onClick={() => onChoose('confirmed')} />
   </div>;
 }
 
 /**
- * The one thing from past notes that should change what the person does next:
- * what those notes add, and a step to take. The cited notes are listed so the
- * claim can be checked against the person's own words.
+ * Notes the search matched without a card: each with its name, date, and the
+ * one-line summary of what it says. Opening one shows it beside the note at
+ * the passage the match rested on.
  */
-function CitedNoteCard({ note, relevance, onOpen }: { note: Note; relevance?: RelevanceResult; onOpen: () => void }) {
-  const content = splitNote(note);
-  const relation = relevance?.relation_type ? RELATION_BADGES[relevance.relation_type] : null;
-  return <li>
-    <button type="button" onClick={(event) => { event.stopPropagation(); onOpen(); }} className="block w-full rounded-xl border border-[#e1e3e8] bg-white px-5 py-5 text-left shadow-sm transition hover:border-[#8fb1ff] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
-      <span className="flex items-start justify-between gap-3">
-        <span className="min-w-0 flex-1 break-words text-base font-semibold text-[#202124]">{content.title || 'Untitled note'}</span>
-        {relation && <span className={`shrink-0 rounded px-2 py-1 text-[10px] font-medium ${relation.className}`}>{relation.label}</span>}
-      </span>
-      {content.body && <span className="mt-3 block whitespace-pre-wrap text-[13px] leading-relaxed text-[#666]">{content.body}</span>}
-      {relevance?.explanation.trim() && <span className="mt-5 block text-xs italic leading-relaxed text-[#777]"><span className="font-medium text-[#477bea]">Why it’s relevant:</span> {relevance.explanation.trim()}</span>}
-      <span className="mt-5 flex items-center justify-between gap-3 text-[11px] text-[#aaa]"><span className="truncate">{cleanCategory(note.category) || 'Instant retrieval'}</span><span className="shrink-0">{formatDate(note.created_at)}</span></span>
-    </button>
-  </li>;
+function RelatedNotesList({ heading, results, notesById, onOpen }: {
+  heading: string;
+  results: RelevanceResult[];
+  notesById: Map<string, Note>;
+  onOpen: (noteId: string, focus?: string) => void;
+}) {
+  return <section aria-label={heading} className="pt-2">
+    <h3 className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[#999]">{heading}</h3>
+    <ul className="space-y-2">
+      {results.map((result) => {
+        const relatedNote = notesById.get(result.note_id);
+        if (!relatedNote) return null;
+        const badge = result.relation_type ? RELATION_BADGES[result.relation_type] : null;
+        const summary = result.gist.trim() || notePreview(relatedNote);
+        return <li key={result.note_id}>
+          <button
+            type="button"
+            // No card quoted this note, so the panel marks the passage the search matched instead.
+            onClick={() => onOpen(result.note_id)}
+            className="block w-full rounded-lg border border-[#e4e4e8] bg-white px-4 py-3 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"
+          >
+            <span className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-[13px] font-medium text-[#222]">{noteLabel(relatedNote)}</span>
+              <span className="flex shrink-0 items-center gap-2 text-[11px] text-[#aaa]">
+                {badge && <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>{badge.label}</span>}
+                {formatDate(relatedNote.created_at)}
+              </span>
+            </span>
+            <span className="mt-1 line-clamp-2 block text-[13px] leading-relaxed text-[#666]">{summary}</span>
+          </button>
+        </li>;
+      })}
+    </ul>
+  </section>;
 }
 
-function InsightCard({ insight, notesById, relation = null, relevanceResults = [], outbound = false, position, compact = false, showAnchor = true, actionState, onActionChange, onApplyToNote, notesOpen, onNotesOpenChange, onSelectNote }: {
-  insight: NoteInsight; notesById: Map<string, Note>; relation?: NoteRelationType | null; compact?: boolean; showAnchor?: boolean;
-  relevanceResults?: RelevanceResult[];
+const CARD_SUBTITLES: Record<SuggestionKind, string> = {
+  solution: 'You answered this before',
+  helps: 'This might help',
+  extension: 'There’s more on this',
+  contradiction: 'This goes against an earlier note',
+  insight: 'You’ve seen this before',
+};
+
+/**
+ * One suggestion: the sentence of the note it is about, their own past words
+ * connected by one line from the model, and what they can do with it.
+ */
+function SuggestionCard({ insight, kind, decision, notesById, trigger, outbound = false, compact = false, onChoose, onOpenSource }: {
+  insight: NoteInsight;
+  kind: SuggestionKind;
+  decision?: CardDecision;
+  notesById: Map<string, Note>;
+  /** The sentence of the note it is about; without one the bare passage is shown. */
+  trigger?: TriggerSentence | null;
   /** True when this note is the lesson and the cited notes are where it applies. */
   outbound?: boolean;
-  /** Present when the note has several insights, to step between them from the card. */
-  position?: { index: number; total: number; onSelect: (index: number) => void };
-  actionState?: InsightActionState;
-  onActionChange?: (state: InsightActionState) => void;
-  onApplyToNote?: (kind: SuggestionKind, text: string) => Promise<boolean>;
-  /** Controlled by the note reader so only one card can expose its sources at a time. */
-  notesOpen?: boolean;
-  onNotesOpenChange?: (open: boolean) => void;
-  onSelectNote: (noteId: string) => void;
+  compact?: boolean;
+  /** Absent where the note cannot keep choices yet, such as an unsaved draft. */
+  onChoose?: (choice: CardChoice | null, text?: string) => void;
+  onOpenSource: (noteId: string, focus?: string) => void;
 }) {
-  const [localActionState, setLocalActionState] = useState<InsightActionState>(IDLE_INSIGHT_ACTION);
-  const [localNotesOpen, setLocalNotesOpen] = useState(false);
-  const currentActionState = actionState ?? localActionState;
-  const updateActionState = onActionChange ?? setLocalActionState;
-  const citationsOpen = notesOpen ?? localNotesOpen;
-  const setCitationsOpen = onNotesOpenChange ?? setLocalNotesOpen;
-  if (currentActionState.status === 'dismissed') return null;
-  const cited = insight.note_ids.map((id) => notesById.get(id)).filter((note): note is Note => note !== undefined);
-  const originalKind = suggestionKindFor(relation);
-  const kind = originalKind === 'solution' && currentActionState.status === 'helps' ? 'helps' : originalKind;
   const style = SUGGESTION_STYLES[kind];
+  // An answer with an empty note id is this note's own words, so the source is the problem's note.
+  const sourceId = insight.problem?.note_id || insight.answer?.note_id || insight.quotes?.[0]?.note_id || insight.note_ids[0];
+  const source = sourceId ? notesById.get(sourceId) : undefined;
+  const sourceTitle = source ? noteLabel(source) : 'Earlier note';
+  const sourceDate = source ? formatDate(source.created_at) : '';
+  const answersEarlierNote = kind === 'solution' && insight.direction === 'outbound' && Boolean(insight.problem);
+  const subtitle = answersEarlierNote ? 'This answers an earlier note'
+    : kind === 'solution' && source ? `You answered this on ${sourceDate}`
+      : outbound && kind === 'helps' ? 'Your lesson applies here' : CARD_SUBTITLES[kind];
+  const cited = insight.note_ids.map((id) => notesById.get(id)).filter((note): note is Note => note !== undefined);
   return (
     <section aria-label={`${style.label} suggestion`} className={`rounded-xl border bg-white shadow-sm ${style.border} ${compact ? 'p-4' : 'p-6'}`}>
       <div className="flex items-center justify-between gap-2">
-        <p className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${style.badge}`}>{style.label}</span><span className="truncate text-[11px] text-[#888]">{INTENT_LABELS[insight.intent]}</span></p>
-        {position && <div className="flex shrink-0 items-center gap-0.5 text-[11px] text-[#999]">
-          <button type="button" onClick={() => position.onSelect((position.index - 1 + position.total) % position.total)} aria-label="Previous insight" className="rounded p-0.5 hover:bg-[#f4f4f4] hover:text-[#477bea]"><ChevronLeft className="h-3.5 w-3.5" /></button>
-          <span aria-live="polite">{position.index + 1} of {position.total}</span>
-          <button type="button" onClick={() => position.onSelect((position.index + 1) % position.total)} aria-label="Next insight" className="rounded p-0.5 hover:bg-[#f4f4f4] hover:text-[#477bea]"><ChevronRight className="h-3.5 w-3.5" /></button>
-        </div>}
+        <p className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${style.badge}`}>{style.label}</span><span className="truncate text-[11px] text-[#888]">{subtitle}</span></p>
+        {kind === 'contradiction' && onChoose && !decision && <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('rejected'); }} aria-label="Dismiss" title="Dismiss" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#999] hover:bg-[#f5f5f5] hover:text-[#555]"><X className="h-4 w-4" /></button>}
       </div>
-      {showAnchor && insight.anchor && <blockquote className="mt-3 border-l-2 border-[#f0c85a] pl-3 text-xs italic leading-relaxed text-[#777]">“{insight.anchor}”</blockquote>}
-      <p className={`mt-3 leading-relaxed text-[#222] ${compact ? 'text-[13px]' : 'text-[15px]'}`}>{insight.text}</p>
-      <InsightActionBox kind={kind} insight={insight} state={currentActionState} onChange={updateActionState} onApplyToNote={(text, overrideKind) => onApplyToNote ? onApplyToNote(overrideKind ?? kind, text) : Promise.resolve(false)} />
-      {cited.length > 0 && <div className="mt-4 border-t border-[#ececef] pt-3">
-        <button type="button" onClick={(event) => { event.stopPropagation(); setCitationsOpen(!citationsOpen); }} aria-expanded={citationsOpen} className="flex w-full items-center justify-center gap-1 text-[11px] text-[#aaa] hover:text-[#666] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><span>{citationsOpen ? 'Hide notes' : outbound ? 'Where this applies' : 'Notes used'}</span><ChevronDown className={`h-3.5 w-3.5 transition-transform ${citationsOpen ? 'rotate-180' : ''}`} /></button>
-        {citationsOpen && <><ul className="mt-4 space-y-3">
-          {cited.map((note) => <CitedNoteCard key={note.id} note={note} relevance={relevanceResults.find((result) => result.note_id === note.id)} onOpen={() => onSelectNote(note.id)} />)}
-        </ul>
-        <button type="button" onClick={(event) => { event.stopPropagation(); setCitationsOpen(false); }} className="mt-4 flex w-full items-center justify-center gap-1 py-1 text-[11px] text-[#aaa] hover:text-[#666] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><ChevronDown className="h-3.5 w-3.5 rotate-180" />Hide notes</button></>}
+      {(trigger || insight.anchor) && <blockquote className="mt-3 border-l-2 border-[#ddd] pl-3 text-[13px] italic leading-relaxed text-[#777]">“{trigger
+        ? <>{trigger.before}<span className={`rounded-sm px-0.5 not-italic text-[#444] ${HIGHLIGHT_STYLES[kind].idle}`}>{trigger.key}</span>{trigger.after}</>
+        : insight.anchor}”</blockquote>}
+      {source && <p className="mt-4 text-[10px] font-medium uppercase tracking-[0.08em] text-[#999]">From “{sourceTitle}” · {sourceDate}</p>}
+      <p className={`mt-1.5 leading-relaxed text-[#222] ${compact ? 'text-[14px]' : 'text-[16px]'}`}><InsightSentence insight={insight} kind={kind} onOpenSource={onOpenSource} /></p>
+      {onChoose
+        ? <CardAction insight={insight} kind={kind} decision={decision} sourceTitle={sourceTitle} sourceDate={sourceDate} onChoose={onChoose} onOpenSource={onOpenSource} />
+        : <p className="mt-3 text-[11px] text-[#999]">Save the note to act on this.</p>}
+      {cited.length > 0 && <div className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-t border-[#ececef] pt-3 text-[11px] text-[#999]">
+        <span>{outbound ? 'Where this applies' : 'Notes used'}</span>
+        {cited.map((note) => <button key={note.id} type="button" onClick={(event) => { event.stopPropagation(); onOpenSource(note.id); }} className="truncate hover:text-[#477bea] hover:underline">{formatDate(note.created_at)} · {noteLabel(note)} ↗</button>)}
       </div>}
     </section>
   );
@@ -2397,9 +2715,9 @@ function SearchProgress({ notes, progress }: { notes: Note[]; progress: Relevanc
   );
 }
 
-function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale, page, onPageChange, onApplyToNote, onRetry, onClose }: {
+function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale, page, onPageChange, onRetry, onClose }: {
   notes: Note[]; relevance: RelevanceSearch | null; loading: boolean; progress: RelevanceProgress | null; error: string; stale: boolean;
-  page: number; onPageChange: (page: number) => void; onApplyToNote: (insight: NoteInsight, kind: SuggestionKind, text: string) => Promise<boolean>; onRetry: () => void; onClose: () => void;
+  page: number; onPageChange: (page: number) => void; onRetry: () => void; onClose: () => void;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Cards whose annotation has been flipped from the summary to "why it's relevant".
@@ -2460,15 +2778,14 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
           <p className="px-2 py-12 text-center text-sm leading-relaxed text-[#999]">Nothing in your notes connects to this draft yet.</p>
         ) : (
           <div className="space-y-3">
-            {currentPage === 0 && relevance.insights?.map((item, index) => <InsightCard
+            {currentPage === 0 && relevance.insights?.map((item, index) => <SuggestionCard
               key={index}
               compact
               insight={item}
-              relation={item.note_ids.map((id) => results.find((result) => result.note_id === id)?.relation_type).find(Boolean) ?? null}
+              kind={baseKindOf(item, item.note_ids.map((id) => results.find((result) => result.note_id === id)?.relation_type).find(Boolean) ?? null)}
               outbound={item.note_ids.every((id) => results.find((result) => result.note_id === id)?.direction === 'outbound')}
               notesById={noteById}
-              onApplyToNote={(kind, text) => onApplyToNote(item, kind, text)}
-              onSelectNote={(noteId) => {
+              onOpenSource={(noteId) => {
                 const index = results.findIndex((result) => result.note_id === noteId);
                 if (index === -1) return;
                 onPageChange(Math.floor(index / RELEVANCE_PAGE_SIZE));
@@ -2561,6 +2878,9 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
   // Repeat clicks on an unchanged draft are served from here rather than
   // costing another ten model calls.
   const relevanceCache = useRef(new Map<string, RelevanceSearch>());
+  // Closing the editor hangs up on a search still running, so its remaining model calls are never made.
+  const searchCancelRef = useRef<AbortController | null>(null);
+  useEffect(() => () => searchCancelRef.current?.abort(), []);
 
   // Matches how saveNote assembles raw_text, so the draft is scored as the
   // note it will actually become.
@@ -2597,15 +2917,18 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
     if (cached) { setRelevance(cached); setSearchedDraft(draftText); return; }
 
     setRelevanceProgress(null); setRelevanceLoading(true);
+    const cancel = new AbortController();
+    searchCancelRef.current = cancel;
     try {
-      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, domain);
+      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, domain, cancel.signal);
       relevanceCache.current.set(cacheKey, response);
       setRelevance(response); setSearchedDraft(draftText);
     } catch (err) {
+      if (cancel.signal.aborted) return;
       setRelevance(null);
       setRelevanceError(safeErrorMessage(err, 'Could not search your notes right now.'));
     } finally {
-      setRelevanceLoading(false);
+      if (!cancel.signal.aborted) setRelevanceLoading(false);
     }
   };
 
@@ -2671,7 +2994,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
             <input value={state.title} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, title: event.target.value })} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); setEditingStarted(true); bodyRef.current?.focus(); } }} placeholder={domainCapture ? 'Title' : 'What’s on your mind?'} aria-label="Note title" className={`w-full shrink-0 bg-transparent outline-none placeholder:text-[#555] ${domainCapture ? 'max-w-2xl text-xl font-semibold sm:text-2xl' : 'text-xl font-medium italic sm:text-2xl'}`} />
             <textarea ref={bodyRef} value={state.body} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, body: event.target.value })} placeholder={editingStarted ? '' : domainCapture ? 'Knowledge is what makes people special, and special people do special things, so make this one count.' : "For example: Someone made the point that we mostly don't choose our beliefs, we absorb them and backfill reasons after. Uncomfortable but I can't argue with it. Makes me wonder how much of what I think is actually mine."} aria-label="Note body" className={`mt-5 min-h-0 w-full flex-1 resize-none bg-transparent text-base leading-relaxed outline-none placeholder:text-[#aaa] ${domainCapture ? 'max-w-2xl sm:text-lg sm:leading-[1.65]' : ''}`} />
           </div>
-          {panelOpen && <RelevantNotesPanel notes={notes} relevance={relevance} loading={relevanceLoading} progress={relevanceProgress} error={relevanceError} stale={draftChangedSinceSearch} page={relevancePage} onPageChange={setRelevancePage} onApplyToNote={async (item, kind, text) => { const nextBody = insertActionIntoNote(state.body, item.anchor, text, kind); if (nextBody === state.body) return Boolean(text.trim() && state.body.includes(text.trim())); onChange({ ...state, body: nextBody }); return true; }} onRetry={() => void runRelevanceSearch()} onClose={() => setPanelOpen(false)} />}
+          {panelOpen && <RelevantNotesPanel notes={notes} relevance={relevance} loading={relevanceLoading} progress={relevanceProgress} error={relevanceError} stale={draftChangedSinceSearch} page={relevancePage} onPageChange={setRelevancePage} onRetry={() => void runRelevanceSearch()} onClose={() => setPanelOpen(false)} />}
         </div>
         <div className={`relative border-t border-[#eee] bg-[#f8f8fa] px-3 py-2 text-sm text-[#555] sm:px-5 ${domainCapture ? 'flex min-h-[62px] flex-col items-stretch gap-2 lg:flex-row lg:items-center lg:gap-1' : 'flex min-h-[58px] flex-wrap items-center gap-1'}`}>
           <div className={`${domainCapture ? 'flex w-full min-w-0 items-center gap-1 overflow-x-auto pb-1 lg:flex-1 lg:overflow-visible lg:pb-0' : 'contents'}`}>

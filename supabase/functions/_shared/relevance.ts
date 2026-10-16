@@ -326,7 +326,7 @@ export function buildPrompt(draft: string, notes: NoteLike[], goal: string | nul
 
 A draft is not always an argument. It may be a claim, a decision, a plan, a memory, a worry, or a half-formed reflection. Judge relevance against whatever the draft is actually doing, not against whether it makes a provable point.
 
-SCORING - judge each note against the draft in absolute terms. Do NOT score a note relative to the other candidates you were given. If every candidate here is irrelevant, return an empty array; that is a normal and correct outcome.
+SCORING - judge each note against the draft in absolute terms. Do NOT score a note relative to the other candidates you were given. If every candidate here is irrelevant, return no results; that is a normal and correct outcome.
 
 Score the strength of the connection, NOT how similar the subject matter is. A note about something else entirely can score high if the link it reveals is strong and specific.
 
@@ -363,7 +363,7 @@ Do the thinking for them: spell the connection out rather than gesturing at it. 
 MATCHED TEXT - copy, word for word, the shortest sentence or passage from the candidate note that you actually used to make this match. Do not paraphrase, fix typos, or add quotation marks. Keep it under 45 words.
 
 CRITICAL RULES:
-- Many candidate notes will be irrelevant. Returning [] is correct when nothing connects. Do not pad your response.
+- Many candidate notes will be irrelevant. Returning {"results": []} is correct when nothing connects. Do not pad your response.
 - Never include a note merely because it shares words, names, or a broad category with the draft. The connection must be about substance.
 - Leave out echoes. A note that says what the draft already says, without adding a fact, example, outcome, consequence, or counterpoint the draft lacks, tells the person nothing new however close the topic is. A note is not an echo if it shows the same thing actually happening, or happening before.
 - Only call a note "contradicts" when the two really cannot both be true, or the note records a position the draft reverses. A difference in emphasis is not a contradiction.
@@ -376,8 +376,8 @@ Worked examples:
 - Draft: "I'm always running late, however early I start." Candidate note: "I'm the last one in my friend group to get married. Good things seem to reach me last." Score 0.84, relation_type "parallel", gist: "You're the last of your friends to get married, and feel like good things tend to reach you last.", explanation: "It's not about punctuality at all, but it's the same shape as your draft - being behind turns up in two different corners of your life, one you cause and one you don't, which is worth sitting with."
 - Draft: the pricing one again. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted entirely: it shares the word "pricing" but has nothing to do with the draft's argument.
 
-OUTPUT - a JSON array and nothing else, in this shape:
-[{"note_id": "<exact id>", "idea": "<idea number, or whole>", "relevance_score": <number>, "relation_type": "<solves|helps|supports|extends|contradicts|question|parallel>", "direction": "<inbound|outbound>", "gist": "<one sentence>", "explanation": "<one or two short sentences>", "matched_text": "<exact quote from candidate note>"}]
+OUTPUT - a JSON object and nothing else, with one entry in "results" per relevant note, in this shape:
+{"results": [{"note_id": "<exact id>", "idea": "<idea number, or whole>", "relevance_score": <number>, "relation_type": "<solves|helps|supports|extends|contradicts|question|parallel>", "direction": "<inbound|outbound>", "gist": "<one sentence>", "explanation": "<one or two short sentences>", "matched_text": "<exact quote from candidate note>"}]}
 
 ========================================
 
@@ -390,7 +390,7 @@ Here are the candidate notes:
 
 ${candidates}
 
-Now respond with ONLY the JSON array described above, no prose before or after it.`;
+Now respond with ONLY the JSON object described above, no prose before or after it.`;
 }
 
 /**
@@ -402,6 +402,34 @@ export function extractJsonArray(raw: string): string | null {
   const candidate = fenced ? fenced[1] : raw;
   const bare = candidate.match(/\[[\s\S]*\]/);
   return bare ? bare[0] : null;
+}
+
+/**
+ * An agent's list of results, however the model shaped it. Agents are asked
+ * for {"results": [...]}, because providers that honour JSON-object mode
+ * strictly cannot return a bare array: one sent its single strongest match as
+ * a lone object instead, and the rest were lost. A bare array, a lone result,
+ * or a list under another key are all still read.
+ */
+function readAgentResults(raw: string): unknown[] {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const text = (fenced ? fenced[1] : raw).trim();
+  const parse = (value: string | null | undefined): unknown => {
+    if (!value) return undefined;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  };
+  const parsed = parse(text) ?? parse(text.match(/\{[\s\S]*\}/)?.[0]) ?? parse(extractJsonArray(text));
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== "object") return [];
+  const row = parsed as Record<string, unknown>;
+  if (Array.isArray(row.results)) return row.results;
+  if (typeof row.note_id === "string") return [row];
+  const list = Object.values(row).find((value) => Array.isArray(value));
+  return Array.isArray(list) ? list : [];
 }
 
 /**
@@ -417,16 +445,7 @@ export function parseAgentResponse(raw: string, allowedIds: Set<string>, section
     const id = typeof value === "number" || typeof value === "string" ? String(value).trim() : "";
     return sectionIds.includes(id) ? id : WHOLE_DRAFT;
   };
-  const jsonText = extractJsonArray(raw);
-  if (!jsonText) return [];
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
+  const parsed = readAgentResults(raw);
 
   const seen = new Set<string>();
   const results: RelevanceResult[] = [];
@@ -508,11 +527,25 @@ export interface RunAgentsOptions {
   sections?: DraftSection[];
   agentCount: number;
   concurrency: number;
-  /** Injected so this module stays free of any particular model client. */
-  generate: (prompt: string) => Promise<string>;
+  /** Injected so this module stays free of any particular model client. The signal is the search's own. */
+  generate: (prompt: string, signal?: AbortSignal) => Promise<string>;
   /** Decides whether a thrown error is worth a second attempt. */
   isRetryable: (error: unknown) => boolean;
   onAgentSettled?: (index: number, outcome: AgentOutcome) => void;
+  /** Cancels the search: no agent starts or retries after it fires. */
+  signal?: AbortSignal;
+}
+
+/** Thrown once a cancelled search reaches its next step. */
+export class SearchCancelledError extends Error {
+  constructor() {
+    super("The search was cancelled.");
+    this.name = "SearchCancelledError";
+  }
+}
+
+function stopIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new SearchCancelledError();
 }
 
 /**
@@ -523,7 +556,7 @@ export interface RunAgentsOptions {
 export async function runRelevanceAgents(
   options: RunAgentsOptions
 ): Promise<{ chunks: NoteLike[][]; outcomes: AgentOutcome[] }> {
-  const { draft, notes, goal, sections = [], agentCount, concurrency, generate, isRetryable, onAgentSettled } = options;
+  const { draft, notes, goal, sections = [], agentCount, concurrency, generate, isRetryable, onAgentSettled, signal } = options;
   const chunks = dealIntoChunks(notes, agentCount);
   const sectionIds = sections.map((section) => section.id);
 
@@ -540,9 +573,10 @@ export async function runRelevanceAgents(
     for (let attempt = 0; ; attempt++) {
       let results: RelevanceResult[];
       try {
-        results = parseAgentResponse(await generate(prompt), allowedIds, sectionIds);
+        stopIfCancelled(signal);
+        results = parseAgentResponse(await generate(prompt, signal), allowedIds, sectionIds);
       } catch (error) {
-        if (attempt === 1 || !isRetryable(error)) {
+        if (attempt === 1 || signal?.aborted || !isRetryable(error)) {
           settle(null);
           throw error;
         }
@@ -675,16 +709,57 @@ export const INSIGHT_INTENTS = ["stuck", "planning", "deciding", "capturing", "r
 export type InsightIntent = (typeof INSIGHT_INTENTS)[number];
 
 /**
+ * What a card offers, which decides its action:
+ * "solution" - a past note holds a clear, specific answer; Solved or Dismiss.
+ * "helps" - a past note suggests an idea worth trying; accept or reject.
+ * "extension" - a past note holds a detail that completes this one; merge it.
+ * "contradiction" - this note goes against an earlier decision; pick which stands.
+ * "pattern" - the same thing has shown up before; confirm or reject.
+ */
+export const CARD_KINDS = ["solution", "helps", "extension", "contradiction", "pattern"] as const;
+export type CardKind = (typeof CARD_KINDS)[number];
+
+/** Words copied exactly from one of the person's past notes. */
+export interface InsightQuote {
+  note_id: string;
+  /** Taken from the note itself, not from the model, so it is exactly what they wrote. */
+  text: string;
+}
+
+/**
  * The one thing from the person's past notes that should change what they do
- * next, tied to the passage of the draft it is about.
+ * next, tied to the passage of the draft it is about. The model writes only the
+ * sentence that connects; everything taken from their notes is their own words.
  */
 export interface Insight {
   /** Verbatim text from the draft. Empty when the model's quote was not found in it. */
   anchor: string;
   intent: InsightIntent;
-  /** What their past notes add, in one or two sentences. */
+  kind: CardKind;
+  /**
+   * One sentence written around the person's own words: {1}, {2}, ... stand
+   * for `quotes` in order, and are shown as quotes that open their note.
+   */
   text: string;
-  /** One concrete next step. */
+  quotes: InsightQuote[];
+  /**
+   * For a solution or an extension: the answer or the detail, word for word.
+   * It comes from a past note, except for an outbound solution, where the note
+   * being written is the answer: then it is from the draft and `note_id` is "".
+   */
+  answer: InsightQuote | null;
+  /**
+   * "outbound" when every note the card rests on is one the draft helps, so the
+   * draft is the lesson and those notes are where it applies.
+   */
+  direction: Direction;
+  /** For an outbound solution: the earlier note's problem, word for word, which the draft answers. */
+  problem: InsightQuote | null;
+  /**
+   * What the action box shows: the answer's text for a solution or an
+   * extension, the idea for helps (it completes "Might help to ..."), the
+   * pattern for a pattern, and nothing for a contradiction.
+   */
   action: string;
   /** The notes the insight rests on; always a subset of the search results. */
   note_ids: string[];
@@ -730,7 +805,31 @@ const MAX_CONTEXT_NOTE_CHARS = 200;
 const MAX_ANCHOR_CHARS = 240;
 const MIN_ANCHOR_CHARS = 8;
 const MAX_INSIGHT_TEXT_CHARS = 420;
-const MAX_ACTION_CHARS = 260;
+/** A quote inside the card's sentence is a phrase, not a paragraph. */
+const MAX_QUOTE_CHARS = 150;
+/** An answer or an extension is the sentence or two that make the point, never a whole note. */
+const MAX_ANSWER_CHARS = 250;
+/**
+ * A quote that takes in this much of a note's text is the note, not the part
+ * that matters. Notes shorter than WHOLE_NOTE_MIN_CHARS are exempt: a
+ * one-sentence note can only be quoted whole.
+ */
+const WHOLE_NOTE_SHARE = 0.8;
+const WHOLE_NOTE_MIN_CHARS = 160;
+
+/**
+ * A note's title and its text. The app shows the first line as the title, so
+ * it is a label, never something to quote; a note that is one line is all text.
+ */
+export function splitNoteTitle(rawText: string): { title: string; text: string } {
+  const trimmed = rawText.trim();
+  const newline = trimmed.indexOf("\n");
+  if (newline === -1) return { title: "", text: trimmed };
+  const text = trimmed.slice(newline + 1).trim();
+  return text ? { title: trimmed.slice(0, newline).trim(), text } : { title: "", text: trimmed };
+}
+const MAX_IDEA_CHARS = 160;
+const MAX_PATTERN_CHARS = 260;
 const MAX_GOAL_SUGGESTION_CHARS = 60;
 const MAX_GOAL_SUGGESTIONS = 3;
 
@@ -828,9 +927,13 @@ export function buildInsightPrompt({ draft, context, recentNotes, matches, secti
     const section = sections.find((item) => item.id === result.section_id);
     return `\nIdea: ${section ? `${section.id}${section.label ? ` (${section.label})` : ""}` : "the note as a whole"}`;
   };
+  // The title is shown as a label apart from the text, since quotes may only
+  // come from the text.
   const related = matches
-    .map(({ note, result }) =>
-      `ID: ${note.id}\nWritten: ${note.created_at.slice(0, 10)}${ideaLine(result)}\nDirection: ${result.direction === "outbound" ? "outbound (the note being written helps this one)" : "inbound (this note helps the one being written)"}\nHow it relates: ${result.relation_type} - ${result.explanation}\n${truncate(note.raw_text.trim(), MAX_NOTE_CHARS)}`)
+    .map(({ note, result }) => {
+      const { title, text } = splitNoteTitle(note.raw_text);
+      return `ID: ${note.id}\nTitle: ${title || "(none)"}\nWritten: ${note.created_at.slice(0, 10)}${ideaLine(result)}\nDirection: ${result.direction === "outbound" ? "outbound (the note being written helps this one)" : "inbound (this note helps the one being written)"}\nHow it relates: ${result.relation_type} - ${result.explanation}\nText:\n${truncate(text, MAX_NOTE_CHARS)}`;
+    })
     .join("\n\n---\n\n");
   const howMany = byIdea
     ? `HOW MANY - the note works on ${sections.length} separate ideas, marked as numbered <idea> blocks, and each related note says which idea it bears on. Give at most one insight per idea, built on that idea's related notes, plus at most one about the note as a whole. Skip any idea where nothing clears the bar; an idea with no insight is a normal, frequent, and correct outcome. Do not stretch to cover every idea.`
@@ -859,20 +962,33 @@ GOAL - if they have said what they are working toward in this area, use it to de
 
 ${howMany}
 
+THEIR WORDS, NOT YOURS - a card is their own past words, connected by you. You write only the short sentence that links those words to the note; everything taken from a past note appears inside it exactly as they wrote it, so the card sounds familiar.
+
 For each insight:
-ANCHOR - copy, word for word, the shortest phrase or sentence from the note being written that this insight is about, at most 25 words${byIdea ? ", taken from inside the idea it is about" : ""}. Copy it exactly: do not paraphrase, fix typos, or add quotation marks. Two insights never share or overlap an anchor.
-TEXT - one or two plain sentences saying what their past notes add. Name the specifics: people, numbers, what happened. Do not restate the note being written.
-ACTION - write the exact one or two sentences that should be added to the note being written at the ANCHOR. This is note content, not an instruction sent outside the note. For "solves", write the solution or resolved next step. For "helps", write a concrete next-step sentence. For "extends", write the additional fact, consequence, or detail. For "contradicts", write the clarification or unresolved question. For every other relation, write the observation worth preserving. Match the note's plain language. Never tell them to "think about", "consider", or "reflect on" something; never say "this week", "you should", or "try to". Do not include a heading—the interface adds it.
+KIND - pick exactly one, by what the past notes actually offer:
+"solution" - a past note holds a clear, specific answer to a question or problem in the note being written: a number, a name, a decision, a fix. Whenever such an answer exists, give this card; it is the most valuable one, so never water it down to "helps".
+"helps" - a past note suggests an idea that might be useful here, such as a strategy or a technique, but not a specific answer.
+"extension" - a past note holds a fact or detail that makes the note being written more complete.
+"contradiction" - the note being written goes against a decision or belief they wrote down before. Point out the change; do not judge it.
+"pattern" - the same thing has happened or shown up before, and the note being written is another instance of it.
+ANCHOR - copy, word for word, the key part of the sentence in the note being written that needs this card, at most 25 words${byIdea ? ", taken from inside the idea it is about" : ""}: the words that ask the question, state the problem, or make the claim. Copy it exactly: do not paraphrase, fix typos, or add quotation marks. Two insights never share or overlap an anchor.
+TEXT - one short sentence, written by you, with their past words placed inside it as {1}, {2}, ... in the order of QUOTES. Write only the connecting words; the quotes carry the content. Say where or with whom it was if that helps them place it, but never write a date or a day: the card already shows when each note was written. Never put your own paraphrase in quotation marks, and never restate the note being written. Examples: "Your weekend test got {1}, with {2}." / "The same manager told you they {1}. That's a turnover problem too, and you had {2}."
+QUOTES - one entry per placeholder, in order: the ID of the past note and the exact words copied from its Text, 3 to 15 words: only the phrase that carries the point, not the sentence around it. Copy them character for character; never shorten them in the middle, fix them, or reword them. Never quote a Title, and never quote a whole note: the card names the note for them, so a quote only needs the part that matters.
+ANSWER - for "solution" and "extension" only: the exact words from a past note's Text that answer the question or add the detail, copied word for word, with the ID of that note. Take only what answers it, usually one sentence and at most 40 words, never the Title and never the whole note. For a solution this is the answer itself and nothing else.
+IDEA - for "helps" only: a short phrase, in plain words, that completes "Might help to ...", starting with a lowercase verb, such as "say the price and just wait".
+PATTERN - for "pattern" only: one or two short sentences naming what repeats, such as "Both times, price was what they said. Trust was what they asked about."
 NOTE_IDS - the IDs of the past notes this insight rests on, only from the list given.
-OUTBOUND - when the notes an insight rests on are outbound, the insight is about where this lesson applies. TEXT names that earlier situation and when it was ("On Sept 12 you were stuck on..."). ACTION adds that concrete application to the current note; it never edits or assigns work in the earlier note.
+OUTBOUND - when the notes an insight rests on are outbound, the note being written is the lesson and the past note is where it applies. TEXT places that earlier situation with its own words ("You were stuck on {1}.").
+- When the note being written answers a problem or open question in that past note, give "solution", and as clearly as any other solution: PROBLEM is the exact words from the past note's Text that state the problem, with its ID, and ANSWER is the exact words from the note being written that answer it, with "note_id": "this". ANCHOR is the key part of that answer.
+- Otherwise use "helps" or "pattern", never "extension": IDEA says how this lesson applies to that earlier situation.
 ${askForGoal ? `
 GOAL_SUGGESTIONS - they have not said what this area is for. Offer 2 or 3 short guesses at it, 2 to 6 words each and starting with a verb ("Validate pricing", "Find first 10 users"), based on the note and their recent notes in the area. Include these even when there are no insights.
 ` : ""}
 VOICE - these are their own notes. Speak to them as "you", like a friend who remembers everything they have written. Plain words, no jargon. Never say "the user", "the author", or "this note highlights".
 
 OUTPUT - a JSON object and nothing else, in this shape:
-{"intent": "<stuck|planning|deciding|capturing|reflecting|learning>", "insights": [{"anchor": "<exact quote>", "text": "<one or two sentences>", "action": "<one or two note-ready sentences>", "note_ids": ["<id>"]}]${askForGoal ? ', "goal_suggestions": ["<guess>"]' : ""}}
-with "insights" as [] when nothing clears the bar.
+{"intent": "<stuck|planning|deciding|capturing|reflecting|learning>", "insights": [{"kind": "<solution|helps|extension|contradiction|pattern>", "anchor": "<exact words from the note being written>", "text": "<one sentence with {1}, {2}...>", "quotes": [{"note_id": "<id>", "text": "<exact words from that note>"}], "answer": {"note_id": "<id, or this>", "text": "<exact words>"}, "problem": {"note_id": "<id>", "text": "<exact words>"}, "idea": "<helps only>", "pattern": "<pattern only>", "note_ids": ["<id>"]}]${askForGoal ? ', "goal_suggestions": ["<guess>"]' : ""}}
+Leave out "answer", "problem", "idea", and "pattern" where they do not apply. "insights" is [] when nothing clears the bar.
 
 ========================================
 
@@ -906,29 +1022,70 @@ function cleanLine(value: unknown, limit: number): string {
   return typeof value === "string" ? truncate(value.trim().replace(/\s+/g, " "), limit) : "";
 }
 
+/** Where a card falls back to when the model names no kind: the relation of the note it rests on. */
+const KIND_FOR_RELATION: Record<RelationType, CardKind> = {
+  solves: "solution",
+  helps: "helps",
+  question: "helps",
+  extends: "extension",
+  supports: "extension",
+  contradicts: "contradiction",
+  parallel: "pattern",
+};
+
 /**
- * Turns the insight model's reply into something safe to show. An insight
- * without text, an action, or a single real citation is dropped rather than
- * shown half-formed. A quote that is not actually in the draft only loses its
- * highlight, since the card is still worth showing. An insight whose passage
- * overlaps an earlier one is about the same issue, so it is dropped.
- * Older replies with a single "insight" object are still read.
+ * Turns the insight model's reply into something safe to show. Every quote,
+ * and every answer, must really be in the past note it names; the text shown
+ * is then taken from that note, so a small slip in the model's copy (case,
+ * curly quotes, spacing) never reaches the person. A card whose sentence uses
+ * a quote that is not really there is dropped rather than shown with words
+ * the person never wrote, and so is one missing what its kind needs: an answer
+ * for a solution or an extension, an idea for helps, a pattern for a pattern.
+ * A passage that is not actually in the draft only loses its highlight, since
+ * the card is still worth showing. An insight whose passage overlaps an
+ * earlier one is about the same issue, so it is dropped.
  *
  * Each insight belongs to the section its passage is in. Without a passage it
  * goes where the notes it cites point, and failing that to the first section.
  */
 export function parseInsightResponse(
   raw: string,
-  { draft, allowedNoteIds, askForGoal, sections = [], sectionOfNote = new Map() }: {
+  { draft, allowedNoteIds, askForGoal, sections = [], sectionOfNote = new Map(), noteTextById = new Map(), relationOfNote = new Map(), directionOfNote = new Map() }: {
     draft: string;
     allowedNoteIds: Set<string>;
     askForGoal: boolean;
     sections?: DraftSection[];
     /** Which section each cited note was matched to. */
     sectionOfNote?: Map<string, string>;
+    /** The text of every note a card may quote, without its title, to check quotes against. */
+    noteTextById?: Map<string, string>;
+    /** Each cited note's relation, for a card that names no kind. */
+    relationOfNote?: Map<string, RelationType>;
+    /** Each cited note's direction, to tell when the draft is the lesson. */
+    directionOfNote?: Map<string, Direction>;
   },
 ): InsightOutcome {
+  /** Words copied from the draft itself, for the answer of an outbound solution. "" marks the draft. */
+  const draftQuote = (value: unknown): InsightQuote | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const words = (value as Record<string, unknown>).text;
+    if (typeof words !== "string") return null;
+    const span = findAnchor(draft, words.slice(0, MAX_ANSWER_CHARS * 2));
+    return span && span.end - span.start <= MAX_ANSWER_CHARS ? { note_id: "", text: draft.slice(span.start, span.end) } : null;
+  };
   const maxInsights = maxInsightsFor(sections);
+  const quoteFrom = (value: unknown, limit: number): InsightQuote | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const row = value as Record<string, unknown>;
+    const noteId = typeof row.note_id === "string" ? row.note_id : "";
+    const source = allowedNoteIds.has(noteId) ? noteTextById.get(noteId) : undefined;
+    if (!source || typeof row.text !== "string") return null;
+    const span = findAnchor(source, row.text.slice(0, limit * 2));
+    if (!span || span.end - span.start > limit) return null;
+    // The card names the note already; quoting all of it buries the point.
+    const wholeNote = source.length >= WHOLE_NOTE_MIN_CHARS && span.end - span.start >= source.length * WHOLE_NOTE_SHARE;
+    return wholeNote ? null : { note_id: noteId, text: source.slice(span.start, span.end) };
+  };
   const sectionIds = new Set(sections.map((section) => section.id));
   const sectionFor = (span: { start: number } | null, noteIds: string[]): string =>
     (span && sectionAt(sections, span.start)?.id)
@@ -965,12 +1122,56 @@ export function parseInsightResponse(
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const card = entry as Record<string, unknown>;
 
-    const text = cleanLine(card.text, MAX_INSIGHT_TEXT_CHARS);
-    const action = cleanLine(card.action, MAX_ACTION_CHARS);
-    const noteIds = Array.isArray(card.note_ids)
-      ? [...new Set(card.note_ids.filter((id): id is string => typeof id === "string" && allowedNoteIds.has(id)))]
+    // The sentence keeps only placeholders whose quote is really in its note,
+    // renumbered in the order they are used.
+    const offered = Array.isArray(card.quotes) ? card.quotes.map((item) => quoteFrom(item, MAX_QUOTE_CHARS)) : [];
+    const quotes: InsightQuote[] = [];
+    const renumbered = new Map<number, number>();
+    let quoteMissing = false;
+    const text = cleanLine(card.text, MAX_INSIGHT_TEXT_CHARS)
+      // The interface draws the quotation marks, so drop any the model added.
+      .replace(/["'‘’“”]?(\{\d+\})["'‘’“”]?/g, "$1")
+      .replace(/\{(\d+)\}/g, (_match, digits: string) => {
+        const index = Number(digits) - 1;
+        const quote = offered[index];
+        if (!quote) { quoteMissing = true; return ""; }
+        if (!renumbered.has(index)) { quotes.push(quote); renumbered.set(index, quotes.length); }
+        return `{${renumbered.get(index)}}`;
+      });
+    if (!text || quoteMissing || quotes.length === 0 || seenText.has(text.toLowerCase())) continue;
+
+    const listedIds = Array.isArray(card.note_ids)
+      ? card.note_ids.filter((id): id is string => typeof id === "string" && allowedNoteIds.has(id))
       : [];
-    if (!text || !action || noteIds.length === 0 || seenText.has(text.toLowerCase())) continue;
+    const answerQuote = quoteFrom(card.answer, MAX_ANSWER_CHARS);
+    const problemQuote = quoteFrom(card.problem, MAX_ANSWER_CHARS);
+    const noteIds = [...new Set([
+      ...listedIds,
+      ...quotes.map((quote) => quote.note_id),
+      ...(answerQuote ? [answerQuote.note_id] : []),
+      ...(problemQuote ? [problemQuote.note_id] : []),
+    ])];
+    const direction: Direction = noteIds.length > 0 && noteIds.every((id) => directionOfNote.get(id) === "outbound") ? "outbound" : "inbound";
+    const fallbackKind = noteIds.map((id) => relationOfNote.get(id)).find(Boolean);
+    const kind: CardKind | null = CARD_KINDS.includes(card.kind as CardKind)
+      ? (card.kind as CardKind)
+      : fallbackKind ? KIND_FOR_RELATION[fallbackKind] : null;
+    if (!kind || (direction === "outbound" && kind === "extension")) continue;
+
+    // An outbound solution has two sides: the earlier note's problem, and the
+    // words of the draft that answer it. Both must really be there.
+    const outboundSolution = kind === "solution" && direction === "outbound";
+    const problem = outboundSolution ? problemQuote : null;
+    const answer = outboundSolution
+      ? draftQuote(card.answer)
+      : kind === "solution" || kind === "extension" ? answerQuote : null;
+    if (outboundSolution && !problem) continue;
+    const idea = kind === "helps"
+      ? cleanLine(card.idea, MAX_IDEA_CHARS).replace(/^might help(?: to)?[\s:.…-]*/i, "").replace(/^([A-Z])(?![A-Z])/, (letter) => letter.toLowerCase())
+      : "";
+    const pattern = kind === "pattern" ? cleanLine(card.pattern, MAX_PATTERN_CHARS) : "";
+    const action = answer?.text ?? (idea || pattern);
+    if (kind !== "contradiction" && !action) continue;
 
     const quoted = typeof card.anchor === "string" ? card.anchor : "";
     const found = findAnchor(draft, quoted.slice(0, MAX_ANCHOR_CHARS * 2));
@@ -983,7 +1184,12 @@ export function parseInsightResponse(
     insights.push({
       anchor: span ? draft.slice(span.start, span.end) : "",
       intent: cardIntent,
+      kind,
       text,
+      quotes,
+      answer,
+      direction,
+      problem,
       action,
       note_ids: noteIds,
       section_id: sectionFor(span, noteIds),
@@ -1042,6 +1248,10 @@ export async function findInsight(options: FindInsightOptions): Promise<InsightO
     askForGoal: Boolean(context.domain && !context.goal),
     sections,
     sectionOfNote: new Map(matches.map((match) => [match.note.id, match.result.section_id])),
+    // Only a note's text can be quoted, never its title.
+    noteTextById: new Map(matches.map((match) => [match.note.id, splitNoteTitle(match.note.raw_text).text])),
+    relationOfNote: new Map(matches.map((match) => [match.note.id, match.result.relation_type])),
+    directionOfNote: new Map(matches.map((match) => [match.note.id, match.result.direction])),
   });
 }
 
@@ -1050,11 +1260,11 @@ export interface SearchOptions extends Omit<RunAgentsOptions, "sections"> {
   /** How many matches each section keeps. */
   maxPerSection: number;
   /** Splits the draft into its ideas before any notes are read. Without it the draft is one section. */
-  findSections?: (draft: string) => Promise<DraftSection[]>;
+  findSections?: (draft: string, signal?: AbortSignal) => Promise<DraftSection[]>;
   /** Optional synthesis of the final matches; failure must not hide the matches. */
-  summarize?: (results: RelevanceResult[]) => Promise<string>;
+  summarize?: (results: RelevanceResult[], signal?: AbortSignal) => Promise<string>;
   /** Optional insights from the final matches; like the summary, failure must not hide the matches. */
-  findInsight?: (results: RelevanceResult[], sections: DraftSection[]) => Promise<InsightOutcome>;
+  findInsight?: (results: RelevanceResult[], sections: DraftSection[], signal?: AbortSignal) => Promise<InsightOutcome>;
   /** Failures of the optional steps, which the search itself survives. */
   onError?: (error: unknown) => void;
 }
@@ -1075,18 +1285,25 @@ export interface SearchOutcome {
  * all of them in one call. The vault is read once however many ideas the draft
  * has. When every agent fails the follow-up steps are skipped, and the caller
  * sees notesSearched === 0.
+ *
+ * When `signal` fires, typically because the person left the note, the search
+ * stops before its next model call and throws SearchCancelledError: no agents
+ * after the split, no retries, and no insight call after the agents.
  */
 export async function searchRelevance(options: SearchOptions): Promise<SearchOutcome> {
   const { maxPerSection, findSections, summarize, findInsight, onError, ...agentOptions } = options;
-  const { draft, notes } = agentOptions;
+  const { draft, notes, signal } = agentOptions;
+  stopIfCancelled(signal);
   const sections = findSections
-    ? await findSections(draft).catch((error) => {
-      onError?.(error);
+    ? await findSections(draft, signal).catch((error) => {
+      if (!signal?.aborted) onError?.(error);
       return splitIntoParagraphs(draft);
     })
     : wholeDraftSection(draft);
 
+  stopIfCancelled(signal);
   const { outcomes } = await runRelevanceAgents({ ...agentOptions, sections });
+  stopIfCancelled(signal);
   const createdAtById = new Map(notes.map((note) => [note.id, note.created_at]));
   const { results, notesSearched } = mergeAgentResults(outcomes, createdAtById, maxPerSection);
   const base = { sections, results, notesSearched, notesTotal: notes.length };
@@ -1095,15 +1312,16 @@ export async function searchRelevance(options: SearchOptions): Promise<SearchOut
   // Both follow-ups read the same matches, so run them side by side.
   const [summary, insight] = await Promise.all([
     results.length && summarize
-      ? summarize(results).catch((error) => { onError?.(error); return ""; })
+      ? summarize(results, signal).catch((error) => { onError?.(error); return ""; })
       : Promise.resolve(""),
     findInsight
-      ? findInsight(results, sections).catch((error): InsightOutcome => {
+      ? findInsight(results, sections, signal).catch((error): InsightOutcome => {
         onError?.(error);
         return FAILED_INSIGHT;
       })
       : Promise.resolve(null),
   ]);
+  stopIfCancelled(signal);
   return { ...base, summary, insight };
 }
 
@@ -1138,21 +1356,40 @@ export interface StreamSearchOptions extends Omit<SearchOptions, "onAgentSettled
   allFailedMessage: string;
   /** Shown when the search throws outright; the error itself goes to onError. */
   failedMessage: string;
+  /** Told when the search stopped early because the reader went away, and how far it had got. */
+  onCancelled?: (stage: string) => void;
 }
 
 /**
  * Runs the same search as the buffered path, but reports each agent as it
  * finishes. Written against web-standard ReadableStream and TextEncoder so the
  * Deno Edge Function and the Node dev route can both return it as is.
+ *
+ * The search is cancelled when the reader goes away (the stream is cancelled)
+ * or when the caller's own `signal` fires, so a person who leaves the note
+ * stops paying for the rest of it.
  */
 export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStream<Uint8Array> {
-  const { allFailedMessage, failedMessage, ...searchOptions } = options;
+  const { allFailedMessage, failedMessage, onCancelled, signal: callerSignal, ...searchOptions } = options;
   const encoder = new TextEncoder();
+  const cancel = new AbortController();
+  if (callerSignal?.aborted) cancel.abort();
+  else callerSignal?.addEventListener("abort", () => cancel.abort(), { once: true });
 
   return new ReadableStream<Uint8Array>({
+    cancel() {
+      cancel.abort();
+    },
     async start(controller) {
-      const send = (event: RelevanceStreamEvent) =>
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      // Once the reader is gone there is no one left to tell.
+      const send = (event: RelevanceStreamEvent) => {
+        if (cancel.signal.aborted) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          cancel.abort();
+        }
+      };
 
       const notesTotal = searchOptions.notes.length;
       const agentsTotal = dealIntoChunks(searchOptions.notes, searchOptions.agentCount).length;
@@ -1164,6 +1401,7 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
       try {
         const outcome = await searchRelevance({
           ...searchOptions,
+          signal: cancel.signal,
           onAgentSettled: (_index, agent) => {
             agentsDone++;
             agent.results?.forEach((result) => matched.add(result.note_id));
@@ -1173,10 +1411,18 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
         if (outcome.notesSearched === 0) send({ type: "error", error: allFailedMessage });
         else send({ type: "done", ...searchResponseFields(outcome) });
       } catch (error) {
-        searchOptions.onError?.(error);
-        send({ type: "error", error: failedMessage });
+        if (error instanceof SearchCancelledError || cancel.signal.aborted) {
+          onCancelled?.(agentsDone === 0 ? "before the agents finished" : `after ${agentsDone} of ${agentsTotal} agents`);
+        } else {
+          searchOptions.onError?.(error);
+          send({ type: "error", error: failedMessage });
+        }
       }
-      controller.close();
+      try {
+        controller.close();
+      } catch {
+        // Already closed by the reader cancelling it.
+      }
     },
   });
 }

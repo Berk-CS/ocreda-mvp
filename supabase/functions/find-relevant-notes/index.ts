@@ -81,7 +81,7 @@ function errorMessage(error: unknown): string {
 }
 
 const AGENT_SYSTEM_PROMPT =
-  "You identify meaningful relationships between a person's notes. You respond with a JSON array and nothing else.";
+  "You identify meaningful relationships between a person's notes. You respond with a JSON object and nothing else.";
 
 /**
  * One line per search in the Supabase function logs, so cost can be measured
@@ -115,6 +115,7 @@ async function findMatchInsight(
   apiKey: string,
   usage: TokenUsage,
   model: string,
+  signal?: AbortSignal,
 ): Promise<InsightOutcome> {
   try {
     return await findInsight({
@@ -131,6 +132,7 @@ async function findMatchInsight(
           apiKey,
           model,
           { responseMimeType: "application/json", temperature: 0.2, maxOutputTokens: INSIGHT_TOKEN_BUDGET },
+          signal,
         );
         addTokenUsage(usage, callUsage);
         // Cut-off JSON will not parse, which drops the insight; say why in the logs.
@@ -254,10 +256,10 @@ Deno.serve(async (req: Request) => {
     const summarize = COMBINED_SUMMARY_ENABLED
       ? (results: RelevanceResult[]) => summarizeMatches(results, apiKey, usage, model)
       : undefined;
-    const insightFor = (results: RelevanceResult[], sections: DraftSection[]) =>
-      findMatchInsight(draft, goalContext, notes, results, sections, excludeNoteId, apiKey, usage, model);
+    const insightFor = (results: RelevanceResult[], sections: DraftSection[], signal?: AbortSignal) =>
+      findMatchInsight(draft, goalContext, notes, results, sections, excludeNoteId, apiKey, usage, model, signal);
     let sectionsTotal = 0;
-    const findSections = async (text: string) => {
+    const findSections = async (text: string, signal?: AbortSignal) => {
       const sections = await findDraftSections({
         draft: text,
         generate: async (prompt) => {
@@ -267,13 +269,14 @@ Deno.serve(async (req: Request) => {
             apiKey,
             model,
             { responseMimeType: "application/json", temperature: 0.2, maxOutputTokens: SECTION_TOKEN_BUDGET },
+            signal,
           );
           addTokenUsage(usage, callUsage);
           if (truncated) console.error("find-relevant-notes idea split hit the token budget");
           return reply;
         },
         // The search goes on by paragraph; the log says why.
-        onError: (error) => console.error("find-relevant-notes idea split failed:", errorMessage(error)),
+        onError: (error) => { if (!signal?.aborted) console.error("find-relevant-notes idea split failed:", errorMessage(error)); },
       });
       sectionsTotal = sections.length;
       return sections;
@@ -289,7 +292,7 @@ Deno.serve(async (req: Request) => {
       agentCount: DEFAULT_AGENT_COUNT,
       concurrency: DEFAULT_AGENT_CONCURRENCY,
       isRetryable: isRetryableGeminiError,
-      generate: async (prompt: string) => {
+      generate: async (prompt: string, signal?: AbortSignal) => {
         try {
           const { text, usage: callUsage } = await generateWithGeminiResult(
             AGENT_SYSTEM_PROMPT,
@@ -297,13 +300,14 @@ Deno.serve(async (req: Request) => {
             apiKey,
             model,
             { responseMimeType: "application/json", temperature: 0.2 },
+            signal,
           );
           addTokenUsage(usage, callUsage);
           return text;
         } catch (error) {
           // Otherwise a dead key or empty balance only ever surfaces as
           // "unavailable"; this line says which (401, 402, 429...).
-          console.error("find-relevant-notes agent call failed:", errorMessage(error));
+          if (!signal?.aborted) console.error("find-relevant-notes agent call failed:", errorMessage(error));
           throw error;
         }
       },
@@ -314,6 +318,8 @@ Deno.serve(async (req: Request) => {
     if (body?.stream === true) {
       const stream = streamRelevanceSearch({
         ...searchOptions,
+        // Fires when the browser hangs up, for instance when the person leaves the note.
+        signal: req.signal,
         allFailedMessage: "Relevance search is unavailable right now. Please try again.",
         failedMessage: "Relevance search failed. Please try again.",
         onError: (error) =>
@@ -330,6 +336,7 @@ Deno.serve(async (req: Request) => {
 
     const outcome = await searchRelevance({
       ...searchOptions,
+      signal: req.signal,
       onError: (error) => console.error("find-relevant-notes follow-up failed:", errorMessage(error)),
     });
     logUsage(usage, notes.length, sectionsTotal, startedAt, goalContext, tier);

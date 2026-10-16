@@ -6,9 +6,21 @@ export const corsHeaders = {
 
 /** "Best" mode, and the default everywhere: the production model. */
 export const BEST_MODEL = "google/gemini-3.7-flash";
-/** "Basic" mode: far cheaper, for testing. Weaker on subtle relations. */
-export const BASIC_MODEL = "google/gemini-2.5-flash-lite";
+/** "Basic" mode: cheaper, for testing. Weaker on subtle relations. */
+export const BASIC_MODEL = "deepseek/deepseek-v4.1-flash";
 const DEFAULT_MODEL = BEST_MODEL;
+
+/**
+ * Models that must be served by the listed OpenRouter providers, tried in
+ * order. OpenRouter otherwise picks among every host of a model, and hosts
+ * differ in price, quantization, and how well they follow a JSON response
+ * format. When every listed provider is down, the request fails rather than
+ * quietly going to one not on the list.
+ */
+const PROVIDERS_FOR_MODEL: Record<string, string[]> = {
+  // Morph first, Inference.net as the backup; both serve it at fp8.
+  [BASIC_MODEL]: ["morph", "inference-net"],
+};
 
 /** The AI mode a person picks in the app. */
 export type ModelTier = "basic" | "best";
@@ -118,20 +130,28 @@ export async function generateWithGemini(
   messages: GeminiMessage[],
   apiKey: string,
   model: string = DEFAULT_MODEL,
-  generationConfig?: GeminiGenerationConfig
+  generationConfig?: GeminiGenerationConfig,
+  signal?: AbortSignal,
 ): Promise<string> {
-  return (await generateWithGeminiResult(systemPrompt, messages, apiKey, model, generationConfig)).text;
+  return (await generateWithGeminiResult(systemPrompt, messages, apiKey, model, generationConfig, signal)).text;
 }
 
+/**
+ * `signal` drops the request when the search it belongs to is cancelled. A
+ * call already running may still be billed, since OpenRouter only stops
+ * generating for streamed requests, but nothing after it is sent.
+ */
 export async function generateWithGeminiResult(
   systemPrompt: string,
   messages: GeminiMessage[],
   apiKey: string,
   model: string = DEFAULT_MODEL,
-  generationConfig?: GeminiGenerationConfig
+  generationConfig?: GeminiGenerationConfig,
+  signal?: AbortSignal,
 ): Promise<GeminiGeneration> {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
@@ -149,6 +169,7 @@ export async function generateWithGeminiResult(
         : {}),
       // Asks OpenRouter to include the billed cost alongside the token counts.
       usage: { include: true },
+      ...(PROVIDERS_FOR_MODEL[model] ? { provider: { order: PROVIDERS_FOR_MODEL[model], allow_fallbacks: false } } : {}),
     }),
   });
 

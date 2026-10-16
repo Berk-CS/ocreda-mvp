@@ -104,16 +104,87 @@ export interface RelevanceProgress {
 export type InsightIntent = 'stuck' | 'planning' | 'deciding' | 'capturing' | 'reflecting' | 'learning';
 
 /** The one thing from past notes that should change what the person does next. */
+/** What a card offers, which decides its action. Matches CARD_KINDS on the server. */
+export type CardKind = 'solution' | 'helps' | 'extension' | 'contradiction' | 'pattern';
+
+/** Words copied exactly from one of the person's past notes. */
+export interface InsightQuote {
+  note_id: string;
+  text: string;
+}
+
 export interface NoteInsight {
   /** Verbatim passage of the searched text the insight is about. Empty when none could be matched. */
   anchor: string;
   intent: InsightIntent;
+  /** Missing from servers that predate card kinds; the card then goes by its notes' relation. */
+  kind?: CardKind;
+  /** One sentence; {1}, {2}, ... stand for `quotes` in order. Older servers send plain text. */
   text: string;
+  /** The person's own words that fill the sentence's placeholders. */
+  quotes?: InsightQuote[];
+  /**
+   * For a solution or an extension: the answer or detail, word for word. An
+   * empty note_id means the words are from the searched note itself, as for
+   * an outbound solution.
+   */
+  answer?: InsightQuote | null;
+  /** "outbound" when the searched note is the lesson and the cited notes are where it applies. */
+  direction?: NoteDirection;
+  /** For an outbound solution: the earlier note's problem, word for word. */
+  problem?: InsightQuote | null;
+  /** The answer's text, the idea for helps, the pattern for a pattern; empty for a contradiction. */
   action: string;
   /** The notes the insight rests on, all of them among the results. */
   note_ids: string[];
   /** The section the insight is about. Missing from servers that predate sections. */
   section_id?: string;
+}
+
+/** How a card shows. Pattern cards show as "insight". */
+export type SuggestionKind = 'contradiction' | 'solution' | 'helps' | 'extension' | 'insight';
+
+/**
+ * What the person did with a card. A choice is drawn over the note, never
+ * written into its text, so the note always stays exactly as they wrote it.
+ */
+export type CardChoice =
+  /** Solution: the answer shows in a box beside the sentence. */
+  | 'solved'
+  /** Solution dismissed: the card carries on as a Helps card, and nothing is added. */
+  | 'downgraded'
+  /** Helps: the idea shows in a box beside the sentence. */
+  | 'helped'
+  /** Extension: their words from the other note show below the sentence. */
+  | 'merged'
+  /** Contradiction: what they wrote today stands. */
+  | 'today'
+  /** Contradiction: the earlier note still holds. */
+  | 'earlier'
+  /** Contradiction: both are true. */
+  | 'both'
+  /** Pattern: confirmed. */
+  | 'confirmed'
+  /** Any card they waved off. */
+  | 'rejected';
+
+export interface CardDecision {
+  choice: CardChoice;
+  /** The kind the card shows as now; a dismissed solution becomes a Helps card. */
+  kind: SuggestionKind;
+  /** The card as it was when they chose, so their choice stays on the note after a new search. */
+  insight: NoteInsight;
+  /** The merged words, which are theirs to edit, or why both are true. */
+  text?: string;
+  /** Another note this choice also marks, such as the earlier note an answer solved. */
+  targetNoteId?: string;
+}
+
+/** A choice made on another note's card that marks this note. */
+export interface IncomingCardDecision extends CardDecision {
+  cardId: string;
+  /** The note the card was on, which is where the answer came from. */
+  fromNoteId: string;
 }
 
 /** The Domain a search is made from, and what the person said they want from it. */
