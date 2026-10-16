@@ -34,6 +34,7 @@ const AUTOMATIC_MUSE = '__automatic__';
 const ORPHANS_MUSE = 'Orphans';
 const ORPHANS_DESCRIPTION = 'Imported notes that did not match another Domain.';
 const ORPHANS_MIGRATION_VERSION = 'v1';
+const HOME_HISTORY_KEY = 'ocreda-home-view';
 
 function cleanCategory(value: string | null | undefined): string | null {
   const clean = value?.trim().replace(/\s+/g, ' ') ?? '';
@@ -263,6 +264,57 @@ export default function OcredaHome() {
   const [importProgress, setImportProgress] = useState<{ completed: number; total: number } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const orphanMigrationStartedRef = useRef(false);
+  const historySurfaceActiveRef = useRef(false);
+
+  const resetToDashboard = useCallback(() => {
+    setNoteEditor(null);
+    setActiveNoteId(null);
+    setPreviousNoteId(null);
+    setMuseEditor(null);
+    setProjectEditor(null);
+    setActiveProjectId(null);
+    setActivePageId(null);
+    setActiveMuse(null);
+    setShowUnsorted(false);
+    setView('cortex');
+    setImportOpen(false);
+  }, []);
+
+  // All workspaces on the home page are React state rather than separate
+  // routes. Give them a real history entry so the mobile browser/OS Back
+  // button returns to the dashboard instead of leaving `/` for `/auth`.
+  useEffect(() => {
+    window.history.replaceState({ ...window.history.state, [HOME_HISTORY_KEY]: 'dashboard' }, '', window.location.href);
+    const onPopState = (event: PopStateEvent) => {
+      if (window.location.pathname !== '/') return;
+      historySurfaceActiveRef.current = false;
+      resetToDashboard();
+      // Forward navigation must not resurrect a stale UI snapshot that React
+      // can no longer restore. It remains a safe dashboard entry instead.
+      if (event.state?.[HOME_HISTORY_KEY] === 'surface') {
+        window.history.replaceState({ ...event.state, [HOME_HISTORY_KEY]: 'dashboard' }, '', window.location.href);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [resetToDashboard]);
+
+  const hasInAppSurface = Boolean(
+    noteEditor || activeNoteId || museEditor || projectEditor || activeProjectId
+    || activeMuse || showUnsorted || view === 'muses' || importOpen
+  );
+
+  useEffect(() => {
+    if (hasInAppSurface && !historySurfaceActiveRef.current) {
+      window.history.pushState({ ...window.history.state, [HOME_HISTORY_KEY]: 'surface' }, '', window.location.href);
+      historySurfaceActiveRef.current = true;
+      return;
+    }
+    if (!hasInAppSurface && historySurfaceActiveRef.current) {
+      historySurfaceActiveRef.current = false;
+      if (window.history.state?.[HOME_HISTORY_KEY] === 'surface') window.history.back();
+    }
+  }, [hasInAppSurface]);
 
   const load = useCallback(async () => {
     try {
@@ -1303,7 +1355,9 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [usedInMenuOpen, setUsedInMenuOpen] = useState(false);
-  const [summaryOpen, setSummaryOpen] = useState(true);
+  // Mobile starts with the note itself; desktop has room to show suggestions
+  // alongside it immediately.
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const [panelNoteId, setPanelNoteId] = useState<string | null>(null);
   const [panelRelevance, setPanelRelevance] = useState<RelevanceResult | null>(null);
   // Words a card quoted from the note open in the side panel, to show them in place.
@@ -1334,6 +1388,10 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const rawText = title.trim() && body.trim() ? `${title.trim()}\n\n${body.trim()}` : title.trim() || body.trim();
 
   useEffect(() => {
+    if (window.matchMedia('(min-width: 1280px)').matches) setSummaryOpen(true);
+  }, []);
+
+  useEffect(() => {
     if (!editing || !rawText || rawText === note.raw_text.trim()) return;
     setSaveState('saving');
     const timeout = window.setTimeout(() => {
@@ -1341,6 +1399,17 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     }, 850);
     return () => window.clearTimeout(timeout);
   }, [body, editing, note.id, note.raw_text, rawText, title]);
+
+  // A hardware/browser Back action can unmount this reader immediately. Start
+  // the same save used by the visible close control before the dashboard is
+  // restored, so a quick mobile exit does not discard the latest edit.
+  useEffect(() => {
+    const saveBeforeHistoryExit = () => {
+      if (rawText && rawText !== note.raw_text.trim()) void latestSaveRef.current(note.id, rawText);
+    };
+    window.addEventListener('popstate', saveBeforeHistoryExit);
+    return () => window.removeEventListener('popstate', saveBeforeHistoryExit);
+  }, [note.id, note.raw_text, rawText]);
 
   const orderedNotes = useMemo(() => [...allNotes].sort((a, b) => b.created_at.localeCompare(a.created_at)), [allNotes]);
   const noteIndex = orderedNotes.findIndex((item) => item.id === note.id);
@@ -1798,38 +1867,39 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   };
 
   return (
-    <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) void leaveWorkspace(); }} className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-3 backdrop-blur-[1px] sm:p-6">
-    <div role="dialog" aria-modal="true" aria-label={title || 'Note'} className="flex h-[min(94dvh,980px)] min-h-0 w-full max-w-[1760px] flex-col overflow-hidden rounded-xl bg-white p-3 shadow-2xl sm:p-5">
-      <header className="relative flex h-14 shrink-0 items-center px-1 sm:px-2">
+    <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) void leaveWorkspace(); }} className="fixed inset-0 z-50 flex items-center justify-center bg-white p-0 sm:bg-black/35 sm:p-6 sm:backdrop-blur-[1px]">
+    <div role="dialog" aria-modal="true" aria-label={title || 'Note'} className="flex h-[100dvh] min-h-0 w-full max-w-[1760px] flex-col overflow-hidden bg-white shadow-2xl sm:h-[min(94dvh,980px)] sm:rounded-xl sm:p-5">
+      <header className="relative flex min-h-14 shrink-0 items-center border-b border-[#ececef] px-2 sm:h-14 sm:border-0 sm:px-2">
         <div className="flex items-center gap-1 text-[#777] sm:gap-2">
-          {previousNote && <><button type="button" onClick={() => void returnToPrevious()} aria-label={`Back to ${noteLabel(previousNote)}`} title={`Back to ${noteLabel(previousNote)}`} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><ArrowLeft className="h-5 w-5" /></button><span className="mx-1 h-7 w-px bg-[#e5e5e5]" /></>}
-          <button type="button" onClick={onAddNote} aria-label="Add a note" title="Add a note" className="flex h-8 w-8 items-center justify-center rounded-md bg-[#477bea] text-white hover:bg-[#3d6ed7]"><Plus className="h-5 w-5" /></button>
-          <button type="button" onClick={() => setInstantRetrievalOpen(true)} aria-label="Open Instant Retrieval" title="Open Instant Retrieval" className="flex h-9 w-9 items-center justify-center rounded-md text-[#477bea] hover:bg-[#edf3ff]"><ScanSearch className="h-5 w-5" /></button>
-          <button type="button" onClick={() => setSearchRequest({ query: '' })} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><Search className="h-5 w-5" /></button>
+          {previousNote ? <><button type="button" onClick={() => void returnToPrevious()} aria-label={`Back to ${noteLabel(previousNote)}`} title={`Back to ${noteLabel(previousNote)}`} className="flex h-11 w-11 items-center justify-center rounded-md hover:bg-[#f4f4f4] sm:h-9 sm:w-9"><ArrowLeft className="h-5 w-5" /></button><span className="mx-1 hidden h-7 w-px bg-[#e5e5e5] sm:block" /></> : <button type="button" onClick={() => void leaveWorkspace()} aria-label="Back to dashboard" title="Back to dashboard" className="flex h-11 w-11 items-center justify-center rounded-md hover:bg-[#f4f4f4] xl:hidden"><ArrowLeft className="h-5 w-5" /></button>}
+          <button type="button" onClick={onAddNote} aria-label="Add a note" title="Add a note" className="flex h-10 w-10 items-center justify-center rounded-md bg-[#477bea] text-white hover:bg-[#3d6ed7] sm:h-8 sm:w-8"><Plus className="h-5 w-5" /></button>
+          <button type="button" onClick={() => setInstantRetrievalOpen(true)} aria-label="Open Instant Retrieval" title="Open Instant Retrieval" className="hidden h-9 w-9 items-center justify-center rounded-md text-[#477bea] hover:bg-[#edf3ff] sm:flex"><ScanSearch className="h-5 w-5" /></button>
+          <button type="button" onClick={() => setSearchRequest({ query: '' })} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f4f4f4] sm:h-9 sm:w-9"><Search className="h-5 w-5" /></button>
         </div>
         <div className="absolute left-1/2 hidden -translate-x-1/2 text-sm xl:block"><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} /></div>
         <div className="relative ml-auto flex items-center gap-1 text-[#777]">
-          {usedInNotes.length > 0 && <div className="relative mr-2">
+          {usedInNotes.length > 0 && <div className="relative mr-2 hidden sm:block">
             <button type="button" onClick={() => setUsedInMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={usedInMenuOpen} className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#666] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea]">Used in other notes</button>
             {usedInMenuOpen && <div role="menu" className="absolute right-0 top-10 z-40 w-72 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 shadow-xl">
               {usedInNotes.map((item) => <button key={item.id} role="menuitem" type="button" onClick={() => { setUsedInMenuOpen(false); void leaveWorkspace(item, false); }} className="block w-full truncate px-4 py-2.5 text-left text-sm text-[#333] hover:bg-[#edf3ff] hover:text-[#315fc5]">{noteLabel(item)}</button>)}
             </div>}
           </div>}
-          <button type="button" disabled={retrievalLoading} onClick={() => requestReretrieval()} aria-label="Reload related notes" title="Reload related notes" className="flex h-9 w-9 items-center justify-center rounded-md border border-[#dedede] bg-white shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] disabled:cursor-wait disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
-          <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote, false)} aria-label="Newer note" title="Newer note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
-          <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote, false)} aria-label="Older note" title="Older note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
-          <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><MoreHorizontal className="h-5 w-5" /></button>
+          <button type="button" disabled={retrievalLoading} onClick={() => requestReretrieval()} aria-label="Reload related notes" title="Reload related notes" className="flex h-10 w-10 items-center justify-center rounded-md border border-[#dedede] bg-white shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] disabled:cursor-wait disabled:opacity-50 sm:h-9 sm:w-9"><RefreshCw className={`h-4 w-4 ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
+          <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote, false)} aria-label="Newer note" title="Newer note" className="hidden h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25 sm:flex"><ChevronLeft className="h-4 w-4" /></button>
+          <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote, false)} aria-label="Older note" title="Older note" className="hidden h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25 sm:flex"><ChevronRight className="h-4 w-4" /></button>
+          <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f4f4f4] sm:h-9 sm:w-9"><MoreHorizontal className="h-5 w-5" /></button>
           {menuOpen && <div className="absolute right-0 top-11 z-30 w-40 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl"><button type="button" disabled={saving} onClick={() => { setMenuOpen(false); void onDelete(note); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /> Delete note</button></div>}
         </div>
       </header>
 
-      <div className={`grid min-h-0 flex-1 overflow-y-auto rounded-xl border border-[#d8d8d8] bg-[#f7f7f9] shadow-[0_2px_9px_rgba(0,0,0,0.13)] xl:overflow-hidden ${summaryOpen ? 'xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,.92fr)]' : 'grid-cols-1'}`}>
-        <section className="relative flex min-h-[520px] min-w-0 flex-col overflow-hidden bg-white xl:min-h-0">
-          <div className="absolute right-4 top-3 z-10 flex gap-2">
-            <button type="button" onClick={() => setSummaryOpen((open) => !open)} aria-label={summaryOpen ? 'Hide suggestions' : 'Show suggestions'} title={summaryOpen ? 'Hide suggestions' : 'Show suggestions'} aria-controls="note-suggestions-panel" aria-expanded={summaryOpen} className="flex h-8 w-8 items-center justify-center rounded-md border border-[#dedede] bg-white text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><PanelRightOpen className={`h-4 w-4 ${summaryOpen ? '' : 'rotate-180'}`} aria-hidden="true" /></button>
+      <div className={`grid min-h-0 flex-1 overflow-hidden bg-[#f7f7f9] sm:rounded-xl sm:border sm:border-[#d8d8d8] sm:shadow-[0_2px_9px_rgba(0,0,0,0.13)] ${summaryOpen ? 'xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,.92fr)]' : 'grid-cols-1'}`}>
+        <section className={`relative min-h-0 min-w-0 flex-col overflow-hidden bg-white xl:flex ${summaryOpen ? 'hidden' : 'flex'}`}>
+          <div className="absolute right-3 top-3 z-10 flex gap-2 sm:right-4">
+            {!editing && <button type="button" onClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="h-10 rounded-md border border-[#dedede] bg-white px-3 text-xs font-medium text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] xl:hidden">Edit</button>}
+            <button type="button" onClick={() => setSummaryOpen((open) => !open)} aria-label={summaryOpen ? 'Hide suggestions' : 'Show suggestions'} title={summaryOpen ? 'Hide suggestions' : 'Show suggestions'} aria-controls="note-suggestions-panel" aria-expanded={summaryOpen} className="flex h-10 w-10 items-center justify-center rounded-md border border-[#dedede] bg-white text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] sm:h-8 sm:w-8"><PanelRightOpen className={`h-4 w-4 ${summaryOpen ? '' : 'rotate-180'}`} aria-hidden="true" /></button>
             {!summaryOpen && <button type="button" onClick={() => setSummaryOpen(true)} aria-controls="note-suggestions-panel" className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">Show suggestions</button>}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-24 pt-12 sm:px-12 xl:px-[8%]">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-24 pt-14 sm:px-12 sm:pt-12 xl:px-[8%]">
             {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" placeholder="Title (optional)" className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6]" /><textarea ref={bodyRef} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="relative mx-auto max-w-3xl" onDoubleClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} title="Double-click to edit">{title.trim() && <h1 className="break-words px-2 py-1 text-2xl font-semibold">{title}</h1>}<div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]" onDoubleClick={(event) => event.stopPropagation()}><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div>
               <div className="mt-9 flex w-full gap-4 rounded-md px-2 py-2 text-left text-base leading-[1.7]">
                 {noteSections.length > 1 && <nav aria-label="Note sections" onClick={(event) => event.stopPropagation()} className="sticky top-2 flex h-fit w-5 shrink-0 flex-col gap-2 py-1">
@@ -1845,7 +1915,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
           <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
         </section>
 
-        {summaryOpen && <aside id="note-suggestions-panel" className="relative flex min-h-[420px] flex-col overflow-hidden border-t border-[#dedede] bg-[#f7f7f9] xl:min-h-0 xl:border-l xl:border-t-0">
+        {summaryOpen && <aside id="note-suggestions-panel" className="relative flex min-h-0 flex-col overflow-hidden bg-[#f7f7f9] xl:border-l xl:border-[#dedede]">
           {panelNote ? <RelatedNotePanel
             note={panelNote}
             relevance={panelRelevance ?? relevanceByNoteId.get(panelNote.id)}
@@ -1853,8 +1923,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
             onClose={() => { setPanelNoteId(null); setPanelRelevance(null); setPanelFocus(''); }}
             onOpenFull={() => void leaveWorkspace(panelNote, false)}
           /> : <>
-          <header className="sticky top-0 z-10 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-[#e2e2e2] bg-[#f7f7f9]/95 px-4 py-2 backdrop-blur">
-            <div>{aiMode === 'basic' && <Link href="/profile" title="Searching with the cheaper Basic model. Change it in your profile." className="rounded-md border border-[#f0d9a8] bg-[#fff8e8] px-2.5 py-1.5 text-xs text-[#8a6100] hover:border-[#e3b341]">Basic AI</Link>}</div>
+          <header className="sticky top-0 z-10 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-[#e2e2e2] bg-[#f7f7f9]/95 px-3 py-2 backdrop-blur sm:px-4">
+            <div className="flex items-center gap-2"><button type="button" onClick={() => setSummaryOpen(false)} className="flex h-10 items-center gap-1 rounded-md px-2 text-sm font-medium text-[#555] hover:bg-white xl:hidden"><ArrowLeft className="h-4 w-4" /> Note</button>{aiMode === 'basic' && <Link href="/profile" title="Searching with the cheaper Basic model. Change it in your profile." className="rounded-md border border-[#f0d9a8] bg-[#fff8e8] px-2.5 py-1.5 text-xs text-[#8a6100] hover:border-[#e3b341]">Basic AI</Link>}</div>
             <div className="flex items-center gap-2">
               <button type="button" onClick={() => setSummaryOpen(false)} aria-label="Hide suggestions panel" title="Hide suggestions panel" className="flex h-8 w-8 items-center justify-center rounded-md border border-[#dedede] bg-white text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea]"><PanelRightOpen className="h-4 w-4" /></button>
             </div>
