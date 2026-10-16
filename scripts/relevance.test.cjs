@@ -155,6 +155,31 @@ test('unparseable output yields nothing rather than throwing', () => {
   assert.deepStrictEqual(parseAgentResponse('{"note_id":"keep-1"}', allowed), []);
 });
 
+const result = (over = {}) => ({ note_id: 'keep-1', relevance_score: 0.8, relation_type: 'supports', explanation: 'because', ...over });
+
+test('reads the {"results": [...]} object agents are asked for', () => {
+  const out = parseAgentResponse(JSON.stringify({ results: [result(), result({ note_id: 'keep-2' })] }), allowed);
+  assert.deepStrictEqual(out.map((r) => r.note_id), ['keep-1', 'keep-2']);
+});
+
+test('a lone result sent as a bare object is still read, not lost', () => {
+  assert.strictEqual(parseAgentResponse(JSON.stringify(result()), allowed).length, 1);
+});
+
+test('a list under some other key is still read', () => {
+  assert.strictEqual(parseAgentResponse(JSON.stringify({ matches: [result()] }), allowed).length, 1);
+});
+
+test('an empty results object means nothing matched', () => {
+  assert.deepStrictEqual(parseAgentResponse('{"results": []}', allowed), []);
+});
+
+test('the agent prompt asks for an object, which JSON-object mode allows on every provider', () => {
+  const prompt = buildPrompt('d', [note('a')]);
+  assert.ok(prompt.includes('{"results": [{"note_id"'));
+  assert.ok(prompt.includes('respond with ONLY the JSON object'));
+});
+
 test('keeps only the first of a repeated id', () => {
   const dupes = JSON.stringify([
     { note_id: 'keep-1', relevance_score: 0.9, relation_type: 'supports', explanation: 'first' },
@@ -645,6 +670,12 @@ test('an inbound solution ignores any problem field', () => {
 
 test('an outbound extension is dropped: there is nothing of theirs to merge into this note', () => {
   assert.strictEqual(first(insightJson({ kind: 'extension', answer: quote('nobody took $15') }), outboundOpts), undefined);
+});
+
+test('the insight prompt keeps dates out of the card sentence, which the card already shows correctly', () => {
+  const prompt = buildInsightPrompt({ draft: 'd', context: { domain: null, goal: 'g' }, recentNotes: [], matches: [{ note: note('a'), result: hit('a', 0.9) }] });
+  assert.ok(prompt.includes('never write a date or a day'));
+  assert.ok(!/On Sep \d/.test(prompt), 'no example sentence models a date');
 });
 
 test('the insight prompt allows an outbound solution, with the draft as its answer', () => {

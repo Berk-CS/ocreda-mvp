@@ -81,7 +81,7 @@ function errorMessage(error: unknown): string {
 }
 
 const AGENT_SYSTEM_PROMPT =
-  "You identify meaningful relationships between a person's notes. You respond with a JSON array and nothing else.";
+  "You identify meaningful relationships between a person's notes. You respond with a JSON object and nothing else.";
 
 /**
  * One line per search in the Supabase function logs, so cost can be measured

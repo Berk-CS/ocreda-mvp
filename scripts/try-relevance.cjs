@@ -36,7 +36,7 @@ const INSIGHT_SYSTEM_PROMPT =
 const SECTION_SYSTEM_PROMPT =
   "You divide a person's note into the separate ideas it contains. You respond with a JSON object and nothing else.";
 const AGENT_SYSTEM_PROMPT =
-  "You identify meaningful relationships between a person's notes. You respond with a JSON array and nothing else.";
+  "You identify meaningful relationships between a person's notes. You respond with a JSON object and nothing else.";
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_CORPUS = path.join(ROOT, 'notes/all-notes.json');

@@ -326,7 +326,7 @@ export function buildPrompt(draft: string, notes: NoteLike[], goal: string | nul
 
 A draft is not always an argument. It may be a claim, a decision, a plan, a memory, a worry, or a half-formed reflection. Judge relevance against whatever the draft is actually doing, not against whether it makes a provable point.
 
-SCORING - judge each note against the draft in absolute terms. Do NOT score a note relative to the other candidates you were given. If every candidate here is irrelevant, return an empty array; that is a normal and correct outcome.
+SCORING - judge each note against the draft in absolute terms. Do NOT score a note relative to the other candidates you were given. If every candidate here is irrelevant, return no results; that is a normal and correct outcome.
 
 Score the strength of the connection, NOT how similar the subject matter is. A note about something else entirely can score high if the link it reveals is strong and specific.
 
@@ -363,7 +363,7 @@ Do the thinking for them: spell the connection out rather than gesturing at it. 
 MATCHED TEXT - copy, word for word, the shortest sentence or passage from the candidate note that you actually used to make this match. Do not paraphrase, fix typos, or add quotation marks. Keep it under 45 words.
 
 CRITICAL RULES:
-- Many candidate notes will be irrelevant. Returning [] is correct when nothing connects. Do not pad your response.
+- Many candidate notes will be irrelevant. Returning {"results": []} is correct when nothing connects. Do not pad your response.
 - Never include a note merely because it shares words, names, or a broad category with the draft. The connection must be about substance.
 - Leave out echoes. A note that says what the draft already says, without adding a fact, example, outcome, consequence, or counterpoint the draft lacks, tells the person nothing new however close the topic is. A note is not an echo if it shows the same thing actually happening, or happening before.
 - Only call a note "contradicts" when the two really cannot both be true, or the note records a position the draft reverses. A difference in emphasis is not a contradiction.
@@ -376,8 +376,8 @@ Worked examples:
 - Draft: "I'm always running late, however early I start." Candidate note: "I'm the last one in my friend group to get married. Good things seem to reach me last." Score 0.84, relation_type "parallel", gist: "You're the last of your friends to get married, and feel like good things tend to reach you last.", explanation: "It's not about punctuality at all, but it's the same shape as your draft - being behind turns up in two different corners of your life, one you cause and one you don't, which is worth sitting with."
 - Draft: the pricing one again. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted entirely: it shares the word "pricing" but has nothing to do with the draft's argument.
 
-OUTPUT - a JSON array and nothing else, in this shape:
-[{"note_id": "<exact id>", "idea": "<idea number, or whole>", "relevance_score": <number>, "relation_type": "<solves|helps|supports|extends|contradicts|question|parallel>", "direction": "<inbound|outbound>", "gist": "<one sentence>", "explanation": "<one or two short sentences>", "matched_text": "<exact quote from candidate note>"}]
+OUTPUT - a JSON object and nothing else, with one entry in "results" per relevant note, in this shape:
+{"results": [{"note_id": "<exact id>", "idea": "<idea number, or whole>", "relevance_score": <number>, "relation_type": "<solves|helps|supports|extends|contradicts|question|parallel>", "direction": "<inbound|outbound>", "gist": "<one sentence>", "explanation": "<one or two short sentences>", "matched_text": "<exact quote from candidate note>"}]}
 
 ========================================
 
@@ -390,7 +390,7 @@ Here are the candidate notes:
 
 ${candidates}
 
-Now respond with ONLY the JSON array described above, no prose before or after it.`;
+Now respond with ONLY the JSON object described above, no prose before or after it.`;
 }
 
 /**
@@ -402,6 +402,34 @@ export function extractJsonArray(raw: string): string | null {
   const candidate = fenced ? fenced[1] : raw;
   const bare = candidate.match(/\[[\s\S]*\]/);
   return bare ? bare[0] : null;
+}
+
+/**
+ * An agent's list of results, however the model shaped it. Agents are asked
+ * for {"results": [...]}, because providers that honour JSON-object mode
+ * strictly cannot return a bare array: one sent its single strongest match as
+ * a lone object instead, and the rest were lost. A bare array, a lone result,
+ * or a list under another key are all still read.
+ */
+function readAgentResults(raw: string): unknown[] {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const text = (fenced ? fenced[1] : raw).trim();
+  const parse = (value: string | null | undefined): unknown => {
+    if (!value) return undefined;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  };
+  const parsed = parse(text) ?? parse(text.match(/\{[\s\S]*\}/)?.[0]) ?? parse(extractJsonArray(text));
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== "object") return [];
+  const row = parsed as Record<string, unknown>;
+  if (Array.isArray(row.results)) return row.results;
+  if (typeof row.note_id === "string") return [row];
+  const list = Object.values(row).find((value) => Array.isArray(value));
+  return Array.isArray(list) ? list : [];
 }
 
 /**
@@ -417,16 +445,7 @@ export function parseAgentResponse(raw: string, allowedIds: Set<string>, section
     const id = typeof value === "number" || typeof value === "string" ? String(value).trim() : "";
     return sectionIds.includes(id) ? id : WHOLE_DRAFT;
   };
-  const jsonText = extractJsonArray(raw);
-  if (!jsonText) return [];
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
+  const parsed = readAgentResults(raw);
 
   const seen = new Set<string>();
   const results: RelevanceResult[] = [];
@@ -953,13 +972,13 @@ KIND - pick exactly one, by what the past notes actually offer:
 "contradiction" - the note being written goes against a decision or belief they wrote down before. Point out the change; do not judge it.
 "pattern" - the same thing has happened or shown up before, and the note being written is another instance of it.
 ANCHOR - copy, word for word, the key part of the sentence in the note being written that needs this card, at most 25 words${byIdea ? ", taken from inside the idea it is about" : ""}: the words that ask the question, state the problem, or make the claim. Copy it exactly: do not paraphrase, fix typos, or add quotation marks. Two insights never share or overlap an anchor.
-TEXT - one short sentence, written by you, with their past words placed inside it as {1}, {2}, ... in the order of QUOTES. Write only the connecting words; the quotes carry the content. Say when or where it was if that helps them place it. Never put your own paraphrase in quotation marks, and never restate the note being written. Examples: "Your weekend test got {1}, with {2}." / "On Sep 28 the same manager told you they {1}. That's a turnover problem too, and you had {2}."
+TEXT - one short sentence, written by you, with their past words placed inside it as {1}, {2}, ... in the order of QUOTES. Write only the connecting words; the quotes carry the content. Say where or with whom it was if that helps them place it, but never write a date or a day: the card already shows when each note was written. Never put your own paraphrase in quotation marks, and never restate the note being written. Examples: "Your weekend test got {1}, with {2}." / "The same manager told you they {1}. That's a turnover problem too, and you had {2}."
 QUOTES - one entry per placeholder, in order: the ID of the past note and the exact words copied from its Text, 3 to 15 words: only the phrase that carries the point, not the sentence around it. Copy them character for character; never shorten them in the middle, fix them, or reword them. Never quote a Title, and never quote a whole note: the card names the note for them, so a quote only needs the part that matters.
 ANSWER - for "solution" and "extension" only: the exact words from a past note's Text that answer the question or add the detail, copied word for word, with the ID of that note. Take only what answers it, usually one sentence and at most 40 words, never the Title and never the whole note. For a solution this is the answer itself and nothing else.
 IDEA - for "helps" only: a short phrase, in plain words, that completes "Might help to ...", starting with a lowercase verb, such as "say the price and just wait".
 PATTERN - for "pattern" only: one or two short sentences naming what repeats, such as "Both times, price was what they said. Trust was what they asked about."
 NOTE_IDS - the IDs of the past notes this insight rests on, only from the list given.
-OUTBOUND - when the notes an insight rests on are outbound, the note being written is the lesson and the past note is where it applies. TEXT places that earlier situation with its own words ("On Sep 12 you were stuck on {1}.").
+OUTBOUND - when the notes an insight rests on are outbound, the note being written is the lesson and the past note is where it applies. TEXT places that earlier situation with its own words ("You were stuck on {1}.").
 - When the note being written answers a problem or open question in that past note, give "solution", and as clearly as any other solution: PROBLEM is the exact words from the past note's Text that state the problem, with its ID, and ANSWER is the exact words from the note being written that answer it, with "note_id": "this". ANCHOR is the key part of that answer.
 - Otherwise use "helps" or "pattern", never "extension": IDEA says how this lesson applies to that earlier situation.
 ${askForGoal ? `

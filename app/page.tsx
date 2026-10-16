@@ -65,12 +65,25 @@ function splitNote(note: Note): { title: string; body: string; hasTitle: boolean
   return { title: heading, body, hasTitle: Boolean(heading) };
 }
 
-/** A one-line label for a note in lists and menus, where something must show. */
+const MAX_LABEL_CHARS = 60;
+
+/** Cuts text to a label's length at a word break, so a long first line reads as a name. */
+function shortLabel(text: string): string {
+  if (text.length <= MAX_LABEL_CHARS) return text;
+  const cut = text.slice(0, MAX_LABEL_CHARS + 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > MAX_LABEL_CHARS / 2 ? cut.slice(0, lastSpace) : cut.slice(0, MAX_LABEL_CHARS)).replace(/[\s,.;:!?-]+$/, '')}…`;
+}
+
+/**
+ * A one-line label for a note in lists, menus, and cards, where something must
+ * show. A note's first line is its title, but a note with no real title has a
+ * whole sentence there, so every label is kept short.
+ */
 function noteLabel(note: Note): string {
   const { title, hasTitle } = splitNote(note);
-  if (hasTitle) return title;
-  const preview = notePreview(note);
-  return preview.length > 60 ? `${preview.slice(0, 60).trimEnd()}...` : preview || 'Untitled note';
+  if (hasTitle) return shortLabel(title);
+  return shortLabel(notePreview(note)) || 'Untitled note';
 }
 
 function notePreview(note: Note): string {
@@ -1577,6 +1590,24 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const allVisibleInsightEntries = cardLayout.shown;
   const visibleInsightEntries = allVisibleInsightEntries.filter((entry) => entry.section?.id === selectedSectionId);
 
+  /**
+   * Notes the search matched that no card cites. The insight step writes a
+   * card only when a note would change what the person does next, so without
+   * this list a search that found related notes could look empty. Matches for
+   * one part show with that part; matches for the note as a whole, or for a
+   * part that no longer lines up with the text, always show.
+   */
+  const relatedNotes = useMemo(() => {
+    const cited = new Set(cardLayout.shown.flatMap((view) => view.item.note_ids));
+    const sectionIds = new Set(noteSections.map((section) => section.id));
+    const uncited = (retrieval?.results ?? []).filter((result) => result.note_id !== note.id && !cited.has(result.note_id) && noteById.has(result.note_id));
+    return {
+      forSection: (sectionId: string | null) => uncited.filter((result) => result.section_id && result.section_id === sectionId),
+      forWholeNote: uncited.filter((result) => !result.section_id || !sectionIds.has(result.section_id)),
+    };
+  }, [cardLayout.shown, note.id, noteById, noteSections, retrieval]);
+  const relatedHere = relatedNotes.forSection(selectedSectionId);
+
   const selectSection = (sectionId: string) => {
     setSelectedSectionId(sectionId);
     const first = allVisibleInsightEntries.find((entry) => entry.section?.id === sectionId);
@@ -1842,12 +1873,14 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
                         <SuggestionCard insight={item} kind={view.kind} decision={view.decision} notesById={noteById} trigger={triggerFor(view.span)} outbound={isOutbound(item)} onChoose={(choice, text) => decide(view, choice, text)} onOpenSource={showCitedNote} />
                       </div>
                     </Fragment>; })}
-                    {!visibleInsightEntries.length && insights.length > 0 && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">This section has no actionable connection. Select another section using its gray line.</div>}
+                    {!visibleInsightEntries.length && allVisibleInsightEntries.length > 0 && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">No suggestions for this part of your note. Click a highlight in your note, or a gray bar beside it, to see the others.</div>}
                     {!insights.length && retrieval?.summary && <section className="rounded-xl border border-[#eadb99] bg-[#fffdf4] p-5 shadow-sm"><span className="rounded-md bg-[#fff2b8] px-2 py-1 text-xs font-medium text-[#8a6a00]">Insight</span><p className="mt-4 text-sm leading-relaxed text-[#3d3828]">{retrieval.summary}</p></section>}
                     {!retrieval && !searchRequested && !noteTooShortForRetrieval && hasOtherNotes && <div className="rounded-xl border border-dashed border-[#d5d9e3] bg-white p-7 text-center"><h3 className="font-medium">See what your notes suggest</h3><p className="mt-2 text-sm leading-relaxed text-[#777]">Search your other notes for contradictions, solutions, help, extensions, and insights.</p><button type="button" onClick={() => { setSearchRequested(true); setRetrievalAttempt((attempt) => attempt + 1); }} className="mt-4 rounded-md bg-[#477bea] px-4 py-2 text-sm text-white hover:bg-[#3d6ed7]">Find related notes</button></div>}
                     {retrieval?.insight_failed && !insights.length && surfacedNotes.length > 0 && <div className="rounded-xl border border-[#f0d9a8] bg-[#fff8e8] p-5"><h3 className="text-sm font-medium text-[#6f5100]">Suggestions did not finish</h3><p className="mt-2 text-xs leading-relaxed text-[#806b35]">The related notes are still available below.</p></div>}
-                    {retrieval && !retrieval.insight_failed && !insights.length && !retrieval.summary && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">No suggestion changes your next step yet.</div>}
+                    {retrieval && !retrieval.insight_failed && !insights.length && !retrieval.summary && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">{relatedHere.length || relatedNotes.forWholeNote.length ? 'No suggestions to act on yet, but these notes relate to it.' : 'No suggestion changes your next step yet.'}</div>}
                     {!retrieval && (noteTooShortForRetrieval || !hasOtherNotes) && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">{noteTooShortForRetrieval ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters, then choose Find related notes.` : 'Once you have another note, Ocreda can look for connections.'}</div>}
+                    {relatedHere.length > 0 && <RelatedNotesList heading={noteSections.length > 1 ? 'Also related to this part' : 'Also related'} results={relatedHere} notesById={noteById} onOpen={showCitedNote} />}
+                    {relatedNotes.forWholeNote.length > 0 && <RelatedNotesList heading={noteSections.length > 1 ? 'Also related to the whole note' : 'Also related'} results={relatedNotes.forWholeNote} notesById={noteById} onOpen={showCitedNote} />}
                     {goalPrompt}
                   </div>
                 </section>
@@ -2328,21 +2361,20 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose
   const heading = `text-[11px] font-medium ${style.actionText}`;
 
   if (kind === 'solution' && insight.direction === 'outbound' && insight.problem) {
-    // This note is the answer; the problem is in the earlier note, so that is where Solved marks it.
+    // This note is the answer; the problem is in the earlier note, so that is
+    // where Solved marks it. The answer is already quoted at the top of the
+    // card, as the sentence of this note the card is about, so it is not repeated here.
     const problem = insight.problem;
     const openProblem = () => onOpenSource(problem.note_id, problem.text);
     if (choice === 'solved') return <div className={box}>
-      <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Marked solved in “{sourceTitle}”</p>
-      <p className="mt-1 text-[14px] leading-relaxed text-[#26467a]">“{answer?.text ?? insight.action}”</p>
+      <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Your earlier note now shows this as its answer</p>
       <div className="mt-2 flex gap-3">
-        <button type="button" onClick={(event) => { event.stopPropagation(); openProblem(); }} className="text-xs font-medium text-[#315fc5] hover:underline">See it there ↗</button>
+        <button type="button" onClick={(event) => { event.stopPropagation(); openProblem(); }} className="text-xs font-medium text-[#315fc5] hover:underline">See it ↗</button>
         <UndoButton onUndo={() => onChoose(null)} />
       </div>
     </div>;
     return <div className={box}>
-      <p className={heading}>Your answer</p>
-      <p className="mt-1 text-[15px] leading-relaxed text-[#26467a]">“{answer?.text ?? insight.action}”</p>
-      <p className="mt-1 text-[11px] text-[#5b7fc9]">Solved puts this beside the problem in “{sourceTitle}”.</p>
+      <p className="text-[13px] leading-relaxed text-[#315078]">Click “Solved” and your earlier note will show this as its answer.</p>
       <div className="mt-3 flex gap-2">
         <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('solved'); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">Solved</button>
         {/* As a Helps card it would only quote this note's own words back, so Dismiss removes it. */}
@@ -2452,6 +2484,47 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose
     <IconChoice kind={kind} accept={false} label="Not a pattern" onClick={() => onChoose('rejected')} />
     <IconChoice kind={kind} accept label="Yes, a pattern" onClick={() => onChoose('confirmed')} />
   </div>;
+}
+
+/**
+ * Notes the search matched without a card: each with its name, date, and the
+ * one-line summary of what it says. Opening one shows it beside the note at
+ * the passage the match rested on.
+ */
+function RelatedNotesList({ heading, results, notesById, onOpen }: {
+  heading: string;
+  results: RelevanceResult[];
+  notesById: Map<string, Note>;
+  onOpen: (noteId: string, focus?: string) => void;
+}) {
+  return <section aria-label={heading} className="pt-2">
+    <h3 className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[#999]">{heading}</h3>
+    <ul className="space-y-2">
+      {results.map((result) => {
+        const relatedNote = notesById.get(result.note_id);
+        if (!relatedNote) return null;
+        const badge = result.relation_type ? RELATION_BADGES[result.relation_type] : null;
+        const summary = result.gist.trim() || notePreview(relatedNote);
+        return <li key={result.note_id}>
+          <button
+            type="button"
+            // No card quoted this note, so the panel marks the passage the search matched instead.
+            onClick={() => onOpen(result.note_id)}
+            className="block w-full rounded-lg border border-[#e4e4e8] bg-white px-4 py-3 text-left shadow-sm transition hover:border-[#8fb1ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"
+          >
+            <span className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-[13px] font-medium text-[#222]">{noteLabel(relatedNote)}</span>
+              <span className="flex shrink-0 items-center gap-2 text-[11px] text-[#aaa]">
+                {badge && <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}>{badge.label}</span>}
+                {formatDate(relatedNote.created_at)}
+              </span>
+            </span>
+            <span className="mt-1 line-clamp-2 block text-[13px] leading-relaxed text-[#666]">{summary}</span>
+          </button>
+        </li>;
+      })}
+    </ul>
+  </section>;
 }
 
 const CARD_SUBTITLES: Record<SuggestionKind, string> = {
