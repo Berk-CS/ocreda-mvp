@@ -2,9 +2,10 @@
 /*
  * Runs the find-relevant-notes fan-out locally against a set of notes, using
  * the same chunking, prompt, parsing, and merging code the deployed Edge
- * Function uses. Needs only a Gemini API key — no Supabase, no auth, no deploy.
+ * Function uses. Needs only an OpenRouter key, read from .env.local like the
+ * app's — no Supabase, no auth, no deploy, and nothing to set in the terminal.
  *
- *   OPENROUTER_API_KEY=...  npm run try:relevance
+ *   npm run try:relevance
  *
  * With no arguments it runs the handpicked eval in notes/: the draft from
  * notes/test-notes/entry.txt against all 100 notes in notes/all-notes.json,
@@ -123,12 +124,34 @@ function wrap(text, width, indent) {
   return lines.map((l) => indent + l).join('\n');
 }
 
+/**
+ * The key written in .env.local, read from the file itself, so this needs no
+ * key set in the terminal. A key set there lingers for the terminal's whole
+ * life in PowerShell, and then hides .env.local from `npm run dev` too.
+ */
+function envLocalKey() {
+  try {
+    const text = fs.readFileSync(path.join(ROOT, '.env.local'), 'utf8');
+    const match = text.match(/^[ \t]*OPENROUTER_API_KEY[ \t]*=(.*)$/m);
+    const value = match ? match[1].trim().replace(/^(['"])(.*)\1$/, '$2') : '';
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+const maskKey = (key) => (key.length > 16 ? `${key.slice(0, 12)}...${key.slice(-4)}` : '(too short to be a real key)');
+
 async function main() {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const fileKey = envLocalKey();
+  const terminalKey = (process.env.OPENROUTER_API_KEY || '').trim() || null;
+  if (fileKey && terminalKey && fileKey !== terminalKey) {
+    console.warn(`\nThis terminal has its own OPENROUTER_API_KEY (${maskKey(terminalKey)}), different from .env.local (${maskKey(fileKey)}). Using .env.local.`);
+    console.warn('To clear the terminal\'s: Remove-Item Env:OPENROUTER_API_KEY');
+  }
+  const apiKey = fileKey || terminalKey;
   if (!apiKey) {
-    console.error('\nSet OPENROUTER_API_KEY first. Get a free one at https://openrouter.ai/keys\n');
-    console.error('  PowerShell:  $env:OPENROUTER_API_KEY = "your-key"; npm run try:relevance');
-    console.error('  bash:        OPENROUTER_API_KEY=your-key npm run try:relevance\n');
+    console.error('\nAdd OPENROUTER_API_KEY=your-key to .env.local first. Get one at https://openrouter.ai/keys\n');
     process.exit(1);
   }
 

@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import path from 'path';
 import { NextResponse } from 'next/server';
 import {
   findDraftSections,
@@ -45,6 +47,34 @@ function maskKey(key: string): string {
 }
 
 /**
+ * The key written in .env.local, read from the file itself. Next.js never lets
+ * .env.local override a variable the terminal already has, so a key set in the
+ * terminal for another project would otherwise win here silently and fail.
+ */
+function envLocalKey(): string | null {
+  try {
+    const text = readFileSync(path.join(process.cwd(), '.env.local'), 'utf8');
+    const value = text.match(/^[ \t]*OPENROUTER_API_KEY[ \t]*=(.*)$/m)?.[1].trim().replace(/^(['"])(.*)\1$/, '$2');
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+let warnedAboutTerminalKey = false;
+
+/** The .env.local key when there is one, and otherwise whatever the terminal has. */
+function openRouterKey(): string | null {
+  const fileKey = envLocalKey();
+  const terminalKey = process.env.OPENROUTER_API_KEY?.trim() || null;
+  if (fileKey && terminalKey && fileKey !== terminalKey && !warnedAboutTerminalKey) {
+    warnedAboutTerminalKey = true;
+    console.warn(`[local] This terminal has its own OPENROUTER_API_KEY (${maskKey(terminalKey)}), different from .env.local (${maskKey(fileKey)}). Using .env.local. To clear the terminal's: Remove-Item Env:OPENROUTER_API_KEY`);
+  }
+  return fileKey ?? terminalKey;
+}
+
+/**
  * Wraps a model call so a failure prints its real reason (a 401 for a dead
  * key, a 402 for no credits, a 429 for rate limiting) before the shared code
  * turns it into a generic "every agent failed".
@@ -71,7 +101,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiKey = openRouterKey();
   if (!apiKey) {
     return NextResponse.json(
       { error: 'Set OPENROUTER_API_KEY in .env.local, then restart the dev server.' },
@@ -107,8 +137,7 @@ export async function POST(request: Request) {
     });
   }
 
-  // Next.js prefers a variable already set in the shell over .env.local, so a
-  // stale key can hide here. Printing its ends shows which one is in use.
+  // Printing the key's ends shows which one is in use, should a search fail.
   console.log(`[local] find-relevant-notes: ${notes.length} notes, ${tier} mode (${model}), OpenRouter key ${maskKey(apiKey)}`);
 
   const draft = draftText;

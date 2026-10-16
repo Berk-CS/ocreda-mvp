@@ -18,6 +18,11 @@ OPENROUTER_API_KEY=your-key-here
 
 Then `npm run dev`. No Supabase URL or anon key is needed.
 
+The key in `.env.local` is used even when the terminal has its own
+`OPENROUTER_API_KEY` (say, one set for another project): Next.js alone would
+let the terminal's win, so local mode reads the file itself and prints a
+warning naming both keys. Never set the key in the terminal for this project.
+
 ## What it swaps out
 
 | Real path | Local path |

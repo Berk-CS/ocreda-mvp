@@ -27,6 +27,7 @@ const {
   selectInsightMatches,
   diversifyByRelation,
   recencyBoost,
+  splitNoteTitle,
 } = require('../.relevance-build/relevance.js');
 
 let passed = 0;
@@ -451,8 +452,16 @@ test('an anchor that is not in the text, or is too short, is rejected', () => {
 
 const DRAFT = 'Tester said she would pay $20/month for this if it synced with Notion. She got lost on the empty home screen.';
 const insightIds = new Set(['n1', 'n2']);
-const parseOpts = (askForGoal = false) => ({ draft: DRAFT, allowedNoteIds: insightIds, askForGoal });
-const card = (over = {}) => ({ anchor: 'she would pay $20/month', text: 'Two testers said $10.', action: 'Ask the next tester to pick $10 or $20.', note_ids: ['n1'], ...over });
+const PAST = new Map([
+  ['n1', 'Pricing test in March: two testers said $10 was the most they would pay. Nobody took $15.'],
+  ['n2', 'Sam got lost on the empty home screen too. A sample note would have helped.'],
+]);
+const parseOpts = (askForGoal = false) => ({ draft: DRAFT, allowedNoteIds: insightIds, askForGoal, noteTextById: PAST });
+const quote = (text, noteId = 'n1') => ({ note_id: noteId, text });
+const card = (over = {}) => ({
+  kind: 'helps', anchor: 'she would pay $20/month', text: 'In March {1}.', quotes: [quote('two testers said $10 was the most')],
+  idea: 'ask the next tester to pick $10 or $20', note_ids: ['n1'], ...over,
+});
 const insightJson = (over = {}) => JSON.stringify({ intent: 'capturing', insights: [card(over)] });
 const first = (raw, opts = parseOpts()) => parseInsightResponse(raw, opts).insights[0];
 
@@ -486,9 +495,9 @@ test('an older single "insight" reply is still read', () => {
 test('up to three insights are kept, each on its own passage', () => {
   const raw = JSON.stringify({ intent: 'capturing', insights: [
     card(),
-    card({ anchor: 'got lost on the empty home screen', text: 'Sam got lost there too.', action: 'Add a sample note.' }),
-    card({ anchor: 'synced with Notion', text: 'Three testers asked for Notion.', action: 'Scope a Notion import.' }),
-    card({ anchor: 'Tester said', text: 'A fourth point.', action: 'Do a fourth thing.' }),
+    card({ anchor: 'got lost on the empty home screen', text: 'Sam {1}.', quotes: [quote('got lost on the empty home screen too', 'n2')] }),
+    card({ anchor: 'synced with Notion', text: 'Then: {1}.', quotes: [quote('Nobody took $15.')] }),
+    card({ anchor: 'Tester said', text: 'Also {1}.', quotes: [quote('A sample note would have helped', 'n2')] }),
   ] });
   const { insights } = parseInsightResponse(raw, parseOpts());
   assert.deepStrictEqual(insights.map((i) => i.anchor), ['she would pay $20/month', 'got lost on the empty home screen', 'synced with Notion']);
@@ -497,7 +506,7 @@ test('up to three insights are kept, each on its own passage', () => {
 test('an insight whose passage overlaps an earlier one is dropped as the same issue', () => {
   const raw = JSON.stringify({ intent: 'capturing', insights: [
     card(),
-    card({ anchor: 'would pay $20/month for this', text: 'Another take on price.', action: 'Something else.' }),
+    card({ anchor: 'would pay $20/month for this', text: 'Again {1}.' }),
   ] });
   assert.strictEqual(parseInsightResponse(raw, parseOpts()).insights.length, 1);
 });
@@ -507,13 +516,51 @@ test('a repeated insight is dropped', () => {
   assert.strictEqual(parseInsightResponse(raw, parseOpts()).insights.length, 1);
 });
 
-test('invented citations are dropped, and an insight with none left is dropped', () => {
+test('invented citations are dropped, and a quote from a note it was not given drops the card', () => {
   assert.deepStrictEqual(first(insightJson({ note_ids: ['n1', 'made-up'] })).note_ids, ['n1']);
-  assert.strictEqual(first(insightJson({ note_ids: ['made-up'] })), undefined);
+  assert.strictEqual(first(insightJson({ quotes: [quote('two testers said $10 was the most', 'made-up')] })), undefined);
 });
 
-test('an insight without an action is dropped rather than shown half-formed', () => {
-  assert.strictEqual(first(insightJson({ action: '  ' })), undefined);
+test('a helps card without its idea is dropped rather than shown half-formed', () => {
+  assert.strictEqual(first(insightJson({ idea: '  ' })), undefined);
+});
+
+test('quotes are taken from the note itself, so a slip in the model\'s copy never shows', () => {
+  const insight = first(insightJson({ quotes: [quote('Two testers said $10 was the  most')] }));
+  assert.deepStrictEqual(insight.quotes, [quote('two testers said $10 was the most')]);
+});
+
+test('a sentence that quotes words the note does not have is dropped, not shown as theirs', () => {
+  assert.strictEqual(first(insightJson({ quotes: [quote('three testers wanted a yearly plan')] })), undefined);
+  assert.strictEqual(first(insightJson({ text: 'In March {2}.' })), undefined, 'a placeholder with no quote behind it');
+  assert.strictEqual(first(insightJson({ text: 'In March they were cheap.' })), undefined, 'a card must carry their words');
+});
+
+test('placeholders are renumbered in use order, and the model\'s own quotation marks are dropped', () => {
+  const insight = first(insightJson({ text: 'Then ‘{2}’, after {1}.', quotes: [quote('two testers said $10 was the most'), quote('Nobody took $15.')] }));
+  assert.strictEqual(insight.text, 'Then {1}, after {2}.');
+  assert.deepStrictEqual(insight.quotes.map((q) => q.text), ['Nobody took $15.', 'two testers said $10 was the most']);
+});
+
+test('a solution carries its answer word for word from the note, or is dropped', () => {
+  const solved = first(insightJson({ kind: 'solution', idea: undefined, answer: quote('nobody took $15') }));
+  assert.strictEqual(solved.kind, 'solution');
+  assert.deepStrictEqual(solved.answer, quote('Nobody took $15'));
+  assert.strictEqual(solved.action, 'Nobody took $15');
+  assert.strictEqual(first(insightJson({ kind: 'solution', answer: quote('most people would pay $30') })), undefined);
+  assert.strictEqual(first(insightJson({ kind: 'extension' })), undefined, 'an extension needs the words it would merge');
+});
+
+test('a helps idea completes "Might help to ...", whatever way the model starts it', () => {
+  assert.strictEqual(first(insightJson({ idea: 'Might help to: Say the price and just wait' })).action, 'say the price and just wait');
+  assert.strictEqual(first(insightJson({ idea: 'AI demos first' })).action, 'AI demos first');
+});
+
+test('a contradiction needs no action, and a card with no kind takes its note\'s relation', () => {
+  assert.strictEqual(first(insightJson({ kind: 'contradiction', idea: undefined })).action, '');
+  const opts = { ...parseOpts(), relationOfNote: new Map([['n1', 'contradicts']]) };
+  assert.strictEqual(first(insightJson({ kind: undefined }), opts).kind, 'contradiction');
+  assert.strictEqual(first(insightJson({ kind: undefined })), undefined, 'no kind and nothing to infer it from');
 });
 
 test('a paraphrased anchor keeps the card but loses the highlight', () => {
@@ -525,6 +572,85 @@ test('a paraphrased anchor keeps the card but loses the highlight', () => {
 test('an unknown intent falls back to "reflecting"', () => {
   const raw = JSON.stringify({ ...JSON.parse(insightJson()), intent: 'daydreaming' });
   assert.strictEqual(first(raw).intent, 'reflecting');
+});
+
+test('a note\'s first line is its title, kept apart from the text; a one-line note is all text', () => {
+  assert.deepStrictEqual(splitNoteTitle('Counting test\n\nRan the test. 94% accuracy.'), { title: 'Counting test', text: 'Ran the test. 94% accuracy.' });
+  assert.deepStrictEqual(splitNoteTitle('  Just one line here  '), { title: '', text: 'Just one line here' });
+  assert.deepStrictEqual(splitNoteTitle('Title only\n\n   '), { title: '', text: 'Title only' });
+});
+
+const LONG_NOTE = 'Ran the camera counting test at the depot over the weekend. Accuracy: 94% accuracy across 400 cars, with the misses almost all at night. Rain did not seem to matter at all.';
+const quoteCard = (text) => JSON.stringify({ intent: 'capturing', insights: [card({ quotes: [quote(text)] })] });
+const longOpts = { ...parseOpts(), noteTextById: new Map([['n1', LONG_NOTE]]) };
+
+test('a quote that is nearly the whole note is dropped; only the part that matters may be quoted', () => {
+  assert.strictEqual(first(quoteCard(LONG_NOTE), longOpts), undefined);
+  assert.strictEqual(first(quoteCard('94% accuracy across 400 cars'), longOpts).quotes[0].text, '94% accuracy across 400 cars');
+  const short = { ...parseOpts(), noteTextById: new Map([['n1', 'No more free pilots.']]) };
+  assert.ok(first(quoteCard('No more free pilots.'), short), 'a one-sentence note can only be quoted whole');
+});
+
+test('a quote from a note\'s title is never accepted', async () => {
+  const notes = [{ ...note('n1'), raw_text: `Counting test results\n\n${LONG_NOTE}` }];
+  const reply = (quoted) => async () => JSON.stringify({ intent: 'capturing', insights: [{
+    kind: 'helps', anchor: 'pay', text: 'You found {1}.', quotes: [{ note_id: 'n1', text: quoted }], idea: 'use the number', note_ids: ['n1'],
+  }] });
+  const run = (quoted) => findInsight({ draft: 'Would they pay?', context: { domain: null, goal: null }, notes, results: [hit('n1', 0.9)], excludeNoteId: null, generate: reply(quoted) });
+  assert.strictEqual((await run('Counting test results')).insights.length, 0);
+  assert.strictEqual((await run('94% accuracy across 400 cars')).insights.length, 1);
+});
+
+test('the insight prompt shows each past note\'s title apart from the text it may quote', () => {
+  const prompt = buildInsightPrompt({
+    draft: 'd', context: { domain: null, goal: 'g' }, recentNotes: [],
+    matches: [{ note: { ...note('a'), raw_text: 'Counting test\n\nRan it: 94% accuracy.' }, result: hit('a', 0.9) }],
+  });
+  assert.ok(prompt.includes('Title: Counting test'));
+  assert.ok(prompt.includes('Text:\nRan it: 94% accuracy.'));
+  assert.ok(prompt.includes('Never quote a Title'));
+});
+
+const outboundOpts = { ...parseOpts(), directionOfNote: new Map([['n1', 'outbound']]) };
+const outboundSolution = (over = {}) => insightJson({
+  kind: 'solution', idea: undefined, anchor: 'she would pay $20/month',
+  text: 'In March {1}.', problem: quote('two testers said $10 was the most'),
+  answer: { note_id: 'this', text: 'she would pay $20/month for this' }, ...over,
+});
+
+test('a card on notes the draft helps is outbound; others are inbound', () => {
+  assert.strictEqual(first(insightJson(), outboundOpts).direction, 'outbound');
+  assert.strictEqual(first(insightJson()).direction, 'inbound');
+});
+
+test('an outbound solution keeps the earlier note\'s problem and the draft\'s own answer, both word for word', () => {
+  const insight = first(outboundSolution(), outboundOpts);
+  assert.strictEqual(insight.kind, 'solution');
+  assert.deepStrictEqual(insight.problem, quote('two testers said $10 was the most'));
+  assert.deepStrictEqual(insight.answer, { note_id: '', text: 'she would pay $20/month for this' }, 'the answer is the draft\'s words, marked with an empty note id');
+  assert.strictEqual(insight.action, 'she would pay $20/month for this');
+});
+
+test('an outbound solution without its problem, or with an answer the draft does not have, is dropped', () => {
+  assert.strictEqual(first(outboundSolution({ problem: undefined }), outboundOpts), undefined);
+  assert.strictEqual(first(outboundSolution({ problem: quote('words the old note never had at all') }), outboundOpts), undefined);
+  assert.strictEqual(first(outboundSolution({ answer: { note_id: 'this', text: 'she would gladly pay forty dollars' } }), outboundOpts), undefined);
+});
+
+test('an inbound solution ignores any problem field', () => {
+  const insight = first(insightJson({ kind: 'solution', idea: undefined, answer: quote('nobody took $15'), problem: quote('two testers said $10 was the most') }));
+  assert.strictEqual(insight.problem, null);
+  assert.strictEqual(insight.answer.note_id, 'n1');
+});
+
+test('an outbound extension is dropped: there is nothing of theirs to merge into this note', () => {
+  assert.strictEqual(first(insightJson({ kind: 'extension', answer: quote('nobody took $15') }), outboundOpts), undefined);
+});
+
+test('the insight prompt allows an outbound solution, with the draft as its answer', () => {
+  const prompt = buildInsightPrompt({ draft: 'd', context: { domain: null, goal: 'g' }, recentNotes: [], matches: [{ note: note('a'), result: hit('a', 0.9) }] });
+  assert.ok(prompt.includes('When the note being written answers a problem or open question in that past note, give "solution"'));
+  assert.ok(prompt.includes('"note_id": "this"'));
 });
 
 test('goal suggestions are kept only when asked for, deduplicated and capped at three', () => {
@@ -562,14 +688,15 @@ test('the insight prompt asks for goal suggestions only when the Domain has no g
   assert.ok(!buildInsightPrompt({ ...base, context: { domain: null, goal: null } }).includes('GOAL_SUGGESTIONS'));
 });
 
-test('the insight prompt makes actions edits to the current note, not outside homework', () => {
+test('the insight prompt asks for their own words, connected, and never for text to put in the note', () => {
   const prompt = buildInsightPrompt({
     draft: 'Pricing is unclear.', context: { domain: 'Product', goal: 'Choose pricing' }, recentNotes: [],
     matches: [{ note: note('a'), result: hit('a', 0.9, 'solves') }],
   });
-  assert.ok(prompt.includes('exact one or two sentences that should be added to the note'));
-  assert.ok(prompt.includes('This is note content, not an instruction sent outside the note'));
-  assert.ok(prompt.includes('never say "this week", "you should", or "try to"'));
+  assert.ok(prompt.includes('THEIR WORDS, NOT YOURS'));
+  assert.ok(prompt.includes('Whenever such an answer exists, give this card'));
+  assert.ok(prompt.includes('"quotes": [{"note_id"'));
+  assert.ok(!prompt.includes('added to the note'));
 });
 
 test('no strong matches means no insight call at all', async () => {
@@ -801,17 +928,17 @@ const TWO_SECTIONS = splitIntoParagraphs(TWO_IDEAS);
 
 test('an insight belongs to the idea its passage is in', () => {
   const raw = JSON.stringify({ intent: 'capturing', insights: [
-    card({ anchor: 'pushing the investor update back', text: 'You did this in May too.', action: 'Send it Friday.' }),
+    card({ anchor: 'pushing the investor update back', text: 'Like when {1}.', quotes: [quote('Sam got lost on the empty home screen', 'n2')] }),
     card(),
   ] });
-  const { insights } = parseInsightResponse(raw, { draft: TWO_IDEAS, allowedNoteIds: insightIds, askForGoal: false, sections: TWO_SECTIONS });
+  const { insights } = parseInsightResponse(raw, { draft: TWO_IDEAS, allowedNoteIds: insightIds, askForGoal: false, sections: TWO_SECTIONS, noteTextById: PAST });
   assert.deepStrictEqual(insights.map((i) => i.section_id), ['2', '1']);
 });
 
 test('an insight without a passage goes where its notes point', () => {
   const raw = JSON.stringify({ intent: 'capturing', insights: [card({ anchor: 'not in the draft at all', note_ids: ['n2'] })] });
   const out = parseInsightResponse(raw, {
-    draft: TWO_IDEAS, allowedNoteIds: insightIds, askForGoal: false, sections: TWO_SECTIONS, sectionOfNote: new Map([['n2', '2']]),
+    draft: TWO_IDEAS, allowedNoteIds: insightIds, askForGoal: false, sections: TWO_SECTIONS, sectionOfNote: new Map([['n2', '2']]), noteTextById: PAST,
   });
   assert.strictEqual(out.insights[0].section_id, '2');
 });

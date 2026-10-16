@@ -1,4 +1,4 @@
-import { InsightIntent, NoteInsight, RelevanceCoverage, RelevanceProgress, RelevanceResult, RelevanceSection, RelevantNotesResponse } from '@/lib/types';
+import { CardKind, InsightIntent, InsightQuote, NoteInsight, RelevanceCoverage, RelevanceProgress, RelevanceResult, RelevanceSection, RelevantNotesResponse } from '@/lib/types';
 
 const INTENTS: InsightIntent[] = ['stuck', 'planning', 'deciding', 'capturing', 'reflecting', 'learning'];
 
@@ -10,15 +10,39 @@ function readInsight(value: unknown, resultIds: Set<string>): NoteInsight | null
   const text = typeof row.text === 'string' ? row.text.trim() : '';
   const action = typeof row.action === 'string' ? row.action.trim() : '';
   const noteIds = Array.isArray(row.note_ids) ? row.note_ids.filter((id): id is string => typeof id === 'string' && resultIds.has(id)) : [];
-  if (!text || !action || !noteIds.length) return null;
+  const kind = KINDS.includes(row.kind as CardKind) ? (row.kind as CardKind) : undefined;
+  const quotes = Array.isArray(row.quotes) ? row.quotes.map((item) => readQuote(item, resultIds)) : [];
+  // An answer with an empty note id is the searched note's own words.
+  const answer = readQuote(row.answer, new Set([...resultIds, '']));
+  const problem = readQuote(row.problem, resultIds);
+  const direction = row.direction === 'outbound' ? 'outbound' : 'inbound';
+  // A contradiction's action is the choice the person makes, so it has no text.
+  if (!text || (!action && kind !== 'contradiction') || !noteIds.length) return null;
+  // A sentence whose quotes did not survive would show "{1}" to the person.
+  if (quotes.some((quote) => !quote) || [...text.matchAll(/\{(\d+)\}/g)].some((match) => !quotes[Number(match[1]) - 1])) return null;
   return {
     anchor: typeof row.anchor === 'string' ? row.anchor : '',
     intent: INTENTS.includes(row.intent as InsightIntent) ? (row.intent as InsightIntent) : 'reflecting',
+    ...(kind ? { kind } : {}),
     text,
+    quotes: quotes as InsightQuote[],
+    answer,
+    direction,
+    problem,
     action,
     note_ids: noteIds,
     ...(typeof row.section_id === 'string' ? { section_id: row.section_id } : {}),
   };
+}
+
+const KINDS: CardKind[] = ['solution', 'helps', 'extension', 'contradiction', 'pattern'];
+
+function readQuote(value: unknown, resultIds: Set<string>): InsightQuote | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  return typeof row.note_id === 'string' && resultIds.has(row.note_id) && typeof row.text === 'string' && row.text.trim()
+    ? { note_id: row.note_id, text: row.text }
+    : null;
 }
 
 /** Sections are only kept when every one is well formed, so offsets can be trusted. */
