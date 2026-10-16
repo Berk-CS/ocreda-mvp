@@ -508,11 +508,25 @@ export interface RunAgentsOptions {
   sections?: DraftSection[];
   agentCount: number;
   concurrency: number;
-  /** Injected so this module stays free of any particular model client. */
-  generate: (prompt: string) => Promise<string>;
+  /** Injected so this module stays free of any particular model client. The signal is the search's own. */
+  generate: (prompt: string, signal?: AbortSignal) => Promise<string>;
   /** Decides whether a thrown error is worth a second attempt. */
   isRetryable: (error: unknown) => boolean;
   onAgentSettled?: (index: number, outcome: AgentOutcome) => void;
+  /** Cancels the search: no agent starts or retries after it fires. */
+  signal?: AbortSignal;
+}
+
+/** Thrown once a cancelled search reaches its next step. */
+export class SearchCancelledError extends Error {
+  constructor() {
+    super("The search was cancelled.");
+    this.name = "SearchCancelledError";
+  }
+}
+
+function stopIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new SearchCancelledError();
 }
 
 /**
@@ -523,7 +537,7 @@ export interface RunAgentsOptions {
 export async function runRelevanceAgents(
   options: RunAgentsOptions
 ): Promise<{ chunks: NoteLike[][]; outcomes: AgentOutcome[] }> {
-  const { draft, notes, goal, sections = [], agentCount, concurrency, generate, isRetryable, onAgentSettled } = options;
+  const { draft, notes, goal, sections = [], agentCount, concurrency, generate, isRetryable, onAgentSettled, signal } = options;
   const chunks = dealIntoChunks(notes, agentCount);
   const sectionIds = sections.map((section) => section.id);
 
@@ -540,9 +554,10 @@ export async function runRelevanceAgents(
     for (let attempt = 0; ; attempt++) {
       let results: RelevanceResult[];
       try {
-        results = parseAgentResponse(await generate(prompt), allowedIds, sectionIds);
+        stopIfCancelled(signal);
+        results = parseAgentResponse(await generate(prompt, signal), allowedIds, sectionIds);
       } catch (error) {
-        if (attempt === 1 || !isRetryable(error)) {
+        if (attempt === 1 || signal?.aborted || !isRetryable(error)) {
           settle(null);
           throw error;
         }
@@ -1226,11 +1241,11 @@ export interface SearchOptions extends Omit<RunAgentsOptions, "sections"> {
   /** How many matches each section keeps. */
   maxPerSection: number;
   /** Splits the draft into its ideas before any notes are read. Without it the draft is one section. */
-  findSections?: (draft: string) => Promise<DraftSection[]>;
+  findSections?: (draft: string, signal?: AbortSignal) => Promise<DraftSection[]>;
   /** Optional synthesis of the final matches; failure must not hide the matches. */
-  summarize?: (results: RelevanceResult[]) => Promise<string>;
+  summarize?: (results: RelevanceResult[], signal?: AbortSignal) => Promise<string>;
   /** Optional insights from the final matches; like the summary, failure must not hide the matches. */
-  findInsight?: (results: RelevanceResult[], sections: DraftSection[]) => Promise<InsightOutcome>;
+  findInsight?: (results: RelevanceResult[], sections: DraftSection[], signal?: AbortSignal) => Promise<InsightOutcome>;
   /** Failures of the optional steps, which the search itself survives. */
   onError?: (error: unknown) => void;
 }
@@ -1251,18 +1266,25 @@ export interface SearchOutcome {
  * all of them in one call. The vault is read once however many ideas the draft
  * has. When every agent fails the follow-up steps are skipped, and the caller
  * sees notesSearched === 0.
+ *
+ * When `signal` fires, typically because the person left the note, the search
+ * stops before its next model call and throws SearchCancelledError: no agents
+ * after the split, no retries, and no insight call after the agents.
  */
 export async function searchRelevance(options: SearchOptions): Promise<SearchOutcome> {
   const { maxPerSection, findSections, summarize, findInsight, onError, ...agentOptions } = options;
-  const { draft, notes } = agentOptions;
+  const { draft, notes, signal } = agentOptions;
+  stopIfCancelled(signal);
   const sections = findSections
-    ? await findSections(draft).catch((error) => {
-      onError?.(error);
+    ? await findSections(draft, signal).catch((error) => {
+      if (!signal?.aborted) onError?.(error);
       return splitIntoParagraphs(draft);
     })
     : wholeDraftSection(draft);
 
+  stopIfCancelled(signal);
   const { outcomes } = await runRelevanceAgents({ ...agentOptions, sections });
+  stopIfCancelled(signal);
   const createdAtById = new Map(notes.map((note) => [note.id, note.created_at]));
   const { results, notesSearched } = mergeAgentResults(outcomes, createdAtById, maxPerSection);
   const base = { sections, results, notesSearched, notesTotal: notes.length };
@@ -1271,15 +1293,16 @@ export async function searchRelevance(options: SearchOptions): Promise<SearchOut
   // Both follow-ups read the same matches, so run them side by side.
   const [summary, insight] = await Promise.all([
     results.length && summarize
-      ? summarize(results).catch((error) => { onError?.(error); return ""; })
+      ? summarize(results, signal).catch((error) => { onError?.(error); return ""; })
       : Promise.resolve(""),
     findInsight
-      ? findInsight(results, sections).catch((error): InsightOutcome => {
+      ? findInsight(results, sections, signal).catch((error): InsightOutcome => {
         onError?.(error);
         return FAILED_INSIGHT;
       })
       : Promise.resolve(null),
   ]);
+  stopIfCancelled(signal);
   return { ...base, summary, insight };
 }
 
@@ -1314,21 +1337,40 @@ export interface StreamSearchOptions extends Omit<SearchOptions, "onAgentSettled
   allFailedMessage: string;
   /** Shown when the search throws outright; the error itself goes to onError. */
   failedMessage: string;
+  /** Told when the search stopped early because the reader went away, and how far it had got. */
+  onCancelled?: (stage: string) => void;
 }
 
 /**
  * Runs the same search as the buffered path, but reports each agent as it
  * finishes. Written against web-standard ReadableStream and TextEncoder so the
  * Deno Edge Function and the Node dev route can both return it as is.
+ *
+ * The search is cancelled when the reader goes away (the stream is cancelled)
+ * or when the caller's own `signal` fires, so a person who leaves the note
+ * stops paying for the rest of it.
  */
 export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStream<Uint8Array> {
-  const { allFailedMessage, failedMessage, ...searchOptions } = options;
+  const { allFailedMessage, failedMessage, onCancelled, signal: callerSignal, ...searchOptions } = options;
   const encoder = new TextEncoder();
+  const cancel = new AbortController();
+  if (callerSignal?.aborted) cancel.abort();
+  else callerSignal?.addEventListener("abort", () => cancel.abort(), { once: true });
 
   return new ReadableStream<Uint8Array>({
+    cancel() {
+      cancel.abort();
+    },
     async start(controller) {
-      const send = (event: RelevanceStreamEvent) =>
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      // Once the reader is gone there is no one left to tell.
+      const send = (event: RelevanceStreamEvent) => {
+        if (cancel.signal.aborted) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          cancel.abort();
+        }
+      };
 
       const notesTotal = searchOptions.notes.length;
       const agentsTotal = dealIntoChunks(searchOptions.notes, searchOptions.agentCount).length;
@@ -1340,6 +1382,7 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
       try {
         const outcome = await searchRelevance({
           ...searchOptions,
+          signal: cancel.signal,
           onAgentSettled: (_index, agent) => {
             agentsDone++;
             agent.results?.forEach((result) => matched.add(result.note_id));
@@ -1349,10 +1392,18 @@ export function streamRelevanceSearch(options: StreamSearchOptions): ReadableStr
         if (outcome.notesSearched === 0) send({ type: "error", error: allFailedMessage });
         else send({ type: "done", ...searchResponseFields(outcome) });
       } catch (error) {
-        searchOptions.onError?.(error);
-        send({ type: "error", error: failedMessage });
+        if (error instanceof SearchCancelledError || cancel.signal.aborted) {
+          onCancelled?.(agentsDone === 0 ? "before the agents finished" : `after ${agentsDone} of ${agentsTotal} agents`);
+        } else {
+          searchOptions.onError?.(error);
+          send({ type: "error", error: failedMessage });
+        }
       }
-      controller.close();
+      try {
+        controller.close();
+      } catch {
+        // Already closed by the reader cancelling it.
+      }
     },
   });
 }

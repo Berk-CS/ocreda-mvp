@@ -130,20 +130,28 @@ export async function generateWithGemini(
   messages: GeminiMessage[],
   apiKey: string,
   model: string = DEFAULT_MODEL,
-  generationConfig?: GeminiGenerationConfig
+  generationConfig?: GeminiGenerationConfig,
+  signal?: AbortSignal,
 ): Promise<string> {
-  return (await generateWithGeminiResult(systemPrompt, messages, apiKey, model, generationConfig)).text;
+  return (await generateWithGeminiResult(systemPrompt, messages, apiKey, model, generationConfig, signal)).text;
 }
 
+/**
+ * `signal` drops the request when the search it belongs to is cancelled. A
+ * call already running may still be billed, since OpenRouter only stops
+ * generating for streamed requests, but nothing after it is sent.
+ */
 export async function generateWithGeminiResult(
   systemPrompt: string,
   messages: GeminiMessage[],
   apiKey: string,
   model: string = DEFAULT_MODEL,
-  generationConfig?: GeminiGenerationConfig
+  generationConfig?: GeminiGenerationConfig,
+  signal?: AbortSignal,
 ): Promise<GeminiGeneration> {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,

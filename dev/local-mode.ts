@@ -119,7 +119,8 @@ export async function localFindRelevantNotes(
   draftText: string,
   excludeNoteId?: string | null,
   onProgress?: (progress: RelevanceProgress) => void,
-  domain?: DomainGoal | null
+  domain?: DomainGoal | null,
+  signal?: AbortSignal,
 ): Promise<RelevantNotesResponse> {
   const notes = localGetNotes()
     .filter((note) => note.id !== excludeNoteId)
@@ -133,6 +134,7 @@ export async function localFindRelevantNotes(
 
   const response = await fetch('/api/find-relevant-notes', {
     method: 'POST',
+    signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ draft_text: draftText, notes, domain: domain ?? null, model_tier: getAiMode(), stream: true }),
   });

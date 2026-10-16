@@ -699,7 +699,7 @@ export default function OcredaHome() {
           : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
-      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={user?.id ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? AUTOMATIC_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />}
+      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={user?.id ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteAutoSearch(false); setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? AUTOMATIC_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onDelete={removeReadingNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />}
       {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onFindRelevantNotes={() => void saveNote(true)} onImport={() => { setImportError(''); setImportOpen(true); }} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
       {museEditor && <MuseEditor state={museEditor} saving={saving} error={error} onChange={setMuseEditor} onClose={() => { setMuseEditor(null); setError(''); }} onSave={() => void saveMuse()} />}
       {projectEditor && <ProjectEditor state={projectEditor} error={error} onChange={setProjectEditor} onClose={() => { setProjectEditor(null); setError(''); }} onSave={saveProject} />}
@@ -1343,9 +1343,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   retrievalInputsRef.current = { note, allNotes, domainName, goalText, aiMode, rawText };
 
   useEffect(() => {
-    if (!searchRequested) return;
     let active = true;
-    setRetrievalError(''); setRetrievalProgress(null);
     const inputs = retrievalInputsRef.current;
     const requestNote = { ...inputs.note, raw_text: inputs.rawText || inputs.note.raw_text };
     const requestSignature = retrievalInputSignature(requestNote.raw_text, inputs.goalText, inputs.aiMode);
@@ -1358,11 +1356,15 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     const availableNoteIds = new Set(inputs.allNotes.filter((item) => item.id !== requestNote.id).map((item) => item.id));
     const savedHasVisibleNotes = Boolean(saved?.search.results.some((result) => availableNoteIds.has(result.note_id)));
     const savedMatchesMode = Boolean(saved && (retrievalMode === 'similar' || saved.mode === 'relevant'));
+    // A saved search costs nothing to show, so it shows even for a note opened
+    // only to read it. A new search runs only when one was asked for.
     if (saved && savedHasVisibleNotes && savedMatchesMode) {
       setRetrieval(saved.search);
       setRetrievalLoading(false);
       return;
     }
+    if (!searchRequested) return;
+    setRetrievalError(''); setRetrievalProgress(null);
     // Empty retrievals and caches whose notes no longer exist are not useful
     // completed searches. Retry instead of leaving the panel blank forever.
     setRetrieval(null);
@@ -1370,24 +1372,38 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     const requestHasOtherNotes = inputs.allNotes.some((item) => item.id !== requestNote.id);
     if (requestTooShort || !requestHasOtherNotes) { setRetrievalLoading(false); return; }
     setRetrievalLoading(true);
-    const onProgress = (progress: RelevanceProgress) => { if (active) setRetrievalProgress(progress); };
+    // Whether every agent has reported back, which decides what leaving does.
+    let agentsFinished = false;
+    const onProgress = (progress: RelevanceProgress) => {
+      agentsFinished = progress.agents_total > 0 && progress.agents_done >= progress.agents_total;
+      if (active) setRetrievalProgress(progress);
+    };
+    // Leaving the note (or searching again) before the agents finish hangs up,
+    // and the server stops before its next model call. After they finish, the
+    // costly part is paid for and only the insight call is left, so the search
+    // finishes in the background and is saved for the next time the note opens.
+    const cancel = new AbortController();
     // One search for the whole note. In relevant mode the server splits it
     // into its ideas and keeps up to three notes for each, reading every note
     // once however many ideas there are.
     const search = retrievalMode === 'relevant'
-      ? findRelevantNotes(searchedText, requestNote.id, onProgress, inputs.domainName ? { name: inputs.domainName, goal: inputs.goalText } : null)
+      ? findRelevantNotes(searchedText, requestNote.id, onProgress, inputs.domainName ? { name: inputs.domainName, goal: inputs.goalText } : null, cancel.signal)
       : findSimilarNotes(searchedText, requestNote.id, onProgress, inputs.allNotes);
     search
       .then((found) => {
-        if (!active) return;
         const response: RelevanceSearch = { ...found, sections: sectionsInBody(found.sections, searchedText, requestBody) };
-        setRetrieval(response);
-        // A failed insight step is not saved, so opening the note again retries it.
+        // Saved even when the person has already left, so the note shows it
+        // next time without searching again. A failed insight step is not
+        // saved, so opening the note again retries it.
         if (!response.insight_failed) persistSavedRetrieval(userId, requestNote, inputs.goalText, retrievalMode, response, requestSignature);
+        if (active) setRetrieval(response);
       })
       .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
       .finally(() => { if (active) setRetrievalLoading(false); });
-    return () => { active = false; };
+    return () => {
+      active = false;
+      if (!agentsFinished) cancel.abort();
+    };
   }, [note.id, retrievalAttempt, retrievalMode, searchRequested, userId]);
 
   const requestReretrieval = (mode: 'similar' | 'relevant' = retrievalMode) => {
@@ -1599,7 +1615,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     />
     : null;
 
-  const leaveWorkspace = async (next?: Note | null, autoSearch = true) => {
+  /** Saves any edit, then opens `next` (without a search unless asked) or closes the note. */
+  const leaveWorkspace = async (next?: Note | null, autoSearch = false) => {
     if (rawText && rawText !== note.raw_text.trim()) {
       setSaveState('saving');
       try { await latestSaveRef.current(note.id, rawText); setSaveState('saved'); }
@@ -1764,12 +1781,12 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
           {usedInNotes.length > 0 && <div className="relative mr-2">
             <button type="button" onClick={() => setUsedInMenuOpen((open) => !open)} aria-haspopup="menu" aria-expanded={usedInMenuOpen} className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#666] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea]">Used in other notes</button>
             {usedInMenuOpen && <div role="menu" className="absolute right-0 top-10 z-40 w-72 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 shadow-xl">
-              {usedInNotes.map((item) => <button key={item.id} role="menuitem" type="button" onClick={() => { setUsedInMenuOpen(false); void leaveWorkspace(item); }} className="block w-full truncate px-4 py-2.5 text-left text-sm text-[#333] hover:bg-[#edf3ff] hover:text-[#315fc5]">{noteLabel(item)}</button>)}
+              {usedInNotes.map((item) => <button key={item.id} role="menuitem" type="button" onClick={() => { setUsedInMenuOpen(false); void leaveWorkspace(item, false); }} className="block w-full truncate px-4 py-2.5 text-left text-sm text-[#333] hover:bg-[#edf3ff] hover:text-[#315fc5]">{noteLabel(item)}</button>)}
             </div>}
           </div>}
           <button type="button" disabled={retrievalLoading} onClick={() => requestReretrieval()} aria-label="Reload related notes" title="Reload related notes" className="flex h-9 w-9 items-center justify-center rounded-md border border-[#dedede] bg-white shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] disabled:cursor-wait disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
-          <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote)} aria-label="Newer note" title="Newer note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
-          <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote)} aria-label="Older note" title="Older note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
+          <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote, false)} aria-label="Newer note" title="Newer note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronLeft className="h-4 w-4" /></button>
+          <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote, false)} aria-label="Older note" title="Older note" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25"><ChevronRight className="h-4 w-4" /></button>
           <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4]"><MoreHorizontal className="h-5 w-5" /></button>
           {menuOpen && <div className="absolute right-0 top-11 z-30 w-40 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl"><button type="button" disabled={saving} onClick={() => { setMenuOpen(false); void onDelete(note); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-red-600 hover:bg-red-50"><Trash2 className="h-4 w-4" /> Delete note</button></div>}
         </div>
@@ -1803,7 +1820,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
             relevance={panelRelevance ?? relevanceByNoteId.get(panelNote.id)}
             focusText={panelFocus}
             onClose={() => { setPanelNoteId(null); setPanelRelevance(null); setPanelFocus(''); }}
-            onOpenFull={() => void leaveWorkspace(panelNote)}
+            onOpenFull={() => void leaveWorkspace(panelNote, false)}
           /> : <>
           <header className="sticky top-0 z-10 flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-[#e2e2e2] bg-[#f7f7f9]/95 px-4 py-2 backdrop-blur">
             <div>{aiMode === 'basic' && <Link href="/profile" title="Searching with the cheaper Basic model. Change it in your profile." className="rounded-md border border-[#f0d9a8] bg-[#fff8e8] px-2.5 py-1.5 text-xs text-[#8a6100] hover:border-[#e3b341]">Basic AI</Link>}</div>
@@ -2788,6 +2805,9 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
   // Repeat clicks on an unchanged draft are served from here rather than
   // costing another ten model calls.
   const relevanceCache = useRef(new Map<string, RelevanceSearch>());
+  // Closing the editor hangs up on a search still running, so its remaining model calls are never made.
+  const searchCancelRef = useRef<AbortController | null>(null);
+  useEffect(() => () => searchCancelRef.current?.abort(), []);
 
   // Matches how saveNote assembles raw_text, so the draft is scored as the
   // note it will actually become.
@@ -2824,15 +2844,18 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
     if (cached) { setRelevance(cached); setSearchedDraft(draftText); return; }
 
     setRelevanceProgress(null); setRelevanceLoading(true);
+    const cancel = new AbortController();
+    searchCancelRef.current = cancel;
     try {
-      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, domain);
+      const response = await findRelevantNotes(draftText, state.note?.id ?? null, setRelevanceProgress, domain, cancel.signal);
       relevanceCache.current.set(cacheKey, response);
       setRelevance(response); setSearchedDraft(draftText);
     } catch (err) {
+      if (cancel.signal.aborted) return;
       setRelevance(null);
       setRelevanceError(safeErrorMessage(err, 'Could not search your notes right now.'));
     } finally {
-      setRelevanceLoading(false);
+      if (!cancel.signal.aborted) setRelevanceLoading(false);
     }
   };
 

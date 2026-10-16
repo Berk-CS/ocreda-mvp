@@ -986,6 +986,70 @@ test('a throwing idea split still searches, by paragraph', async () => {
   assert.ok(outcome.results.length > 0);
 });
 
+test('a search cancelled during the idea split never starts its agents', async () => {
+  const cancel = new AbortController();
+  let agentCalls = 0;
+  await assert.rejects(searchRelevance({
+    ...streamOptions(),
+    signal: cancel.signal,
+    findSections: async (draft) => { cancel.abort(); return splitIntoParagraphs(draft); },
+    generate: async (prompt) => { agentCalls++; return matchEveryNote(prompt); },
+  }), { name: 'SearchCancelledError' });
+  assert.strictEqual(agentCalls, 0);
+});
+
+test('a search cancelled while its agents run makes no insight call and no retries', async () => {
+  const cancel = new AbortController();
+  let agentCalls = 0;
+  let insightCalls = 0;
+  await assert.rejects(searchRelevance({
+    ...streamOptions(),
+    signal: cancel.signal,
+    isRetryable: () => true,
+    generate: async () => { agentCalls++; cancel.abort(); throw new Error('dropped'); },
+    findInsight: async () => { insightCalls++; return { insights: [], goal_suggestions: [], intent: null, failed: false }; },
+  }), { name: 'SearchCancelledError' });
+  assert.strictEqual(agentCalls, 1, 'no retry, and no agent starts once the search is cancelled');
+  assert.strictEqual(insightCalls, 0);
+});
+
+test('the model calls are given the search\'s signal, so a running call can be dropped', async () => {
+  const cancel = new AbortController();
+  const seen = [];
+  await searchRelevance({ ...streamOptions(), signal: cancel.signal, generate: (prompt, signal) => { seen.push(signal); return matchEveryNote(prompt); } });
+  assert.ok(seen.length > 0 && seen.every((signal) => signal === cancel.signal));
+});
+
+test('cancelling the stream stops the search before its insight call, quietly', async () => {
+  let insightCalls = 0;
+  let cancelledAt = null;
+  let errors = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const stream = streamRelevanceSearch(streamOptions({
+    generate: async (prompt) => { await gate; return matchEveryNote(prompt); },
+    findInsight: async () => { insightCalls++; return { insights: [], goal_suggestions: [], intent: null, failed: false }; },
+    onCancelled: (stage) => { cancelledAt = stage; },
+    onError: () => { errors++; },
+  }));
+  const reader = stream.getReader();
+  await reader.read(); // the "start" event
+  await reader.cancel();
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.strictEqual(insightCalls, 0);
+  assert.ok(cancelledAt, 'the route is told the search stopped early');
+  assert.strictEqual(errors, 0, 'a cancelled search is not reported as a failure');
+});
+
+test('a signal that has already fired cancels the search before anything runs', async () => {
+  const cancel = new AbortController();
+  cancel.abort();
+  let calls = 0;
+  await assert.rejects(searchRelevance({ ...streamOptions(), signal: cancel.signal, generate: async () => { calls++; return '[]'; } }), { name: 'SearchCancelledError' });
+  assert.strictEqual(calls, 0);
+});
+
 test('the done event carries the sections', async () => {
   const events = await readEvents(streamRelevanceSearch(streamOptions({ draft: IDEAS_DRAFT, findSections: async (draft) => splitIntoParagraphs(draft) })));
   const done = events.at(-1);

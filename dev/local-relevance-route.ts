@@ -79,12 +79,13 @@ function openRouterKey(): string | null {
  * key, a 402 for no credits, a 429 for rate limiting) before the shared code
  * turns it into a generic "every agent failed".
  */
-function withFailureLog(label: string, call: (prompt: string) => Promise<string>) {
-  return async (prompt: string) => {
+function withFailureLog(label: string, call: (prompt: string, signal?: AbortSignal) => Promise<string>) {
+  return async (prompt: string, signal?: AbortSignal) => {
     try {
-      return await call(prompt);
+      return await call(prompt, signal);
     } catch (error) {
-      console.error(`[local] ${label} failed:`, error instanceof Error ? error.message : error);
+      // A call dropped because the person left the note is not a failure.
+      if (!signal?.aborted) console.error(`[local] ${label} failed:`, error instanceof Error ? error.message : error);
       throw error;
     }
   };
@@ -141,7 +142,7 @@ export async function POST(request: Request) {
   console.log(`[local] find-relevant-notes: ${notes.length} notes, ${tier} mode (${model}), OpenRouter key ${maskKey(apiKey)}`);
 
   const draft = draftText;
-  const insightFor = (results: RelevanceResult[], sections: DraftSection[]) =>
+  const insightFor = (results: RelevanceResult[], sections: DraftSection[], signal?: AbortSignal) =>
     findInsight({
       draft,
       context: goalContext,
@@ -149,23 +150,23 @@ export async function POST(request: Request) {
       results,
       sections,
       excludeNoteId,
-      generate: withFailureLog('insight call', (prompt) =>
-        generateWithGemini(INSIGHT_SYSTEM_PROMPT, [{ role: 'user', content: prompt }], apiKey, model, {
+      generate: (prompt) => withFailureLog('insight call', (text, callSignal) =>
+        generateWithGemini(INSIGHT_SYSTEM_PROMPT, [{ role: 'user', content: text }], apiKey, model, {
           responseMimeType: 'application/json',
           temperature: 0.2,
           maxOutputTokens: 8000,
-        })),
+        }, callSignal))(prompt, signal),
     });
-  const findSections = (text: string) =>
+  const findSections = (text: string, signal?: AbortSignal) =>
     findDraftSections({
       draft: text,
-      generate: withFailureLog('idea split', (prompt) =>
-        generateWithGemini(SECTION_SYSTEM_PROMPT, [{ role: 'user', content: prompt }], apiKey, model, {
+      generate: (prompt) => withFailureLog('idea split', (splitPrompt, callSignal) =>
+        generateWithGemini(SECTION_SYSTEM_PROMPT, [{ role: 'user', content: splitPrompt }], apiKey, model, {
           responseMimeType: 'application/json',
           temperature: 0.2,
           maxOutputTokens: 3000,
-        })),
-      onError: (error) => console.error('[local] idea split unusable, searching by paragraph:', error instanceof Error ? error.message : error),
+        }, callSignal))(prompt, signal),
+      onError: (error) => { if (!signal?.aborted) console.error('[local] idea split unusable, searching by paragraph:', error instanceof Error ? error.message : error); },
     });
   const searchOptions = {
     maxPerSection: MAX_RESULTS_PER_SECTION,
@@ -177,16 +178,18 @@ export async function POST(request: Request) {
     agentCount: DEFAULT_AGENT_COUNT,
     concurrency: DEFAULT_AGENT_CONCURRENCY,
     isRetryable: isRetryableGeminiError,
-    generate: withFailureLog('agent call', (prompt: string) =>
+    generate: withFailureLog('agent call', (prompt: string, signal?: AbortSignal) =>
       generateWithGemini(AGENT_SYSTEM_PROMPT, [{ role: 'user', content: prompt }], apiKey, model, {
         responseMimeType: 'application/json',
         temperature: 0.2,
-      })),
+      }, signal)),
   };
 
   if (body?.stream === true) {
     const stream = streamRelevanceSearch({
       ...searchOptions,
+      signal: request.signal,
+      onCancelled: (stage) => console.log(`[local] search cancelled ${stage}: the note was left, so no more calls were made`),
       allFailedMessage: 'Every agent failed — check your OPENROUTER_API_KEY and the terminal output.',
       failedMessage: 'Relevance search failed. Check the terminal output.',
       onError: (error) =>
@@ -200,6 +203,7 @@ export async function POST(request: Request) {
   try {
     const outcome = await searchRelevance({
       ...searchOptions,
+      signal: request.signal,
       onError: (error) => console.error('[local] follow-up failed:', error instanceof Error ? error.message : error),
     });
 
