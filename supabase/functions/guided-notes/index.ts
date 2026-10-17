@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, extractJson, generateWithGemini } from "../_shared/gemini.ts";
+import { BEST_MODEL, corsHeaders, extractJson, generateWithGeminiResult } from "../_shared/gemini.ts";
+import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
@@ -33,11 +34,16 @@ ${corpus.map((note) => `ID: ${note.id}\nTitle: ${note.title ?? "Untitled"}\nBody
 Return JSON only in this exact shape:
 {"notes":[{"existing_note_id":"...","title":"...","body":"..."}]}`;
 
-    const raw = await generateWithGemini(
+    const startedAt = Date.now();
+    const { text: raw, usage } = await generateWithGeminiResult(
       "You retrieve the most relevant existing notes from a supplied corpus and return only valid JSON.",
       [{ role: "user", content: prompt }],
-      Deno.env.get("OPENROUTER_API_KEY")!
+      Deno.env.get("OPENROUTER_API_KEY")!,
+      BEST_MODEL,
     );
+    if (usage) {
+      recordUsageInBackground({ userId: requestUserId(req), feature: "guided-notes", billedBy: "openrouter", model: BEST_MODEL, steps: { notes: usage }, status: "ok", startedAt });
+    }
     const json = extractJson(raw);
     if (!json) throw new Error("Model did not return valid JSON");
     const parsed = JSON.parse(json);

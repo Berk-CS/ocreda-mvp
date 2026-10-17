@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { corsHeaders, generateWithGemini, GeminiMessage } from "../_shared/gemini.ts";
+import { BEST_MODEL, corsHeaders, generateWithGeminiResult, GeminiMessage } from "../_shared/gemini.ts";
+import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
 
 interface ChatMessageRequest {
   question_id: string;
@@ -87,7 +88,11 @@ How to respond:
     geminiMessages.push({ role: "user", content: message });
 
     // 6. Call Gemini
-    const reply = await generateWithGemini(systemPrompt, geminiMessages, Deno.env.get("OPENROUTER_API_KEY")!);
+    const startedAt = Date.now();
+    const { text: reply, usage } = await generateWithGeminiResult(systemPrompt, geminiMessages, Deno.env.get("OPENROUTER_API_KEY")!, BEST_MODEL);
+    if (usage) {
+      recordUsageInBackground({ userId: requestUserId(req, user_id), feature: "chat-message", billedBy: "openrouter", model: BEST_MODEL, steps: { reply: usage }, status: "ok", startedAt });
+    }
     const relevantNoteIds = notesToUse.map((n) => n.id);
 
     // 7. Save user message and assistant reply

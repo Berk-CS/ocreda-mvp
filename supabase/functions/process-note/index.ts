@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { corsHeaders, generateWithGemini, extractJson } from "../_shared/gemini.ts";
+import { BEST_MODEL, corsHeaders, generateWithGeminiResult, extractJson } from "../_shared/gemini.ts";
+import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
 
 interface ProcessNoteRequest {
   note_id: string;
@@ -49,14 +50,19 @@ Deno.serve(async (req: Request) => {
         .map((n) => `ID:${n.id}\n${n.summary || n.raw_text}`)
         .join("\n\n---\n\n");
 
-      const relationsRaw = await generateWithGemini(
+      const startedAt = Date.now();
+      const { text: relationsRaw, usage } = await generateWithGeminiResult(
         "You analyze a personal knowledge base for meaningful relationships between notes. Return ONLY valid JSON.",
         [{
           role: "user",
           content: `NEW NOTE:\n${newNote.summary || newNote.raw_text}\n\nEXISTING NOTES:\n${notesListText}\n\nIdentify deeper, meaningful connections between the new note and existing notes. Do not connect notes merely because they share a topic or keywords. The reason must name the underlying shared meaning, tension, belief, motivation, or pattern. Return ONLY a JSON array of objects with "related_note_id" (exact UUID), "reason" (one specific sentence beginning with "They are connected because"), and "confidence" (0 to 1). Return at most 3, ordered from highest confidence to lowest. If none are meaningfully related, return [].`,
         }],
-        apiKey
+        apiKey,
+        BEST_MODEL,
       );
+      if (usage) {
+        recordUsageInBackground({ userId: requestUserId(req, user_id), feature: "process-note", billedBy: "openrouter", model: BEST_MODEL, steps: { relations: usage }, status: "ok", startedAt });
+      }
 
       const jsonText = extractJson(relationsRaw);
       if (jsonText) {

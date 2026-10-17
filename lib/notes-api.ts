@@ -59,6 +59,16 @@ async function getAuthenticatedOwnerId(): Promise<string> {
   return data.user.id;
 }
 
+/**
+ * The token a function call carries: the signed-in user's own, so the server
+ * can tell whose request it is and record its AI cost against them, or the
+ * public key when nobody is signed in.
+ */
+async function functionAuthToken(): Promise<string> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? SUPABASE_ANON_KEY;
+}
+
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -262,7 +272,7 @@ export async function getGuidedChatReaction(previousAnswer: string, nextQuestion
   const response = await fetch(`${SUPABASE_URL}/functions/v1/guided-chat`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ previous_answer: previousAnswer, next_question: nextQuestion }),
@@ -282,7 +292,7 @@ export async function extractGuidedNotes(answers: string[], corpus: Note[]): Pro
   const response = await fetch(`${SUPABASE_URL}/functions/v1/guided-notes`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -377,7 +387,7 @@ export async function processNote(noteId: string): Promise<{ relations_count: nu
   const response = await fetch(`${SUPABASE_URL}/functions/v1/process-note`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ note_id: noteId, user_id: await getAuthenticatedOwnerId() }),
@@ -626,7 +636,7 @@ export async function handleMessage(rawText: string): Promise<
   const response = await fetch(`${SUPABASE_URL}/functions/v1/handle-message`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ user_id: await getOwnerId(), raw_text: rawText, local_date: getLocalDateString() }),
@@ -718,7 +728,7 @@ export async function sendChatMessage(
   const response = await fetch(`${SUPABASE_URL}/functions/v1/chat-message`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({

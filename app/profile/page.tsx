@@ -9,6 +9,8 @@ import { supabase } from '@/lib/supabase';
 import { useTheme, ThemePreference } from '@/lib/theme-context';
 import { AiMode, setAiMode, useAiMode } from '@/lib/ai-mode';
 import { getNotes } from '@/lib/notes-api';
+import { isAdmin } from '@/lib/admin-usage';
+import Link from 'next/link';
 import {
   Camera,
   Check,
@@ -48,6 +50,13 @@ export default function ProfilePage() {
   const [nameDirty, setNameDirty] = useState(false);
   const [savingName, setSavingName] = useState(false);
   const [nameSaved, setNameSaved] = useState(false);
+
+  const [showAdminLink, setShowAdminLink] = useState(false);
+  useEffect(() => {
+    let active = true;
+    isAdmin().then((admin) => { if (active) setShowAdminLink(admin); });
+    return () => { active = false; };
+  }, [user]);
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [loadingStats, setLoadingStats] = useState(true);
@@ -273,6 +282,11 @@ export default function ProfilePage() {
                 : 'The full model, used by default. Gives the most careful related notes and insights.'}
             </p>
           </div>
+
+          {showAdminLink && <div className="bg-card border border-border rounded-2xl p-6 mb-4 shadow-sm">
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Admin</h2>
+            <Link href="/admin" className="text-sm font-medium text-[#487BE9] hover:underline">AI usage: spend, requests, and models per person →</Link>
+          </div>}
 
           <div className="bg-card border border-border rounded-2xl p-6 mb-4 shadow-sm">
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-4">Account Stats</h2>

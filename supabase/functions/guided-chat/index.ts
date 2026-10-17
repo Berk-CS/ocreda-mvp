@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { corsHeaders, generateWithGemini } from "../_shared/gemini.ts";
+import { BEST_MODEL, corsHeaders, generateWithGeminiResult } from "../_shared/gemini.ts";
+import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
@@ -18,11 +19,16 @@ Rules:
 - Use plain language with no enthusiasm markers.
 - Never say "based on your notes" or similar wording.`;
 
-    const message = await generateWithGemini(
+    const startedAt = Date.now();
+    const { text: message, usage } = await generateWithGeminiResult(
       systemPrompt,
       [{ role: "user", content: `Their answer: ${previous_answer}\n\nExact next question: ${next_question}` }],
-      Deno.env.get("OPENROUTER_API_KEY")!
+      Deno.env.get("OPENROUTER_API_KEY")!,
+      BEST_MODEL,
     );
+    if (usage) {
+      recordUsageInBackground({ userId: requestUserId(req), feature: "guided-chat", billedBy: "openrouter", model: BEST_MODEL, steps: { reply: usage }, status: "ok", startedAt });
+    }
 
     return new Response(JSON.stringify({ message: message.trim() }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

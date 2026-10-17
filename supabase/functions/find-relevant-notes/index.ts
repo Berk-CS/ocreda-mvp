@@ -8,9 +8,11 @@ import {
   isRetryableGeminiError,
   modelForTier,
   readModelTier,
+  sumTokenUsage,
   type ModelTier,
   type TokenUsage,
 } from "../_shared/gemini.ts";
+import { recordUsageInBackground, type UsageStatus } from "../_shared/usage.ts";
 import {
   findDraftSections,
   findInsight,
@@ -19,6 +21,7 @@ import {
   searchRelevance,
   searchResponseFields,
   streamRelevanceSearch,
+  SearchCancelledError,
   DEFAULT_AGENT_CONCURRENCY,
   DEFAULT_AGENT_COUNT,
   MAX_RESULTS_PER_SECTION,
@@ -249,15 +252,22 @@ Deno.serve(async (req: Request) => {
     }
 
     const startedAt = Date.now();
-    const usage = emptyTokenUsage();
+    // Kept per step so the admin page can show where a search's cost went.
+    const usage = { split: emptyTokenUsage(), agents: emptyTokenUsage(), insight: emptyTokenUsage(), summary: emptyTokenUsage() };
+    // Logged and recorded once, however the search ends, including when the
+    // person leaves the note: the calls made before that were still paid for.
+    const settle = (status: UsageStatus) => {
+      logUsage(sumTokenUsage(Object.values(usage)), notes.length, sectionsTotal, startedAt, goalContext, tier);
+      recordUsageInBackground({ userId, feature: "find-relevant-notes", billedBy: "openrouter", model, tier, steps: usage, status, startedAt });
+    };
     // The whole draft goes to every agent, however long: cutting its middle
     // would hide the ideas there from the search.
     const draft = draftText;
     const summarize = COMBINED_SUMMARY_ENABLED
-      ? (results: RelevanceResult[]) => summarizeMatches(results, apiKey, usage, model)
+      ? (results: RelevanceResult[]) => summarizeMatches(results, apiKey, usage.summary, model)
       : undefined;
     const insightFor = (results: RelevanceResult[], sections: DraftSection[], signal?: AbortSignal) =>
-      findMatchInsight(draft, goalContext, notes, results, sections, excludeNoteId, apiKey, usage, model, signal);
+      findMatchInsight(draft, goalContext, notes, results, sections, excludeNoteId, apiKey, usage.insight, model, signal);
     let sectionsTotal = 0;
     const findSections = async (text: string, signal?: AbortSignal) => {
       const sections = await findDraftSections({
@@ -271,7 +281,7 @@ Deno.serve(async (req: Request) => {
             { responseMimeType: "application/json", temperature: 0.2, maxOutputTokens: SECTION_TOKEN_BUDGET },
             signal,
           );
-          addTokenUsage(usage, callUsage);
+          addTokenUsage(usage.split, callUsage);
           if (truncated) console.error("find-relevant-notes idea split hit the token budget");
           return reply;
         },
@@ -302,7 +312,7 @@ Deno.serve(async (req: Request) => {
             { responseMimeType: "application/json", temperature: 0.2 },
             signal,
           );
-          addTokenUsage(usage, callUsage);
+          addTokenUsage(usage.agents, callUsage);
           return text;
         } catch (error) {
           // Otherwise a dead key or empty balance only ever surfaces as
@@ -324,22 +334,25 @@ Deno.serve(async (req: Request) => {
         failedMessage: "Relevance search failed. Please try again.",
         onError: (error) =>
           console.error("find-relevant-notes stream failed:", error instanceof Error ? error.message : error),
+        onSettled: (outcome) => settle(outcome === "done" ? "ok" : outcome),
       });
-      // Log once the stream has ended, when every call has been counted.
-      const logged = stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-        flush: () => logUsage(usage, notes.length, sectionsTotal, startedAt, goalContext, tier),
-      }));
-      return new Response(logged, {
+      return new Response(stream, {
         headers: { ...corsHeaders, "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" },
       });
     }
 
-    const outcome = await searchRelevance({
-      ...searchOptions,
-      signal: req.signal,
-      onError: (error) => console.error("find-relevant-notes follow-up failed:", errorMessage(error)),
-    });
-    logUsage(usage, notes.length, sectionsTotal, startedAt, goalContext, tier);
+    let outcome;
+    try {
+      outcome = await searchRelevance({
+        ...searchOptions,
+        signal: req.signal,
+        onError: (error) => console.error("find-relevant-notes follow-up failed:", errorMessage(error)),
+      });
+    } catch (error) {
+      settle(error instanceof SearchCancelledError ? "cancelled" : "failed");
+      throw error;
+    }
+    settle(outcome.notesSearched === 0 ? "failed" : "ok");
 
     // Every agent failed: report an outage rather than an empty result set,
     // which would read as "nothing in your notes is related".

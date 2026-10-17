@@ -1,6 +1,8 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts';
 import { authenticateRequest, isAuthenticationError } from '../_shared/auth.ts';
-import { generateSemanticEmbedding } from '../_shared/embeddings.ts';
+import { EMBEDDING_MODEL, generateSemanticEmbeddingResult } from '../_shared/embeddings.ts';
+import { googleTokenUsage } from '../_shared/gemini.ts';
+import { recordUsageInBackground } from '../_shared/usage.ts';
 import { corsHeaders } from '../_shared/gemini.ts';
 import { diversifyCandidates, parseVector, partitionNearDuplicates, type SemanticCandidate } from '../_shared/stage3.ts';
 
@@ -37,7 +39,7 @@ Deno.serve(async (req: Request) => {
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
   try {
-    const { userClient } = await authenticateRequest(req);
+    const { user, userClient } = await authenticateRequest(req);
     const body = await req.json().catch(() => ({})) as RetrievalRequest;
     const pageText = typeof body.page_text === 'string' ? body.page_text.trim() : '';
     if (!pageText) return json({ error: 'page_text is required' }, 400);
@@ -51,7 +53,10 @@ Deno.serve(async (req: Request) => {
     const apiKey = Deno.env.get('GEMINI_API_KEY');
     if (!apiKey) throw new Error('GEMINI_API_KEY is not configured');
 
-    const queryEmbedding = await generateSemanticEmbedding(pageText, apiKey, 'RETRIEVAL_QUERY');
+    const startedAt = Date.now();
+    const embedded = await generateSemanticEmbeddingResult(pageText, apiKey, 'RETRIEVAL_QUERY');
+    recordUsageInBackground({ userId: user.id, feature: 'semantic-retrieval', billedBy: 'google', model: EMBEDDING_MODEL, steps: { query: googleTokenUsage(EMBEDDING_MODEL, embedded.tokenCount) }, status: 'ok', startedAt });
+    const queryEmbedding = embedded.values;
     const { data, error } = await userClient.rpc('match_notes_semantic', {
       query_embedding: queryEmbedding,
       candidate_limit: candidateLimit,

@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { corsHeaders, generateWithGemini, extractJson } from "../_shared/gemini.ts";
+import { BEST_MODEL, corsHeaders, generateWithGeminiResult, extractJson } from "../_shared/gemini.ts";
+import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
 
 interface HandleMessageRequest {
   user_id: string;
@@ -109,11 +110,16 @@ If it's a QUESTION, respond with exactly this shape:
   "key_points": ["2-4 short phrases copied EXACTLY as they appear in your answer text — key takeaways"]
 }`;
 
-    const raw = await generateWithGemini(
+    const startedAt = Date.now();
+    const { text: raw, usage } = await generateWithGeminiResult(
       "You are Ocreda, a personal second-brain assistant. You always respond with a single valid JSON object and nothing else.",
       [{ role: "user", content: prompt }],
-      apiKey
+      apiKey,
+      BEST_MODEL,
     );
+    if (usage) {
+      recordUsageInBackground({ userId: requestUserId(req, user_id), feature: "handle-message", billedBy: "openrouter", model: BEST_MODEL, steps: { answer: usage }, status: "ok", startedAt });
+    }
 
     const jsonText = extractJson(raw);
     if (!jsonText) throw new Error("Model did not return valid JSON");
