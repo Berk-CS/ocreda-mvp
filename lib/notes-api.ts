@@ -390,7 +390,8 @@ export async function processNote(noteId: string): Promise<{ relations_count: nu
       Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ note_id: noteId, user_id: await getAuthenticatedOwnerId() }),
+    // The server takes the user from the login token above, never from the body.
+    body: JSON.stringify({ note_id: noteId }),
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
@@ -639,7 +640,7 @@ export async function handleMessage(rawText: string): Promise<
       Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ user_id: await getOwnerId(), raw_text: rawText, local_date: getLocalDateString() }),
+    body: JSON.stringify({ raw_text: rawText, local_date: getLocalDateString() }),
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
@@ -733,7 +734,6 @@ export async function sendChatMessage(
     },
     body: JSON.stringify({
       question_id: questionId,
-      user_id: await getOwnerId(),
       message,
       local_date: getLocalDateString(),
     }),

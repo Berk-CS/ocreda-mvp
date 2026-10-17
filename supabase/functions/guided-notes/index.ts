@@ -1,11 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { BEST_MODEL, corsHeaders, extractJson, generateWithGeminiResult } from "../_shared/gemini.ts";
-import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
+import { isAuthenticationError, verifiedUserId } from "../_shared/auth.ts";
+import { recordUsageInBackground } from "../_shared/usage.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
   try {
+    // Signed-in people only: this spends AI credit, and the public key alone
+    // must not be enough to do that.
+    const userId = await verifiedUserId(req);
     const { answers, corpus } = await req.json() as {
       answers: string[];
       corpus: Array<{ id: string; title: string | null; body: string }>;
@@ -42,7 +46,7 @@ Return JSON only in this exact shape:
       BEST_MODEL,
     );
     if (usage) {
-      recordUsageInBackground({ userId: requestUserId(req), feature: "guided-notes", billedBy: "openrouter", model: BEST_MODEL, steps: { notes: usage }, status: "ok", startedAt });
+      recordUsageInBackground({ userId, feature: "guided-notes", billedBy: "openrouter", model: BEST_MODEL, steps: { notes: usage }, status: "ok", startedAt });
     }
     const json = extractJson(raw);
     if (!json) throw new Error("Model did not return valid JSON");
@@ -59,8 +63,14 @@ Return JSON only in this exact shape:
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(JSON.stringify({ error: message }), {
+    if (isAuthenticationError(error)) {
+      return new Response(JSON.stringify({ error: "Sign in to continue." }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    console.error("guided-notes failed:", error instanceof Error ? error.message : error);
+    return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

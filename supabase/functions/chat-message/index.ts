@@ -1,13 +1,17 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isAuthenticationError, verifiedUserId } from "../_shared/auth.ts";
 import { BEST_MODEL, corsHeaders, generateWithGeminiResult, GeminiMessage } from "../_shared/gemini.ts";
-import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
+import { recordUsageInBackground } from "../_shared/usage.ts";
 
 interface ChatMessageRequest {
   question_id: string;
-  user_id: string;
   message: string;
   local_date: string;
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
 
 Deno.serve(async (req: Request) => {
@@ -16,12 +20,16 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // The user comes from the caller's verified login, never from the request
+    // body: this client bypasses row-level security, so every query below is
+    // scoped to this id by hand.
+    const user_id = await verifiedUserId(req);
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    const { question_id, user_id, message, local_date }: ChatMessageRequest = await req.json();
+    const { question_id, message, local_date }: ChatMessageRequest = await req.json();
 
     // 1. Load the original question
     const { data: question, error: qErr } = await supabase
@@ -31,7 +39,8 @@ Deno.serve(async (req: Request) => {
       .eq("user_id", user_id)
       .maybeSingle();
 
-    if (qErr || !question) throw new Error("Question not found");
+    // Someone else's question looks exactly like one that does not exist.
+    if (qErr || !question) return json({ success: false, error: "Question not found" }, 404);
 
     // 2. Load conversation history
     const { data: history, error: hErr } = await supabase
@@ -91,7 +100,7 @@ How to respond:
     const startedAt = Date.now();
     const { text: reply, usage } = await generateWithGeminiResult(systemPrompt, geminiMessages, Deno.env.get("OPENROUTER_API_KEY")!, BEST_MODEL);
     if (usage) {
-      recordUsageInBackground({ userId: requestUserId(req, user_id), feature: "chat-message", billedBy: "openrouter", model: BEST_MODEL, steps: { reply: usage }, status: "ok", startedAt });
+      recordUsageInBackground({ userId: user_id, feature: "chat-message", billedBy: "openrouter", model: BEST_MODEL, steps: { reply: usage }, status: "ok", startedAt });
     }
     const relevantNoteIds = notesToUse.map((n) => n.id);
 
@@ -116,10 +125,9 @@ How to respond:
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ success: false, error: message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    if (isAuthenticationError(error)) return json({ success: false, error: "Sign in to continue." }, 401);
+    // The details stay in the logs; database errors are not for the browser.
+    console.error("chat-message failed:", error instanceof Error ? error.message : error);
+    return json({ success: false, error: "Could not answer right now. Please try again." }, 500);
   }
 });

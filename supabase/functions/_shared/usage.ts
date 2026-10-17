@@ -14,8 +14,8 @@ export type UsageStatus = "ok" | "cancelled" | "failed";
 export type BilledBy = "openrouter" | "google";
 
 export interface UsageRecord {
-  /** Null when the request carried no signed-in user. May still be resolving, as from requestUserId. */
-  userId: string | null | Promise<string | null>;
+  /** The verified signed-in user, or null when the request carried none. */
+  userId: string | null;
   /** The function that made the request, e.g. "find-relevant-notes". */
   feature: string;
   billedBy: BilledBy;
@@ -29,8 +29,6 @@ export interface UsageRecord {
   startedAt: number;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 let serviceClient: SupabaseClient | null = null;
 
 function client(): SupabaseClient | null {
@@ -39,26 +37,6 @@ function client(): SupabaseClient | null {
   if (!url || !key) return null;
   serviceClient ??= createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
   return serviceClient;
-}
-
-/**
- * The signed-in user behind a request, or null. Read from the request's own
- * login token when it carries one; otherwise from `fallbackUserId`, which some
- * older callers send in the body. Never throws: a request it cannot place is
- * still recorded, as unknown.
- */
-export async function requestUserId(req: Request, fallbackUserId?: unknown): Promise<string | null> {
-  const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "").trim();
-  const service = client();
-  if (token && service) {
-    try {
-      const { data } = await service.auth.getUser(token);
-      if (data.user) return data.user.id;
-    } catch {
-      // Not a user's token, such as the public anon key.
-    }
-  }
-  return typeof fallbackUserId === "string" && UUID.test(fallbackUserId) ? fallbackUserId : null;
 }
 
 
@@ -87,9 +65,8 @@ export async function recordUsage(record: UsageRecord): Promise<void> {
       output_tokens: usage.outputTokens,
       cost_usd: record.billedBy === "openrouter" ? Number(usage.costUsd.toFixed(6)) : null,
     }]));
-  const userId = await Promise.resolve(record.userId).catch(() => null);
   const row = {
-    user_id: userId,
+    user_id: record.userId,
     feature: record.feature,
     billed_by: record.billedBy,
     model: record.model,
@@ -109,7 +86,7 @@ export async function recordUsage(record: UsageRecord): Promise<void> {
   };
   try {
     let { error } = await service.from("ai_usage").insert(row);
-    // A user id from a request body may not be a real account; keep the cost anyway.
+    // The account may have been deleted mid-request; keep the cost anyway.
     if (error?.code === "23503" && row.user_id) ({ error } = await service.from("ai_usage").insert({ ...row, user_id: null }));
     if (error) console.error("ai_usage insert failed:", error.message);
   } catch (error) {

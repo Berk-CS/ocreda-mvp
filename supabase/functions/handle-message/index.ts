@@ -1,12 +1,16 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isAuthenticationError, verifiedUserId } from "../_shared/auth.ts";
 import { BEST_MODEL, corsHeaders, generateWithGeminiResult, extractJson } from "../_shared/gemini.ts";
-import { recordUsageInBackground, requestUserId } from "../_shared/usage.ts";
+import { recordUsageInBackground } from "../_shared/usage.ts";
 
 interface HandleMessageRequest {
-  user_id: string;
   raw_text: string;
   local_date: string; // user's local YYYY-MM-DD
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
 
 interface NoteRow {
@@ -50,12 +54,16 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    // The user comes from the caller's verified login, never from the request
+    // body: this client bypasses row-level security, so every query below is
+    // scoped to this id by hand.
+    const user_id = await verifiedUserId(req);
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    const { user_id, raw_text, local_date }: HandleMessageRequest = await req.json();
+    const { raw_text, local_date }: HandleMessageRequest = await req.json();
     const apiKey = Deno.env.get("OPENROUTER_API_KEY")!;
 
     const { data: allNotes, error: notesErr } = await supabase
@@ -118,7 +126,7 @@ If it's a QUESTION, respond with exactly this shape:
       BEST_MODEL,
     );
     if (usage) {
-      recordUsageInBackground({ userId: requestUserId(req, user_id), feature: "handle-message", billedBy: "openrouter", model: BEST_MODEL, steps: { answer: usage }, status: "ok", startedAt });
+      recordUsageInBackground({ userId: user_id, feature: "handle-message", billedBy: "openrouter", model: BEST_MODEL, steps: { answer: usage }, status: "ok", startedAt });
     }
 
     const jsonText = extractJson(raw);
@@ -150,8 +158,11 @@ If it's a QUESTION, respond with exactly this shape:
     // type === "question"
     const result = parsed as QuestionResult;
     const answer = typeof result.answer === "string" ? result.answer : "";
-    const sourceNoteIds = Array.isArray(result.source_note_ids)
-      ? result.source_note_ids.filter((id: unknown) => typeof id === "string")
+    // Only the person's own notes, whatever ids the model wrote: they are saved
+    // with the question and looked up below.
+    const ownNoteIds = new Set(notesToUse.map((n) => n.id));
+    const sourceNoteIds: string[] = Array.isArray(result.source_note_ids)
+      ? result.source_note_ids.filter((id: unknown): id is string => typeof id === "string" && ownNoteIds.has(id))
       : [];
     const keyPoints = Array.isArray(result.key_points)
       ? result.key_points.filter((p: unknown) => typeof p === "string")
@@ -203,10 +214,9 @@ If it's a QUESTION, respond with exactly this shape:
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ success: false, error: message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    if (isAuthenticationError(error)) return json({ success: false, error: "Sign in to continue." }, 401);
+    // The details stay in the logs; database errors are not for the browser.
+    console.error("handle-message failed:", error instanceof Error ? error.message : error);
+    return json({ success: false, error: "Could not handle that right now. Please try again." }, 500);
   }
 });
