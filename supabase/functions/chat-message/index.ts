@@ -8,6 +8,8 @@ interface ChatMessageRequest {
   question_id: string;
   message: string;
   local_date: string;
+  /** Exploring the sample notes: answer from them instead of the person's own. */
+  samples?: boolean;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -29,7 +31,7 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    const { question_id, message, local_date }: ChatMessageRequest = await req.json();
+    const { question_id, message, local_date, samples }: ChatMessageRequest = await req.json();
 
     // 1. Load the original question
     const { data: question, error: qErr } = await supabase
@@ -56,6 +58,7 @@ Deno.serve(async (req: Request) => {
       .from("notes")
       .select("id, raw_text, summary, target_date, time_of_day")
       .eq("user_id", user_id)
+      .eq("is_sample", samples === true)
       .order("created_at", { ascending: false })
       .limit(300);
 

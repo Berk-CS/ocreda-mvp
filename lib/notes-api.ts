@@ -21,6 +21,7 @@ import {
 } from './types';
 import { readRelevanceResponse } from './relevance-stream';
 import { getAiMode } from './ai-mode';
+import { getSampleMode } from './sample-mode';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -147,8 +148,10 @@ export function getLocalDateString(date: Date = new Date()): string {
 export async function getNotes(): Promise<Note[]> {
   if (IS_LOCAL_MODE) return localGetNotes();  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
+  // Only one set at a time: the sample notes while exploring them, otherwise the person's own.
+  const samples = getSampleMode(ownerId);
   if (categoryColumnsAvailable !== false) {
-    const result = await supabase.from('notes').select(CATEGORY_NOTE_FIELDS).eq('user_id', ownerId).order('created_at', { ascending: false });
+    const result = await supabase.from('notes').select(CATEGORY_NOTE_FIELDS).eq('user_id', ownerId).eq('is_sample', samples).order('created_at', { ascending: false });
     if (!result.error) {
       categoryColumnsAvailable = true;
       return normalizeNotes(result.data as Array<Record<string, unknown>> | null);
@@ -157,7 +160,7 @@ export async function getNotes(): Promise<Note[]> {
     categoryColumnsAvailable = false;
   }
 
-  const { data, error } = await supabase.from('notes').select(LEGACY_NOTE_FIELDS).eq('user_id', ownerId).order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('notes').select(LEGACY_NOTE_FIELDS).eq('user_id', ownerId).eq('is_sample', samples).order('created_at', { ascending: false });
   if (error) throw error;
   return normalizeNotes(data as Array<Record<string, unknown>> | null);
 }
@@ -166,10 +169,13 @@ export async function getNotes(): Promise<Note[]> {
 export async function createNote(rawText: string, category: string | null = null): Promise<Note> {
   if (IS_LOCAL_MODE) return localCreateNote(rawText, category);  // DEV-LOCAL-MODE
   const ownerId = await getAuthenticatedOwnerId();
+  // A note written while exploring the samples belongs with them.
+  const isSample = getSampleMode(ownerId);
   if (categoryColumnsAvailable !== false) {
     const result = await supabase.from('notes').insert({
       user_id: ownerId,
       raw_text: rawText,
+      is_sample: isSample,
       category,
       category_updated_at: category ? new Date().toISOString() : null,
     }).select(CATEGORY_NOTE_FIELDS).single();
@@ -181,7 +187,7 @@ export async function createNote(rawText: string, category: string | null = null
     categoryColumnsAvailable = false;
   }
 
-  const { data, error } = await supabase.from('notes').insert({ user_id: ownerId, raw_text: rawText }).select(LEGACY_NOTE_FIELDS).single();
+  const { data, error } = await supabase.from('notes').insert({ user_id: ownerId, raw_text: rawText, is_sample: isSample }).select(LEGACY_NOTE_FIELDS).single();
   if (error) throw error;
   return normalizeNote(data as Record<string, unknown>);
 }
@@ -208,6 +214,7 @@ export async function importNotes(
 
   const imported: Note[] = [];
   const importedIds: string[] = [];
+  const isSample = getSampleMode(authData.user.id);
   onProgress?.(0, inputs.length);
 
   try {
@@ -220,6 +227,7 @@ export async function importNotes(
         .insert(batch.map((input) => ({
           user_id: authData.user.id,
           raw_text: input.rawText,
+          is_sample: isSample,
           ...(includeCategories ? {
             category: input.category,
             category_updated_at: new Date().toISOString(),
@@ -232,7 +240,7 @@ export async function importNotes(
         categoriesSaved = false;
         result = await supabase
           .from('notes')
-          .insert(batch.map((input) => ({ user_id: authData.user.id, raw_text: input.rawText })))
+          .insert(batch.map((input) => ({ user_id: authData.user.id, raw_text: input.rawText, is_sample: isSample })))
           .select(LEGACY_NOTE_FIELDS);
       }
 
@@ -413,11 +421,12 @@ const MAX_VISIBLE_SCORE_GAP = 0.10;
 const MAX_VISIBLE_RELATED_NOTES = 8;
 
 /** Finish pending note embeddings before ranking them, including older notes. */
-async function prepareNotesForSemanticSearch(accessToken: string): Promise<number> {
+async function prepareNotesForSemanticSearch(accessToken: string, samples: boolean): Promise<number> {
   const pendingIds: string[] = [];
   for (let offset = 0; ; offset += EMBEDDING_QUERY_PAGE_SIZE) {
     const { data, error } = await supabase.from('notes')
       .select('id')
+      .eq('is_sample', samples)
       .neq('embedding_status', 'ready')
       .order('created_at', { ascending: false })
       .range(offset, offset + EMBEDDING_QUERY_PAGE_SIZE - 1);
@@ -488,7 +497,8 @@ export async function findSimilarNotes(
     throw new Error('Your session has expired. Sign in again to search your notes.');
   }
 
-  const unpreparedCount = await prepareNotesForSemanticSearch(accessToken);
+  const samples = getSampleMode(sessionData.session?.user.id);
+  const unpreparedCount = await prepareNotesForSemanticSearch(accessToken, samples);
 
   let response: Response;
   try {
@@ -499,7 +509,7 @@ export async function findSimilarNotes(
         apikey: SUPABASE_ANON_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ page_text: draftText }),
+      body: JSON.stringify({ page_text: draftText, include_samples: samples }),
     });
   } catch (error) {
     // Browser CORS/network failures do not expose an HTTP response.
@@ -600,7 +610,10 @@ export async function findRelevantNotes(
         'Content-Type': 'application/json',
       },
       // The Domain's goal lives in this browser, so it travels with the search.
-      body: JSON.stringify({ draft_text: draftText, exclude_note_id: excludeNoteId ?? null, domain: domain ?? null, model_tier: getAiMode(), stream: true }),
+      body: JSON.stringify({
+        draft_text: draftText, exclude_note_id: excludeNoteId ?? null, domain: domain ?? null, model_tier: getAiMode(),
+        samples: getSampleMode(sessionData.session?.user.id), stream: true,
+      }),
     });
   } catch (error) {
     // A missing Edge Function or failed CORS preflight surfaces as an opaque
@@ -640,7 +653,7 @@ export async function handleMessage(rawText: string): Promise<
       Authorization: `Bearer ${await functionAuthToken()}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ raw_text: rawText, local_date: getLocalDateString() }),
+    body: JSON.stringify({ raw_text: rawText, local_date: getLocalDateString(), samples: getSampleMode(getOwnerId()) }),
   });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
@@ -736,6 +749,7 @@ export async function sendChatMessage(
       question_id: questionId,
       message,
       local_date: getLocalDateString(),
+      samples: getSampleMode(getOwnerId()),
     }),
   });
   if (!response.ok) throw new Error(await response.text());

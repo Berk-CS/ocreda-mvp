@@ -7,6 +7,8 @@ import { recordUsageInBackground } from "../_shared/usage.ts";
 interface HandleMessageRequest {
   raw_text: string;
   local_date: string; // user's local YYYY-MM-DD
+  /** Exploring the sample notes: answer from them, and save a new note among them. */
+  samples?: boolean;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -63,13 +65,15 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    const { raw_text, local_date }: HandleMessageRequest = await req.json();
+    const { raw_text, local_date, samples }: HandleMessageRequest = await req.json();
+    const isSample = samples === true;
     const apiKey = Deno.env.get("OPENROUTER_API_KEY")!;
 
     const { data: allNotes, error: notesErr } = await supabase
       .from("notes")
       .select("id, raw_text, summary, target_date, time_of_day")
       .eq("user_id", user_id)
+      .eq("is_sample", isSample)
       .order("created_at", { ascending: false })
       .limit(300);
 
@@ -140,6 +144,7 @@ If it's a QUESTION, respond with exactly this shape:
         .insert({
           user_id,
           raw_text,
+          is_sample: isSample,
           summary: typeof result.summary === "string" && result.summary.trim() ? result.summary.trim() : raw_text,
           target_date: typeof result.target_date === "string" ? result.target_date : null,
           time_of_day: ["morning", "afternoon", "evening", "night"].includes(result.time_of_day as string) ? result.time_of_day : null,

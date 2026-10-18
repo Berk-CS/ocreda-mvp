@@ -40,7 +40,7 @@ Deno.serve(async (req: Request) => {
     // note id alone must never be enough to touch someone else's.
     const { data: newNote, error: newNoteErr } = await supabase
       .from("notes")
-      .select("id, raw_text, summary")
+      .select("id, raw_text, summary, is_sample")
       .eq("id", note_id)
       .eq("user_id", user_id)
       .maybeSingle();
@@ -51,6 +51,8 @@ Deno.serve(async (req: Request) => {
       .from("notes")
       .select("id, raw_text, summary")
       .eq("user_id", user_id)
+      // A sample note is only ever connected to sample notes, and an own note to own notes.
+      .eq("is_sample", newNote.is_sample === true)
       .neq("id", note_id)
       .limit(200);
 

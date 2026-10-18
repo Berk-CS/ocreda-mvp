@@ -12,6 +12,8 @@ interface RetrievalRequest {
   similarity_floor?: number;
   duplicate_threshold?: number;
   diversity_lambda?: number;
+  /** Search the sample notes instead of the person's own; never both. */
+  include_samples?: boolean;
 }
 
 interface RpcCandidate {
@@ -62,6 +64,7 @@ Deno.serve(async (req: Request) => {
       candidate_limit: candidateLimit,
       similarity_floor: similarityFloor,
       duplicate_threshold: duplicateThreshold,
+      include_samples: body.include_samples === true,
     });
     if (error) throw error;
 

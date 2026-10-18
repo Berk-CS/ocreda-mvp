@@ -215,6 +215,8 @@ Deno.serve(async (req: Request) => {
     const draftText = typeof body?.draft_text === "string" ? body.draft_text.trim() : "";
     const excludeNoteId = typeof body?.exclude_note_id === "string" ? body.exclude_note_id : null;
     const goalContext = readGoalContext(body?.domain);
+    // The sample notes and the person's own are never searched together.
+    const samples = body?.samples === true;
     const tier = readModelTier(body?.model_tier);
     const model = modelForTier(tier);
 
@@ -230,6 +232,7 @@ Deno.serve(async (req: Request) => {
         .from("notes")
         .select(columns)
         .eq("user_id", userId)
+        .eq("is_sample", samples)
         .order("created_at", { ascending: false })
         .limit(MAX_NOTES);
       if (excludeNoteId) query = query.neq("id", excludeNoteId);
