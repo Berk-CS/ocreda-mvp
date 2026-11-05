@@ -15,7 +15,7 @@ export type RelationType = (typeof RELATION_TYPES)[number];
  * dropped, never relabelled as something weaker and shown anyway.
  */
 export const RELATION_MIN_SCORE: Record<RelationType, number> = {
-  contradicts: 0.85,
+  contradicts: 0.7,
   parallel: 0.8,
   solves: 0.7,
   helps: 0.7,
@@ -55,8 +55,12 @@ export const DEFAULT_AGENT_CONCURRENCY = 10;
 
 export const MAX_NOTE_CHARS = 800;
 export const MIN_DRAFT_CHARS = 20;
-/** From the retrieval workflow: each idea keeps its best few. The note as a whole has no cap. */
-export const MAX_RESULTS_PER_SECTION = 3;
+/**
+ * How many related notes the panel lists per idea before "Show more", and how
+ * many more each click adds. Display only: the search keeps every match that
+ * clears its bar, and the insight call reads all of them.
+ */
+export const RELATED_NOTES_PAGE_SIZE = 3;
 /** Up to two plain sentences rather than one clipped clause, so this is roomier. */
 export const MAX_EXPLANATION_CHARS = 320;
 /** One sentence restating the note, shown when the card is flipped to its summary. */
@@ -439,7 +443,20 @@ function readAgentResults(raw: string): unknown[] {
  * section every match is about it; otherwise an idea the draft does not have
  * means the note is taken as bearing on the draft as a whole.
  */
-export function parseAgentResponse(raw: string, allowedIds: Set<string>, sectionIds: string[] = []): RelevanceResult[] {
+/** A match an agent returned that scored under its relation's bar, kept only for measuring. */
+export interface BelowBarMatch {
+  note_id: string;
+  relation_type: RelationType;
+  relevance_score: number;
+}
+
+export function parseAgentResponse(
+  raw: string,
+  allowedIds: Set<string>,
+  sectionIds: string[] = [],
+  /** Receives the matches dropped for scoring under their relation's bar. */
+  belowBar?: BelowBarMatch[],
+): RelevanceResult[] {
   const sectionOf = (value: unknown): string => {
     if (sectionIds.length <= 1) return sectionIds[0] ?? WHOLE_DRAFT;
     const id = typeof value === "number" || typeof value === "string" ? String(value).trim() : "";
@@ -462,7 +479,11 @@ export function parseAgentResponse(raw: string, allowedIds: Set<string>, section
       : "extends";
 
     const score = Number(row.relevance_score);
-    if (!Number.isFinite(score) || score < RELATION_MIN_SCORE[relationType]) continue;
+    if (!Number.isFinite(score)) continue;
+    if (score < RELATION_MIN_SCORE[relationType]) {
+      belowBar?.push({ note_id: noteId, relation_type: relationType, relevance_score: score });
+      continue;
+    }
 
     const explanation = typeof row.explanation === "string" ? row.explanation.trim() : "";
     if (!explanation) continue;
@@ -492,6 +513,8 @@ export interface AgentOutcome {
   chunkSize: number;
   /** null when the agent failed both attempts, so its notes went unread. */
   results: RelevanceResult[] | null;
+  /** What the agent returned under the bars, for the search funnel. */
+  belowBar?: BelowBarMatch[];
 }
 
 async function runWithConcurrency<T, R>(
@@ -567,14 +590,15 @@ export async function runRelevanceAgents(
     // a caller can show progress while the rest are still running. Called
     // outside the try below, so a throwing callback is never mistaken for a
     // model failure and retried.
-    const settle = (results: RelevanceResult[] | null) =>
-      onAgentSettled?.(index, { chunkSize: chunk.length, results });
+    const settle = (results: RelevanceResult[] | null, belowBar: BelowBarMatch[] = []) =>
+      onAgentSettled?.(index, { chunkSize: chunk.length, results, belowBar });
 
     for (let attempt = 0; ; attempt++) {
       let results: RelevanceResult[];
+      const belowBar: BelowBarMatch[] = [];
       try {
         stopIfCancelled(signal);
-        results = parseAgentResponse(await generate(prompt, signal), allowedIds, sectionIds);
+        results = parseAgentResponse(await generate(prompt, signal), allowedIds, sectionIds, belowBar);
       } catch (error) {
         if (attempt === 1 || signal?.aborted || !isRetryable(error)) {
           settle(null);
@@ -584,14 +608,15 @@ export async function runRelevanceAgents(
         await new Promise((resolve) => setTimeout(resolve, 500 + Math.random() * 700));
         continue;
       }
-      settle(results);
-      return results;
+      settle(results, belowBar);
+      return { results, belowBar };
     }
   });
 
   const outcomes: AgentOutcome[] = settled.map((outcome, index) => ({
     chunkSize: chunks[index].length,
-    results: outcome.status === "fulfilled" ? outcome.value : null,
+    results: outcome.status === "fulfilled" ? outcome.value.results : null,
+    belowBar: outcome.status === "fulfilled" ? outcome.value.belowBar : [],
   }));
 
   return { chunks, outcomes };
@@ -603,15 +628,16 @@ export async function runRelevanceAgents(
  * which is what lets the UI tell the user coverage was incomplete instead of
  * quietly presenting a partial search as a complete one.
  *
- * Each section keeps its own best `maxPerSection`, so a draft's main idea
- * cannot crowd out the smaller ones; the whole list has no cap of its own.
+ * Every match that cleared its bar is kept, ordered within each idea with some
+ * variety between relations. `maxPerSection` caps each idea only when given;
+ * the app gives none.
  */
 export function mergeAgentResults(
   outcomes: AgentOutcome[],
   createdAtById: Map<string, string>,
-  maxPerSection: number,
+  maxPerSection = Infinity,
   now: number = Date.now(),
-): { results: RelevanceResult[]; notesSearched: number } {
+): { results: RelevanceResult[]; notesSearched: number; cutByCap: RelevanceResult[] } {
   let notesSearched = 0;
   const merged = new Map<string, RelevanceResult>();
 
@@ -647,6 +673,53 @@ export function mergeAgentResults(
     results: picked.sort((a, b) =>
       a.section_id === b.section_id ? order.get(a.note_id)! - order.get(b.note_id)! : best.get(b.section_id)! - best.get(a.section_id)!),
     notesSearched,
+    cutByCap: ranked.filter((result) => !order.has(result.note_id)),
+  };
+}
+
+/**
+ * Where a search's matches went, step by step, so the bars and caps can be
+ * tuned from what actually happens rather than guessed at. Holds counts and
+ * scores only, never note text, so it is safe to log.
+ */
+export interface SearchFunnel {
+  /** Matches the agents returned, before any bar. */
+  returned: number;
+  /** Dropped for scoring under their relation's bar, with each score, by relation. */
+  below_bar: Partial<Record<RelationType, number[]>>;
+  /** Cleared their bar. */
+  passed_bar: number;
+  /** Cleared their bar but lost to stronger matches for the same idea, with each score. */
+  cut_by_cap: number[];
+  /** Shown: cleared the bar and the cap. */
+  kept: number;
+  /** Cards written; null when the insight step did not run or failed. */
+  cards: number | null;
+}
+
+export function searchFunnel(
+  outcomes: AgentOutcome[],
+  kept: RelevanceResult[],
+  cutByCap: RelevanceResult[],
+  insight: InsightOutcome | null,
+): SearchFunnel {
+  const below_bar: Partial<Record<RelationType, number[]>> = {};
+  let belowCount = 0;
+  let passed = 0;
+  for (const outcome of outcomes) {
+    passed += outcome.results?.length ?? 0;
+    for (const miss of outcome.belowBar ?? []) {
+      (below_bar[miss.relation_type] ??= []).push(Number(miss.relevance_score.toFixed(2)));
+      belowCount++;
+    }
+  }
+  return {
+    returned: passed + belowCount,
+    below_bar,
+    passed_bar: passed,
+    cut_by_cap: cutByCap.map((result) => Number(result.relevance_score.toFixed(2))),
+    kept: kept.length,
+    cards: insight && !insight.failed ? insight.insights.length : null,
   };
 }
 
@@ -793,8 +866,6 @@ export const SKIPPED_INSIGHT: InsightOutcome = { insights: [], goal_suggestions:
 /** The insight call errored or returned something unreadable. */
 export const FAILED_INSIGHT: InsightOutcome = { insights: [], goal_suggestions: [], intent: null, failed: true };
 
-/** Only strong matches are worth building an insight on. */
-export const INSIGHT_MIN_SCORE = 0.7;
 /**
  * For a draft with a single idea: one trigger per issue it raises, but never a
  * margin full of them. A draft with several ideas gets one per idea instead.
@@ -877,13 +948,14 @@ export interface InsightMatch {
 }
 
 /**
- * The strong matches, in rank order, that an insight may draw on. The merge
- * already capped each section, so every idea's matches are kept here.
+ * Every match, in rank order, that an insight may draw on. Each already
+ * cleared its relation's bar, so none is held back here: the insight call
+ * decides which, if any, are worth a card.
  */
 export function selectInsightMatches(results: RelevanceResult[], notes: NoteLike[]): InsightMatch[] {
   const byId = new Map(notes.map((note) => [note.id, note]));
   return results
-    .filter((result) => result.relevance_score >= INSIGHT_MIN_SCORE && byId.has(result.note_id))
+    .filter((result) => byId.has(result.note_id))
     .map((result) => ({ note: byId.get(result.note_id)!, result }));
 }
 
@@ -1257,8 +1329,8 @@ export async function findInsight(options: FindInsightOptions): Promise<InsightO
 
 
 export interface SearchOptions extends Omit<RunAgentsOptions, "sections"> {
-  /** How many matches each section keeps. */
-  maxPerSection: number;
+  /** Caps the matches each idea keeps. The app sets none, so every match that clears its bar is kept. */
+  maxPerSection?: number;
   /** Splits the draft into its ideas before any notes are read. Without it the draft is one section. */
   findSections?: (draft: string, signal?: AbortSignal) => Promise<DraftSection[]>;
   /** Optional synthesis of the final matches; failure must not hide the matches. */
@@ -1267,6 +1339,8 @@ export interface SearchOptions extends Omit<RunAgentsOptions, "sections"> {
   findInsight?: (results: RelevanceResult[], sections: DraftSection[], signal?: AbortSignal) => Promise<InsightOutcome>;
   /** Failures of the optional steps, which the search itself survives. */
   onError?: (error: unknown) => void;
+  /** Where the matches went, once the search finishes. */
+  onFunnel?: (funnel: SearchFunnel) => void;
 }
 
 export interface SearchOutcome {
@@ -1291,7 +1365,7 @@ export interface SearchOutcome {
  * after the split, no retries, and no insight call after the agents.
  */
 export async function searchRelevance(options: SearchOptions): Promise<SearchOutcome> {
-  const { maxPerSection, findSections, summarize, findInsight, onError, ...agentOptions } = options;
+  const { maxPerSection, findSections, summarize, findInsight, onError, onFunnel, ...agentOptions } = options;
   const { draft, notes, signal } = agentOptions;
   stopIfCancelled(signal);
   const sections = findSections
@@ -1305,7 +1379,7 @@ export async function searchRelevance(options: SearchOptions): Promise<SearchOut
   const { outcomes } = await runRelevanceAgents({ ...agentOptions, sections });
   stopIfCancelled(signal);
   const createdAtById = new Map(notes.map((note) => [note.id, note.created_at]));
-  const { results, notesSearched } = mergeAgentResults(outcomes, createdAtById, maxPerSection);
+  const { results, notesSearched, cutByCap } = mergeAgentResults(outcomes, createdAtById, maxPerSection);
   const base = { sections, results, notesSearched, notesTotal: notes.length };
   if (notesSearched === 0) return { ...base, summary: "", insight: null };
 
@@ -1322,6 +1396,7 @@ export async function searchRelevance(options: SearchOptions): Promise<SearchOut
       : Promise.resolve(null),
   ]);
   stopIfCancelled(signal);
+  try { onFunnel?.(searchFunnel(outcomes, results, cutByCap, insight)); } catch { /* measuring never breaks a search */ }
   return { ...base, summary, insight };
 }
 

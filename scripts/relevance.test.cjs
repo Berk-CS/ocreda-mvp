@@ -8,6 +8,7 @@ const {
   dealIntoChunks,
   parseAgentResponse,
   mergeAgentResults,
+  searchFunnel,
   runRelevanceAgents,
   streamRelevanceSearch,
   truncate,
@@ -696,9 +697,14 @@ test('unparseable insight output is reported as a failure rather than throwing',
 
 const hit = (id, score, relation = 'supports') => ({ note_id: id, relevance_score: score, relation_type: relation, gist: '', explanation: 'why' });
 
-test('only strong matches feed the insight', () => {
-  const matches = selectInsightMatches([hit('a', 0.9), hit('b', 0.69), hit('c', 0.7)], [note('a'), note('b'), note('c')]);
-  assert.deepStrictEqual(matches.map((m) => m.note.id), ['a', 'c']);
+test('every match that cleared its bar feeds the insight, in rank order', () => {
+  const matches = selectInsightMatches([hit('a', 0.9), hit('b', 0.62, 'extends'), hit('gone', 0.8)], [note('a'), note('b')]);
+  assert.deepStrictEqual(matches.map((m) => m.note.id), ['a', 'b'], 'only notes that no longer exist are left out');
+});
+
+test('without a cap, every match that cleared its bar is kept', () => {
+  const many = Array.from({ length: 8 }, (_, i) => res(`n${i}`, 0.9 - i * 0.02));
+  assert.strictEqual(mergeAgentResults([{ chunkSize: 8, results: many }], new Map()).results.length, 8);
 });
 
 test('recent Domain notes are newest first, same Domain only, without the note itself', () => {
@@ -730,10 +736,10 @@ test('the insight prompt asks for their own words, connected, and never for text
   assert.ok(!prompt.includes('added to the note'));
 });
 
-test('no strong matches means no insight call at all', async () => {
+test('no matches means no insight call at all', async () => {
   let calls = 0;
   const out = await findInsight({
-    draft: 'd', context: { domain: null, goal: null }, notes: [note('a')], results: [hit('a', 0.6)], excludeNoteId: null,
+    draft: 'd', context: { domain: null, goal: null }, notes: [note('a')], results: [], excludeNoteId: null,
     generate: async () => { calls++; return '{}'; },
   });
   assert.strictEqual(calls, 0);
@@ -829,8 +835,8 @@ test('the insight prompt tells the model which way each note points', () => {
 
 test('each relation is held to its own bar', () => {
   const at = (relation, score) => parseAgentResponse(row({ relation_type: relation, relevance_score: score }), allowed).length;
-  assert.strictEqual(at('contradicts', 0.84), 0, 'a contradiction needs near-certainty');
-  assert.strictEqual(at('contradicts', 0.85), 1);
+  assert.strictEqual(at('contradicts', 0.69), 0);
+  assert.strictEqual(at('contradicts', 0.7), 1);
   assert.strictEqual(at('extends', 0.6), 1, 'extends has the lowest bar');
   assert.strictEqual(at('supports', 0.6), 0);
   assert.strictEqual(at('solves', 0.7), 1);
@@ -1086,6 +1092,48 @@ test('the done event carries the sections', async () => {
   const done = events.at(-1);
   assert.strictEqual(done.type, 'done');
   assert.deepStrictEqual(done.sections.map((s) => s.id), ['1', '2', '3']);
+});
+
+// ------------------------------------------------------------- funnel
+
+test('a match under its bar is reported for measuring, never kept', () => {
+  const below = [];
+  const out = parseAgentResponse(row({ relation_type: 'parallel', relevance_score: 0.74 }), allowed, [], below);
+  assert.strictEqual(out.length, 0);
+  assert.deepStrictEqual(below, [{ note_id: 'keep-1', relation_type: 'parallel', relevance_score: 0.74 }]);
+});
+
+test('merging reports what the per-idea cap cut', () => {
+  const { results, cutByCap } = mergeAgentResults(
+    [{ chunkSize: 4, results: [res('a', 0.9), res('b', 0.8), res('c', 0.75), res('d', 0.62)] }],
+    new Map(),
+    3
+  );
+  assert.strictEqual(results.length, 3);
+  assert.deepStrictEqual(cutByCap.map((r) => r.note_id), ['d']);
+});
+
+test('the funnel counts each step, scores but no text', () => {
+  const funnel = searchFunnel(
+    [
+      { chunkSize: 5, results: [res('a', 0.9), res('b', 0.66)], belowBar: [{ note_id: 'x', relation_type: 'parallel', relevance_score: 0.756 }] },
+      { chunkSize: 5, results: null },
+    ],
+    [res('a', 0.9), res('b', 0.66)],
+    [res('c', 0.61)],
+    { insights: [{}], goal_suggestions: [], intent: null, failed: false }
+  );
+  assert.deepStrictEqual(funnel, {
+    returned: 3, below_bar: { parallel: [0.76] }, passed_bar: 2, cut_by_cap: [0.61], kept: 2, cards: 1,
+  });
+});
+
+test('a finished search reports its funnel', async () => {
+  let funnel = null;
+  await searchRelevance({ ...streamOptions(), onFunnel: (value) => { funnel = value; } });
+  assert.strictEqual(funnel.returned, 6);
+  assert.strictEqual(funnel.kept, 6);
+  assert.strictEqual(funnel.cards, null, 'no insight step was given');
 });
 
 run();

@@ -14,7 +14,7 @@ import { prepareImportedNoteText } from '@/lib/import-note-content';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 import { CardChoice, CardDecision, CardKind, DomainGoal, IncomingCardDecision, InsightIntent, Note, NoteInsight, NoteRelationType, RelevanceCoverage, RelevanceResult, RelevanceSection, SuggestionKind } from '@/lib/types';
 import { loadCardDecisions, saveCardDecision } from '@/lib/card-decisions';
-import { findAnchor, splitIntoParagraphs } from '@/supabase/functions/_shared/relevance';
+import { findAnchor, RELATED_NOTES_PAGE_SIZE, splitIntoParagraphs } from '@/supabase/functions/_shared/relevance';
 import { getAiMode, useAiMode } from '@/lib/ai-mode';
 import { setSampleMode, useSampleMode, workspaceScope } from '@/lib/sample-mode';
 import { isSampleGuide, loadSampleVault, SampleVault } from '@/lib/sample-vault';
@@ -2083,7 +2083,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
                     {retrieval?.insight_failed && !insights.length && surfacedNotes.length > 0 && <div className="rounded-xl border border-[#f0d9a8] bg-[#fff8e8] p-5"><h3 className="text-sm font-medium text-[#6f5100]">Suggestions did not finish</h3><p className="mt-2 text-xs leading-relaxed text-[#806b35]">The related notes are still available below.</p></div>}
                     {retrieval && !retrieval.insight_failed && !insights.length && !retrieval.summary && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">{relatedHere.length || relatedNotes.forWholeNote.length ? 'No suggestions to act on yet, but these notes relate to it.' : 'No suggestion changes your next step yet.'}</div>}
                     {!retrieval && (noteTooShortForRetrieval || !hasOtherNotes) && <div className="rounded-xl border border-[#e2e2e2] bg-white p-5 text-sm leading-relaxed text-[#777]">{noteTooShortForRetrieval ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters, then choose Find related notes.` : 'Once you have another note, Ocreda can look for connections.'}</div>}
-                    {relatedHere.length > 0 && <RelatedNotesList heading={noteSections.length > 1 ? 'Also related to this part' : 'Also related'} results={relatedHere} notesById={noteById} onOpen={showCitedNote} />}
+                    {relatedHere.length > 0 && <RelatedNotesList key={`part-${selectedSectionId}`} heading={noteSections.length > 1 ? 'Also related to this part' : 'Also related'} results={relatedHere} notesById={noteById} onOpen={showCitedNote} />}
                     {relatedNotes.forWholeNote.length > 0 && <RelatedNotesList heading={noteSections.length > 1 ? 'Also related to the whole note' : 'Also related'} results={relatedNotes.forWholeNote} notesById={noteById} onOpen={showCitedNote} />}
                     {goalPrompt}
                   </div>
@@ -2701,10 +2701,13 @@ function RelatedNotesList({ heading, results, notesById, onOpen }: {
   notesById: Map<string, Note>;
   onOpen: (noteId: string, focus?: string) => void;
 }) {
+  // Every match that cleared its bar arrives; the strongest few show first.
+  const [shown, setShown] = useState(RELATED_NOTES_PAGE_SIZE);
+  const remaining = results.length - shown;
   return <section aria-label={heading} className="pt-2">
     <h3 className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-[#999]">{heading}</h3>
     <ul className="space-y-2">
-      {results.map((result) => {
+      {results.slice(0, shown).map((result) => {
         const relatedNote = notesById.get(result.note_id);
         if (!relatedNote) return null;
         const badge = result.relation_type ? RELATION_BADGES[result.relation_type] : null;
@@ -2728,6 +2731,7 @@ function RelatedNotesList({ heading, results, notesById, onOpen }: {
         </li>;
       })}
     </ul>
+    {remaining > 0 && <button type="button" onClick={() => setShown((count) => count + RELATED_NOTES_PAGE_SIZE)} className="mt-2 w-full rounded-lg border border-dashed border-[#d5d9e3] px-4 py-2 text-[13px] text-[#477bea] hover:border-[#8fb1ff] hover:bg-[#f8f9fc] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">Show {Math.min(RELATED_NOTES_PAGE_SIZE, remaining)} more <span className="text-[#999]">({remaining} left)</span></button>}
   </section>;
 }
 
