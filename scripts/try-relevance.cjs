@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   findDraftSections, findInsight, mergeAgentResults, runRelevanceAgents, searchFunnel,
-  RELATION_MIN_SCORE,
+  RELATION_MIN_LEVEL,
   DEFAULT_AGENT_COUNT: AGENT_COUNT,
   DEFAULT_AGENT_CONCURRENCY: AGENT_CONCURRENCY,
 } = require('../.relevance-build/relevance.js');
@@ -281,7 +281,7 @@ async function main() {
   results.forEach((result, index) => {
     const pick = picks.get(result.note_id);
     const tag = picks.size ? (pick ? `[#${String(pick.order).padStart(2)}]` : '[ --]') : '';
-    const pct = `${Math.round(result.relevance_score * 100)}%`;
+    const pct = `L${result.level}`;
     console.log(`\n${String(index + 1).padStart(2)}. ${tag} ${pct.padStart(4)}  ${RELATION_SHORT[result.relation_type]} ${result.direction === 'outbound' ? 'OUT' : 'in '} idea ${result.section_id.padEnd(5)} ${result.note_id} ${titleOf(textById.get(result.note_id))}`);
     if (result.gist) console.log(wrap(`Gist: ${result.gist}`, 72, '      '));
     console.log(wrap(`AI:  ${result.explanation}`, 72, '      '));
@@ -322,21 +322,21 @@ async function main() {
   console.log(`FUNNEL   (cap ${cap === MAX_RESULTS ? 'off' : cap} per idea)`);
   console.log('='.repeat(78));
   console.log(`  returned by agents  ${funnel.returned}`);
-  console.log(`  under their bar     -${belowCount}`);
+  console.log(`  under their minimum -${belowCount}`);
   console.log(`  cut by the cap      -${funnel.cut_by_cap.length}`);
   console.log(`  shown               ${funnel.kept}`);
   console.log(`  cards written       ${funnel.cards ?? 'insight failed'}`);
-  const misses = outcomes.flatMap((item) => item.belowBar ?? []).sort((a, b) => b.relevance_score - a.relevance_score);
+  const misses = outcomes.flatMap((item) => item.belowBar ?? []).sort((a, b) => b.level - a.level);
   if (misses.length) {
-    console.log('\n  UNDER THE BAR (score / bar):');
+    console.log('\n  UNDER THEIR MINIMUM (level / minimum):');
     for (const miss of misses) {
-      console.log(`    ${miss.relevance_score.toFixed(2)} / ${RELATION_MIN_SCORE[miss.relation_type].toFixed(2)}  ${RELATION_SHORT[miss.relation_type]} ${miss.note_id} ${titleOf(textById.get(miss.note_id))}`);
+      console.log(`    L${miss.level} / L${RELATION_MIN_LEVEL[miss.relation_type]}  ${RELATION_SHORT[miss.relation_type]} ${miss.note_id} ${titleOf(textById.get(miss.note_id))}`);
     }
   }
   if (cutByCap.length) {
     console.log('\n  CUT BY THE CAP:');
     for (const cut of cutByCap) {
-      console.log(`    ${cut.relevance_score.toFixed(2)}  ${RELATION_SHORT[cut.relation_type]} idea ${cut.section_id.padEnd(5)} ${cut.note_id} ${titleOf(textById.get(cut.note_id))}`);
+      console.log(`    L${cut.level}  ${RELATION_SHORT[cut.relation_type]} idea ${cut.section_id.padEnd(5)} ${cut.note_id} ${titleOf(textById.get(cut.note_id))}`);
     }
   }
 
@@ -367,7 +367,7 @@ async function main() {
   if (extra.length) {
     console.log('\n  EXTRA — the AI surfaced these, you did not pick them:');
     for (const r of extra) {
-      console.log(`    ${r.note_id} (rank ${rankById.get(r.note_id)}, ${Math.round(r.relevance_score * 100)}%) ${titleOf(textById.get(r.note_id))}`);
+      console.log(`    ${r.note_id} (rank ${rankById.get(r.note_id)}, L${r.level}) ${titleOf(textById.get(r.note_id))}`);
       console.log(wrap(r.explanation, 66, '        '));
     }
   }

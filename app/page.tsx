@@ -3039,7 +3039,7 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
                     </div>
                   ) : null}
                   <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#aaa]">
-                    <span>{Math.round(result.relevance_score * 100)}% {result.explanation ? 'match' : 'similarity'}</span>
+                    <span>{result.level ? `Level ${result.level} of 5` : `${Math.round(result.relevance_score * 100)}% ${result.explanation ? 'match' : 'similarity'}`}</span>
                     <span>{formatDate(note.created_at)}</span>
                   </div>
                 </div>

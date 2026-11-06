@@ -7,22 +7,35 @@
 export const RELATION_TYPES = ["supports", "extends", "contradicts", "question", "parallel", "helps", "solves"] as const;
 export type RelationType = (typeof RELATION_TYPES)[number];
 
+/** The levels an agent gives a note, from 1 (shares only words) to 5 (changes what they do next). */
+export const MIN_LEVEL = 1;
+export const MAX_LEVEL = 5;
+
 /**
- * Each relation has its own bar, set by the cost of being wrong rather than by
- * how often it occurs: a false contradiction makes the app look broken, while
- * a slightly-off "extends" costs almost nothing. Quality is tuned by moving
- * these numbers, not by rewriting the prompt. Anything under its bar is
- * dropped, never relabelled as something weaker and shown anyway.
+ * The lowest level each relation must reach. The prompt states the same
+ * minimums and asks the agents to leave weaker notes out; this enforces them
+ * in case one does not. Anything under its minimum is dropped, never
+ * relabelled as something weaker and shown anyway.
  */
-export const RELATION_MIN_SCORE: Record<RelationType, number> = {
-  contradicts: 0.7,
-  parallel: 0.8,
-  solves: 0.7,
-  helps: 0.7,
-  question: 0.7,
-  supports: 0.65,
-  extends: 0.6,
+export const RELATION_MIN_LEVEL: Record<RelationType, number> = {
+  solves: 4,
+  helps: 4,
+  supports: 4,
+  contradicts: 4,
+  question: 4,
+  parallel: 4,
+  extends: 3,
 };
+
+/**
+ * Ranking works on a 0-1 value, so a level becomes level / 5: 1.0, 0.8, 0.6.
+ * Levels stay 0.2 apart, so the small adjustments made while ranking (variety
+ * between relations, a recent problem first) only ever reorder notes of the
+ * same level.
+ */
+export function rankValueOfLevel(level: number): number {
+  return level / MAX_LEVEL;
+}
 
 /**
  * How much each earlier pick of the same relation costs a candidate, so three
@@ -108,6 +121,9 @@ export type Direction = (typeof DIRECTIONS)[number];
 
 export interface RelevanceResult {
   note_id: string;
+  /** The agent's level for the note, 1 to 5. */
+  level: number;
+  /** The level as a 0-1 ranking value (see rankValueOfLevel). */
   relevance_score: number;
   relation_type: RelationType;
   direction: Direction;
@@ -326,23 +342,38 @@ export function buildPrompt(draft: string, notes: NoteLike[], goal: string | nul
     ? `\n\nWhat they are working toward in this area:\n<goal>\n${goal}\n</goal>`
     : "";
 
-  return `You will be given a draft that someone is writing, followed by a set of notes from their knowledge base. Decide which of those notes are genuinely relevant to the draft, and score each one on its own merits.
+  return `You will be given a draft that someone is writing, followed by a set of notes from their knowledge base. Decide which of those notes are genuinely relevant to the draft, and give each one a level on its own merits.
 
 A draft is not always an argument. It may be a claim, a decision, a plan, a memory, a worry, or a half-formed reflection. Judge relevance against whatever the draft is actually doing, not against whether it makes a provable point.
 
-SCORING - judge each note against the draft in absolute terms. Do NOT score a note relative to the other candidates you were given. If every candidate here is irrelevant, return no results; that is a normal and correct outcome.
+LEVEL - give each note a level from 1 to 5. Start at 5 and work down; the note's level is the first one that is true. Judge each note against the draft alone, never against the other candidates you were given. If every candidate here is irrelevant, return no results; that is a normal and correct outcome.
 
-Score the strength of the connection, NOT how similar the subject matter is. A note about something else entirely can score high if the link it reveals is strong and specific.
+Judge the strength of the connection, NOT how similar the subject matter is. A note about something else entirely can reach a high level if the link it reveals is strong and specific.
 
-0.90-1.00 - Reading this note would change what the user writes next. It speaks straight to what the draft is working out, or shows them something about it they had not seen.
-0.70-0.89 - A clear, specific connection that adds something real: evidence, a concrete example, a counterweight, an unresolved snag, or a pattern the draft turns out to be an instance of.
-0.50-0.69 - A real but looser connection: it shares the draft's underlying concern or stance and is worth having nearby, without changing anything.
-Below 0.50 - Leave it out of your response entirely.
+5 - It changes what they do next. The note holds a specific answer, decision, number, method, or fact that settles what the draft is working out, or shows them something about it they had not seen, and they could act on it as written.
+4 - It is usable here. The note gives something specific - a technique, a method, a past attempt and how it went, a concrete fact or example - that applies to the draft's situation exactly as the draft states it.
+3 - It is on point but general. The note bears on what the draft is really about, but only in general terms: the same explanation would fit many other drafts (motivation, "keep going", "act instead of thinking", broad principles).
+2 - It needs a stretch. The connection only holds if you assume something the draft does not say, such as that something failed, that they are overthinking, or that they feel unqualified.
+1 - It shares only words or a topic.
+
+If your explanation needs "if", "might", or "could", or describes a situation the draft does not state, the note is level 2.
+
+MINIMUM LEVEL - return a note only if it reaches the minimum for its relation type: level 4 for solves, helps, supports, contradicts, question, and parallel; level 3 for extends. Leave everything below its minimum out of your response entirely.
+
+What level 4 means for each relation type:
+"solves" - a specific fix, method, or answer to the problem the draft raises.
+"helps" - a specific technique, method, or past attempt that applies to the draft's situation as stated.
+"supports" - a concrete example, piece of evidence, or lived experience of what the draft says, not a restatement of it.
+"extends" - a specific detail, consequence, or next step the draft does not have.
+"contradicts" - a specific statement that cannot be true alongside the draft, or a position the draft reverses.
+"question" - a specific obstacle or open question the draft has not addressed.
+"parallel" - a named shared structure (the same tension or pattern) in a different part of their life, not a broad theme.
+Level 5 is any of these that would change what they do next. Level 3 is a general version of any of these.
 
 IDEAS - a long draft can work on several separate ideas at once, and each one deserves its own matches. When the draft is marked into numbered <idea> blocks, judge every note against each idea, not only against the draft's main point: a note that speaks to a small idea is as worth returning as one that speaks to the big one. A note must serve what that idea is trying to do, not merely share its topic. Still read the whole draft, because what the person is getting at overall decides what would help each idea.
 Give each note the number of the one idea it bears on most, as "idea". Use "whole" when it bears on the draft as a whole and on no single idea more than the others, and whenever the draft is not marked into ideas.
 
-GOAL - you may also be told what the person is working toward in this area. When you are, a note that would help them toward it - a past attempt and how it went, advice they recorded, a decision they made, a fact that changes the picture - deserves a higher score than one that is merely on the same subject. Never include a note only because it matches the goal; it must still bear on the draft.
+GOAL - you may also be told what the person is working toward in this area. When you are, a note that would help them toward it - a past attempt and how it went, advice they recorded, a decision they made, a fact that changes the picture - deserves a higher level than one that is merely on the same subject. Never include a note only because it matches the goal; it must still bear on the draft.
 
 RELATION TYPE - pick exactly one:
 "solves" - the note answers the problem or open question the draft raises: a fix, a method, or an answer that would settle it.
@@ -375,13 +406,15 @@ CRITICAL RULES:
 - Use the exact ID string as given. Never invent an ID, and never return one that is not listed above.
 
 Worked examples:
-- Draft: "From The Mom Test: ask people about what they did in the past, not what they would do in the future." Candidate note: "Tester interviews keep going nowhere - everyone says they'd use it, then nobody does." Score 0.91, relation_type "solves", direction "outbound", gist: "Your tester interviews keep ending with people saying they'd use it and then never doing.", explanation: "Your draft is the fix for this: those interviews asked what testers would do, which is exactly the question the book says gets you polite yeses.", matched_text: "everyone says they'd use it, then nobody does"
-- Draft: "Charging per seat punishes teams for adding people, so we should move to usage-based pricing." Candidate note: "Talked to Maya - she stopped adding teammates to the tool because each one cost another $12/mo." Score 0.94, relation_type "supports", gist: "You talked to Maya, a customer, who stopped adding teammates to the tool because each extra seat cost another $12 a month.", explanation: "That is the exact thing your draft argues, already happening to someone real - the problem with per-seat pricing isn't theoretical, she felt it and acted on it."
-- Draft: "I'm always running late, however early I start." Candidate note: "I'm the last one in my friend group to get married. Good things seem to reach me last." Score 0.84, relation_type "parallel", gist: "You're the last of your friends to get married, and feel like good things tend to reach you last.", explanation: "It's not about punctuality at all, but it's the same shape as your draft - being behind turns up in two different corners of your life, one you cause and one you don't, which is worth sitting with."
-- Draft: the pricing one again. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted entirely: it shares the word "pricing" but has nothing to do with the draft's argument.
+- Draft: "From The Mom Test: ask people about what they did in the past, not what they would do in the future." Candidate note: "Tester interviews keep going nowhere - everyone says they'd use it, then nobody does." Level 5, relation_type "solves", direction "outbound", gist: "Your tester interviews keep ending with people saying they'd use it and then never doing.", explanation: "Your draft is the fix for this: those interviews asked what testers would do, which is exactly the question the book says gets you polite yeses.", matched_text: "everyone says they'd use it, then nobody does"
+- Draft: "Charging per seat punishes teams for adding people, so we should move to usage-based pricing." Candidate note: "Talked to Maya - she stopped adding teammates to the tool because each one cost another $12/mo." Level 5, relation_type "supports", gist: "You talked to Maya, a customer, who stopped adding teammates to the tool because each extra seat cost another $12 a month.", explanation: "That is the exact thing your draft argues, already happening to someone real - the problem with per-seat pricing isn't theoretical, she felt it and acted on it."
+- Draft: "I'm always running late, however early I start." Candidate note: "I'm the last one in my friend group to get married. Good things seem to reach me last." Level 4, relation_type "parallel", gist: "You're the last of your friends to get married, and feel like good things tend to reach you last.", explanation: "It's not about punctuality at all, but it's the same shape as your draft - being behind turns up in two different corners of your life, one you cause and one you don't, which is worth sitting with."
+- Draft: "I can't decide whether to take the design job or stay freelance." Candidate note: "Never stop believing in yourself." Omitted: level 3, general encouragement that would fit almost any draft, under the minimum of 4 for "helps".
+- Draft: the design job one again. Candidate note: "When a launch flops, treat it as data and move on." Omitted: level 2, it only connects if you assume something in the draft failed, and the draft says nothing failed.
+- Draft: the pricing one again. Candidate note: "Pricing page redesign - make the CTA green and move testimonials above the fold." Omitted: level 1, it shares the word "pricing" but has nothing to do with the draft's argument.
 
-OUTPUT - a JSON object and nothing else, with one entry in "results" per relevant note, in this shape:
-{"results": [{"note_id": "<exact id>", "idea": "<idea number, or whole>", "relevance_score": <number>, "relation_type": "<solves|helps|supports|extends|contradicts|question|parallel>", "direction": "<inbound|outbound>", "gist": "<one sentence>", "explanation": "<one or two short sentences>", "matched_text": "<exact quote from candidate note>"}]}
+OUTPUT - a JSON object and nothing else, with one entry in "results" per note that reaches its minimum level, in this shape:
+{"results": [{"note_id": "<exact id>", "idea": "<idea number, or whole>", "level": <integer 1-5>, "relation_type": "<solves|helps|supports|extends|contradicts|question|parallel>", "direction": "<inbound|outbound>", "gist": "<one sentence>", "explanation": "<one or two short sentences>", "matched_text": "<exact quote from candidate note>"}]}
 
 ========================================
 
@@ -443,11 +476,11 @@ function readAgentResults(raw: string): unknown[] {
  * section every match is about it; otherwise an idea the draft does not have
  * means the note is taken as bearing on the draft as a whole.
  */
-/** A match an agent returned that scored under its relation's bar, kept only for measuring. */
+/** A match an agent returned under its relation's minimum level, kept only for measuring. */
 export interface BelowBarMatch {
   note_id: string;
   relation_type: RelationType;
-  relevance_score: number;
+  level: number;
 }
 
 export function parseAgentResponse(
@@ -478,10 +511,11 @@ export function parseAgentResponse(
       ? (row.relation_type as RelationType)
       : "extends";
 
-    const score = Number(row.relevance_score);
-    if (!Number.isFinite(score)) continue;
-    if (score < RELATION_MIN_SCORE[relationType]) {
-      belowBar?.push({ note_id: noteId, relation_type: relationType, relevance_score: score });
+    const rawLevel = Number(row.level);
+    if (!Number.isFinite(rawLevel)) continue;
+    const level = Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, Math.round(rawLevel)));
+    if (level < RELATION_MIN_LEVEL[relationType]) {
+      belowBar?.push({ note_id: noteId, relation_type: relationType, level });
       continue;
     }
 
@@ -495,7 +529,8 @@ export function parseAgentResponse(
     seen.add(noteId);
     results.push({
       note_id: noteId,
-      relevance_score: Math.min(1, Math.max(0, score)),
+      level,
+      relevance_score: rankValueOfLevel(level),
       relation_type: relationType,
       // Most matches bring something to the draft, so that is the safe default.
       direction: DIRECTIONS.includes(row.direction as Direction) ? (row.direction as Direction) : "inbound",
@@ -680,16 +715,16 @@ export function mergeAgentResults(
 /**
  * Where a search's matches went, step by step, so the bars and caps can be
  * tuned from what actually happens rather than guessed at. Holds counts and
- * scores only, never note text, so it is safe to log.
+ * levels only, never note text, so it is safe to log.
  */
 export interface SearchFunnel {
   /** Matches the agents returned, before any bar. */
   returned: number;
-  /** Dropped for scoring under their relation's bar, with each score, by relation. */
+  /** Dropped for falling under their relation's minimum level, with each level, by relation. */
   below_bar: Partial<Record<RelationType, number[]>>;
   /** Cleared their bar. */
   passed_bar: number;
-  /** Cleared their bar but lost to stronger matches for the same idea, with each score. */
+  /** Cleared their minimum but lost to stronger matches for the same idea, with each level. Empty unless a cap is set. */
   cut_by_cap: number[];
   /** Shown: cleared the bar and the cap. */
   kept: number;
@@ -709,7 +744,7 @@ export function searchFunnel(
   for (const outcome of outcomes) {
     passed += outcome.results?.length ?? 0;
     for (const miss of outcome.belowBar ?? []) {
-      (below_bar[miss.relation_type] ??= []).push(Number(miss.relevance_score.toFixed(2)));
+      (below_bar[miss.relation_type] ??= []).push(miss.level);
       belowCount++;
     }
   }
@@ -717,7 +752,7 @@ export function searchFunnel(
     returned: passed + belowCount,
     below_bar,
     passed_bar: passed,
-    cut_by_cap: cutByCap.map((result) => Number(result.relevance_score.toFixed(2))),
+    cut_by_cap: cutByCap.map((result) => result.level),
     kept: kept.length,
     cards: insight && !insight.failed ? insight.insights.length : null,
   };

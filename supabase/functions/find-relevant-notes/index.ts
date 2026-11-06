@@ -295,7 +295,7 @@ Deno.serve(async (req: Request) => {
       return sections;
     };
     const searchOptions = {
-      // Counts and scores only, no note text: where this search's matches went.
+      // Counts and levels only, no note text: where this search's matches went.
       onFunnel: (funnel: SearchFunnel) => console.log("find-relevant-notes funnel", JSON.stringify({ tier, notes: notes.length, ...funnel })),
       findSections,
       summarize,
