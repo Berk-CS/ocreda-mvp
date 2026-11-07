@@ -2700,9 +2700,9 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose
 }
 
 /**
- * Notes the search matched without a card: each with its name, date, and the
- * one-line summary of what it says. Opening one shows it beside the note at
- * the passage the match rested on.
+ * Notes the search matched without a card: each with its name, date, the
+ * one-line summary of what it says, and why it was picked. Opening one shows
+ * it beside the note at the passage the match rested on.
  */
 function RelatedNotesList({ heading, results, notesById, onOpen }: {
   heading: string;
@@ -2721,6 +2721,7 @@ function RelatedNotesList({ heading, results, notesById, onOpen }: {
         if (!relatedNote) return null;
         const badge = result.relation_type ? RELATION_BADGES[result.relation_type] : null;
         const summary = result.gist.trim() || notePreview(relatedNote);
+        const reason = result.explanation.trim();
         return <li key={result.note_id}>
           <button
             type="button"
@@ -2736,6 +2737,11 @@ function RelatedNotesList({ heading, results, notesById, onOpen }: {
               </span>
             </span>
             <span className="mt-1 line-clamp-2 block text-[13px] leading-relaxed text-[#666]">{summary}</span>
+            {/* Shown up front so the reader sees why the note is here without opening it. */}
+            {reason && <span className="mt-2 block rounded-md bg-[#e4f2e8] px-2.5 py-2">
+              <span className="block text-[9px] font-semibold uppercase tracking-[0.09em] text-[#6aa37c]">Why it’s relevant</span>
+              <span className="mt-1 block text-[12px] leading-relaxed text-[#4a6b55]">{reason}</span>
+            </span>}
           </button>
         </li>;
       })}
