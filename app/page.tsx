@@ -1979,7 +1979,6 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
       const mark = 'mark' in event ? event.mark : null;
       if (!mark || mark.start < cursor) return;
       const view = cardLayout.views[mark.index];
-      const style = SUGGESTION_STYLES[view.kind];
       const highlightStyle = HIGHLIGHT_STYLES[view.kind];
       const active = view.item === insight;
       const openInsight = () => selectInsight(mark.index);
@@ -1992,7 +1991,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
         aria-pressed={active}
         title="See what your notes say about this"
         className={`cursor-pointer rounded-sm px-0.5 text-inherit underline decoration-2 underline-offset-4 [box-decoration-break:clone] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${active ? highlightStyle.active : `${highlightStyle.idle} hover:brightness-[0.98]`}`}
-      >{displayedBody.slice(mark.start, mark.end)}<span className={`ml-1 inline-block rounded px-1 align-[1px] text-[10px] font-medium leading-4 ${style.badge}`}>{style.label}</span></mark>);
+      >{displayedBody.slice(mark.start, mark.end)}</mark>);
       cursor = mark.end;
     });
     if (cursor < section.end) nodes.push(displayedBody.slice(cursor, section.end));
@@ -2516,13 +2515,23 @@ function InsightSentence({ insight, kind, onOpenSource }: { insight: NoteInsight
   return <>{insight.text.split(/(\{\d+\})/).map((part, index) => {
     const quote = /^\{\d+\}$/.test(part) ? quotes[Number(part.slice(1, -1)) - 1] : undefined;
     if (!quote) return <Fragment key={index}>{part}</Fragment>;
-    return <button
+    const open = () => onOpenSource(quote.note_id, quote.text);
+    // A span, not a button: browsers lay a button out as one block, so a long
+    // quote filled the line and pushed the punctuation after it onto its own.
+    return <span
       key={index}
-      type="button"
-      onClick={(event) => { event.stopPropagation(); onOpenSource(quote.note_id, quote.text); }}
+      role="button"
+      tabIndex={0}
+      onClick={(event) => { event.stopPropagation(); open(); }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        open();
+      }}
       title="Open the note this came from"
-      className={`inline rounded-sm text-left font-semibold underline decoration-2 underline-offset-4 hover:bg-black/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${SUGGESTION_STYLES[kind].quote}`}
-    >‘{quote.text}’</button>;
+      className={`cursor-pointer rounded-sm font-semibold underline decoration-2 underline-offset-4 [box-decoration-break:clone] hover:bg-black/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${SUGGESTION_STYLES[kind].quote}`}
+    >‘{quote.text}’</span>;
   })}</>;
 }
 
@@ -2735,14 +2744,6 @@ function RelatedNotesList({ heading, results, notesById, onOpen }: {
   </section>;
 }
 
-const CARD_SUBTITLES: Record<SuggestionKind, string> = {
-  solution: 'You answered this before',
-  helps: 'This might help',
-  extension: 'There’s more on this',
-  contradiction: 'This goes against an earlier note',
-  insight: 'You’ve seen this before',
-};
-
 /**
  * One suggestion: the sentence of the note it is about, their own past words
  * connected by one line from the model, and what they can do with it.
@@ -2767,22 +2768,18 @@ function SuggestionCard({ insight, kind, decision, notesById, trigger, outbound 
   const source = sourceId ? notesById.get(sourceId) : undefined;
   const sourceTitle = source ? noteLabel(source) : 'Earlier note';
   const sourceDate = source ? formatDate(source.created_at) : '';
-  const answersEarlierNote = kind === 'solution' && insight.direction === 'outbound' && Boolean(insight.problem);
-  const subtitle = answersEarlierNote ? 'This answers an earlier note'
-    : kind === 'solution' && source ? `You answered this on ${sourceDate}`
-      : outbound && kind === 'helps' ? 'Your lesson applies here' : CARD_SUBTITLES[kind];
   const cited = insight.note_ids.map((id) => notesById.get(id)).filter((note): note is Note => note !== undefined);
   return (
     <section aria-label={`${style.label} suggestion`} className={`rounded-xl border bg-white shadow-sm ${style.border} ${compact ? 'p-4' : 'p-6'}`}>
       <div className="flex items-center justify-between gap-2">
-        <p className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${style.badge}`}>{style.label}</span><span className="truncate text-[11px] text-[#888]">{subtitle}</span></p>
+        <p className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${style.badge}`}>{style.label}</span></p>
         {kind === 'contradiction' && onChoose && !decision && <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('rejected'); }} aria-label="Dismiss" title="Dismiss" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#999] hover:bg-[#f5f5f5] hover:text-[#555]"><X className="h-4 w-4" /></button>}
       </div>
       {(trigger || insight.anchor) && <blockquote className="mt-3 border-l-2 border-[#ddd] pl-3 text-[13px] italic leading-relaxed text-[#777]">“{trigger
         ? <>{trigger.before}<span className={`rounded-sm px-0.5 not-italic text-[#444] ${HIGHLIGHT_STYLES[kind].idle}`}>{trigger.key}</span>{trigger.after}</>
         : insight.anchor}”</blockquote>}
-      {source && <p className="mt-4 text-[10px] font-medium uppercase tracking-[0.08em] text-[#999]">From “{sourceTitle}” · {sourceDate}</p>}
-      <p className={`mt-1.5 leading-relaxed text-[#222] ${compact ? 'text-[14px]' : 'text-[16px]'}`}><InsightSentence insight={insight} kind={kind} onOpenSource={onOpenSource} /></p>
+      <p className={`mt-4 leading-relaxed text-[#222] ${compact ? 'text-[14px]' : 'text-[16px]'}`}><InsightSentence insight={insight} kind={kind} onOpenSource={onOpenSource} /></p>
+      {source && <p className="mt-2 text-[11px] text-[#999]">From your notes: “{sourceTitle}” · {sourceDate}</p>}
       {onChoose
         ? <CardAction insight={insight} kind={kind} decision={decision} sourceTitle={sourceTitle} sourceDate={sourceDate} onChoose={onChoose} onOpenSource={onOpenSource} />
         : <p className="mt-3 text-[11px] text-[#999]">Save the note to act on this.</p>}
