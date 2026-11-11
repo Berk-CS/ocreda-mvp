@@ -8,7 +8,8 @@ import NoteImporter, { ImportDomainDraft, ImportNoteDraft } from '@/components/N
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/lib/auth-context';
-import { createNote, deleteNote, findRelevantNotes, findSimilarNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, moveNotesToCategory, processNote, updateNote } from '@/lib/notes-api';
+import { createNote, deleteNote, findRelevantNotes, findSimilarNotes, getNotes, importNotes, MIN_RELEVANCE_DRAFT_CHARS, processNote, updateNote } from '@/lib/notes-api';
+import { addMissingDomains, assignNotesToDomain, deleteDomain, DomainState, loadDomains, saveDomain, setDomainPinned, uploadBrowserDomains } from '@/lib/domains-api';
 import { supabase } from '@/lib/supabase';
 import { prepareImportedNoteText } from '@/lib/import-note-content';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
@@ -175,45 +176,40 @@ function safeErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function readMuseAssignments(userId: string): Record<string, string> {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(`ocreda-note-muses:${userId}`) ?? '{}') as Record<string, unknown>;
-    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-  } catch {
-    return {};
-  }
-}
-
 /**
- * Files the sample vault's Domains in its own workspace and gives each sample
- * note its Domain: the first time the vault is opened in this browser, and
- * again whenever it has just been copied in. Notes the person wrote while
- * exploring keep the Domain they chose, and so do any they moved.
+ * The Domains of one workspace (the person's own, or the sample vault's).
+ * First uploads what this browser stored before Domains moved to the
+ * database; a failed upload is reported and tried again on the next load.
+ * With the sample vault, also files its Domains when it was just copied in,
+ * or has none yet. Notes the person wrote or moved keep their Domain.
  */
-function seedSampleWorkspace(scope: string, vault: SampleVault): void {
-  const seededKey = `ocreda-sample-workspace:${scope}`;
+async function loadDomainState(userId: string, sample: boolean, vault?: SampleVault): Promise<{ state: DomainState; uploadFailed: boolean }> {
+  let uploadFailed = false;
   try {
-    if (localStorage.getItem(seededKey) === 'v1' && !vault.copied) return;
-    const museKey = `ocreda-muses:${scope}`;
-    if (!readStoredList<MuseMeta>(museKey).length) {
-      // One millisecond apart, so the Domains keep the vault's order.
-      const start = Date.now() - vault.domains.length;
-      localStorage.setItem(museKey, JSON.stringify(vault.domains.map((domain, index) => ({
-        title: domain.title, description: domain.description, createdAt: new Date(start + index).toISOString(),
-      }))));
-      localStorage.setItem(`ocreda-pinned-muses:${scope}`, JSON.stringify([vault.pinnedDomain]));
-    }
-    const assignments = readMuseAssignments(scope);
+    await uploadBrowserDomains(userId, sample);
+  } catch {
+    uploadFailed = true;
+  }
+  let state = await loadDomains(userId, sample);
+  if (vault && (vault.copied || (!state.domains.length && !Object.keys(state.assignments).length))) {
+    // One millisecond apart, so the Domains keep the vault's order.
+    const start = Date.now() - vault.domains.length;
+    const assignments: Record<string, string> = {};
     vault.notes.forEach((note) => {
       const domain = vault.domainOf(note);
-      if (domain && !assignments[note.id]) assignments[note.id] = domain;
+      if (domain) assignments[note.id] = domain;
     });
-    localStorage.setItem(`ocreda-note-muses:${scope}`, JSON.stringify(assignments));
-    localStorage.setItem(seededKey, 'v1');
-  } catch {
-    // Without storage the vault still opens, just without its Domains.
+    await addMissingDomains(userId, sample, {
+      domains: vault.domains.map((domain, index) => ({ title: domain.title, description: domain.description, createdAt: new Date(start + index).toISOString() })),
+      pinned: [vault.pinnedDomain],
+      assignments,
+    });
+    state = await loadDomains(userId, sample);
   }
+  return { state, uploadFailed };
 }
+
+const DOMAIN_UPLOAD_ERROR = 'Your Domains from this browser could not be saved to your account yet. They will be tried again the next time you open Ocreda.';
 
 function readStoredList<T>(key: string): T[] {
   try {
@@ -306,7 +302,10 @@ export default function OcredaHome() {
   const [importProgress, setImportProgress] = useState<{ completed: number; total: number } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const orphanMigrationStartedRef = useRef(false);
+  // While this browser's Domains are not uploaded, its notes may look unsorted.
+  const domainUploadFailedRef = useRef(false);
   const historySurfaceActiveRef = useRef(false);
+  const userId = user?.id ?? null;
 
   const resetToDashboard = useCallback(() => {
     setNoteEditor(null);
@@ -362,24 +361,27 @@ export default function OcredaHome() {
     // A switch between the two sets can overtake a load still on its way.
     const request = ++loadRequestRef.current;
     try {
+      if (!userId) return;
       let loaded: Note[];
-      if (sampleMode && scope) {
+      let domains: Awaited<ReturnType<typeof loadDomainState>>;
+      if (sampleMode) {
         const vault = await loadSampleVault();
         if (request !== loadRequestRef.current) return;
-        seedSampleWorkspace(scope, vault);
+        domains = await loadDomainState(userId, true, vault);
         loaded = vault.notes;
       } else {
-        loaded = await getNotes();
+        [loaded, domains] = await Promise.all([getNotes(), loadDomainState(userId, false)]);
       }
       if (request !== loadRequestRef.current) return;
-      if (scope) {
-        // The latest load decides which Domains show, so a switch always
-        // ends with the Domains of the notes it loaded.
-        setMuseMeta(readStoredList<MuseMeta>(`ocreda-muses:${scope}`).filter((item) => item && typeof item.title === 'string'));
-        setPinnedMuseTitles([...new Set(readStoredList<string>(`ocreda-pinned-muses:${scope}`).filter((title): title is string => typeof title === 'string'))].slice(0, 3));
-      }
-      const localMuses = scope ? readMuseAssignments(scope) : {};
-      setNotes(loaded.map((note) => localMuses[note.id] ? { ...note, category: localMuses[note.id] } : note));
+      // The latest load decides which Domains show, so a switch always ends
+      // with the Domains of the notes it loaded.
+      const { state, uploadFailed } = domains;
+      domainUploadFailedRef.current = uploadFailed;
+      if (uploadFailed) setError(DOMAIN_UPLOAD_ERROR);
+      setMuseMeta(state.domains);
+      setPinnedMuseTitles(state.pinned);
+      // A note's Domain comes only from the Domain records.
+      setNotes(loaded.map((note) => ({ ...note, category: state.assignments[note.id] ?? null })));
       setNotesScope(scope);
     }
     catch (err) {
@@ -388,7 +390,7 @@ export default function OcredaHome() {
       }
     }
     finally { if (request === loadRequestRef.current) setLoading(false); }
-  }, [sampleMode, scope]);
+  }, [sampleMode, scope, userId]);
   useEffect(() => { void load(); }, [load]);
 
   // Switching between the sample notes and your own starts from the dashboard.
@@ -425,14 +427,9 @@ export default function OcredaHome() {
 
   useEffect(() => {
     if (!user || !scope) return;
-    const museKey = `ocreda-muses:${scope}`;
+    // Domains load with the notes, from the database.
     const projectKey = `ocreda-projects:${scope}`;
     const legacy = readStoredList<MuseMeta>(`ocreda-cortexes:${scope}`).filter((item) => item && typeof item.title === 'string');
-    const storedMuses = readStoredList<MuseMeta>(museKey).filter((item) => item && typeof item.title === 'string');
-    const nextMuses = storedMuses.length ? storedMuses : legacy;
-    setMuseMeta(nextMuses);
-    setPinnedMuseTitles([...new Set(readStoredList<string>(`ocreda-pinned-muses:${scope}`).filter((title): title is string => typeof title === 'string'))].slice(0, 3));
-    if (!storedMuses.length && legacy.length) localStorage.setItem(museKey, JSON.stringify(legacy));
 
     const storedProjects = readStoredList<CortexProject>(projectKey).filter((item) => item && typeof item.id === 'string' && typeof item.title === 'string').map(normalizeProject);
     if (storedProjects.length) {
@@ -462,25 +459,24 @@ export default function OcredaHome() {
     }
   }, [scope, user]);
 
-  const persistMuseMeta = useCallback((next: MuseMeta[]) => {
-    setMuseMeta(next);
-    if (scope) localStorage.setItem(`ocreda-muses:${scope}`, JSON.stringify(next));
-  }, [scope]);
+  /** The signed-in account, for saving Domains. */
+  const requireUserId = (): string => {
+    if (!userId) throw new Error('Your session has expired. Sign in again to continue.');
+    return userId;
+  };
 
-  const persistPinnedMuses = useCallback((next: string[]) => {
-    setPinnedMuseTitles(next);
-    if (scope) localStorage.setItem(`ocreda-pinned-muses:${scope}`, JSON.stringify(next));
-  }, [scope]);
-
-  const togglePinnedMuse = (title: string) => {
+  const togglePinnedMuse = async (title: string) => {
     const validPinned = pinnedMuseTitles.filter((pinned) => muses.some((muse) => muse.title.toLowerCase() === pinned.toLowerCase()));
     const exists = validPinned.some((pinned) => pinned.toLowerCase() === title.toLowerCase());
     if (!exists && validPinned.length >= 3) {
       setError('You can pin up to 3 Domains. Unpin one before adding another.');
       return;
     }
-    persistPinnedMuses(exists ? validPinned.filter((pinned) => pinned.toLowerCase() !== title.toLowerCase()) : [...validPinned, title]);
-    setError('');
+    try {
+      await setDomainPinned(requireUserId(), sampleMode, title, !exists);
+      setPinnedMuseTitles(exists ? validPinned.filter((pinned) => pinned.toLowerCase() !== title.toLowerCase()) : [...validPinned, title]);
+      setError('');
+    } catch (err) { setError(safeErrorMessage(err, exists ? 'Unable to unpin this Domain.' : 'Unable to pin this Domain.')); }
   };
 
   const persistProjects = useCallback((next: CortexProject[]) => {
@@ -488,20 +484,16 @@ export default function OcredaHome() {
     if (scope) localStorage.setItem(`ocreda-projects:${scope}`, JSON.stringify(next));
   }, [scope]);
 
-  const persistMuseAssignments = useCallback((noteIds: string[], category: string | null) => {
-    if (!scope || !noteIds.length) return;
-    const assignments = readMuseAssignments(scope);
-    noteIds.forEach((noteId) => {
-      if (category) assignments[noteId] = category;
-      else delete assignments[noteId];
-    });
-    localStorage.setItem(`ocreda-note-muses:${scope}`, JSON.stringify(assignments));
-    setNotes((current) => current.map((note) => noteIds.includes(note.id) ? { ...note, category, category_updated_at: new Date().toISOString() } : note));
-  }, [scope]);
+  /** Shows notes in a Domain once it is saved. */
+  const showMuseAssignments = useCallback((noteIds: string[], category: string | null) => {
+    if (!noteIds.length) return;
+    const ids = new Set(noteIds);
+    setNotes((current) => current.map((note) => ids.has(note.id) ? { ...note, category, category_updated_at: new Date().toISOString() } : note));
+  }, []);
 
   useEffect(() => {
     // The sample vault arrives sorted, so this is for your own notes only.
-    if (!user || loading || sampleMode || notesScope !== scope || orphanMigrationStartedRef.current) return;
+    if (!user || loading || sampleMode || notesScope !== scope || orphanMigrationStartedRef.current || domainUploadFailedRef.current) return;
     const migrationKey = `ocreda-orphans-migration:${ORPHANS_MIGRATION_VERSION}:${user.id}`;
     if (localStorage.getItem(migrationKey) === 'complete') return;
 
@@ -513,19 +505,15 @@ export default function OcredaHome() {
       return;
     }
     const existingOrphans = museMeta.find((muse) => muse.title.toLowerCase() === ORPHANS_MUSE.toLowerCase());
-    if (!existingOrphans) {
-      persistMuseMeta([
-        ...museMeta,
-        { title: ORPHANS_MUSE, description: ORPHANS_DESCRIPTION, createdAt: new Date().toISOString() },
-      ]);
-    }
 
     const migrate = async () => {
       try {
-        if (uncategorizedIds.length) {
-          await moveNotesToCategory(uncategorizedIds, ORPHANS_MUSE);
-          persistMuseAssignments(uncategorizedIds, ORPHANS_MUSE);
+        if (!existingOrphans) {
+          await saveDomain(user.id, false, ORPHANS_MUSE, ORPHANS_DESCRIPTION);
+          setMuseMeta((current) => [...current, { title: ORPHANS_MUSE, description: ORPHANS_DESCRIPTION, createdAt: new Date().toISOString() }]);
         }
+        await assignNotesToDomain(user.id, false, uncategorizedIds, ORPHANS_MUSE);
+        showMuseAssignments(uncategorizedIds, ORPHANS_MUSE);
         localStorage.setItem(migrationKey, 'complete');
       } catch (err) {
         orphanMigrationStartedRef.current = false;
@@ -533,7 +521,7 @@ export default function OcredaHome() {
       }
     };
     void migrate();
-  }, [loading, museMeta, notes, notesScope, persistMuseAssignments, persistMuseMeta, sampleMode, scope, user]);
+  }, [loading, museMeta, notes, notesScope, sampleMode, scope, showMuseAssignments, user]);
 
   const muses = useMemo(() => {
     const map = new Map<string, MuseMeta>();
@@ -546,10 +534,12 @@ export default function OcredaHome() {
   }, [museMeta, notes]);
 
   /** Saves a goal picked from the one-tap suggestions as the Domain's description. */
-  const setDomainGoal = (domainTitle: string, goal: string) => {
+  const setDomainGoal = async (domainTitle: string, goal: string) => {
     const key = domainTitle.toLowerCase();
     const existing = museMeta.find((item) => item.title.toLowerCase() === key);
-    persistMuseMeta(existing
+    try { await saveDomain(requireUserId(), sampleMode, existing?.title ?? domainTitle, goal); }
+    catch (err) { setError(safeErrorMessage(err, 'Unable to save this Domain’s goal.')); return; }
+    setMuseMeta(existing
       ? museMeta.map((item) => item.title.toLowerCase() === key ? { ...item, description: goal } : item)
       // A Domain that exists only through its notes' category gets its metadata now.
       : [...museMeta, { title: domainTitle, description: goal, createdAt: muses.find((item) => item.title.toLowerCase() === key)?.createdAt ?? new Date().toISOString() }]);
@@ -606,20 +596,27 @@ export default function OcredaHome() {
     setSaving(true); setError('');
     try {
       let savedNoteId: string;
+      let domainError = '';
       if (noteEditor.note) {
         const updated = await updateNote(noteEditor.note.id, rawText, category);
+        if (cleanCategory(noteEditor.note.category) !== category) await assignNotesToDomain(requireUserId(), sampleMode, [updated.id], category);
         setNotes((current) => current.map((note) => note.id === updated.id ? { ...updated, category } : note));
-        persistMuseAssignments([updated.id], category);
         savedNoteId = updated.id;
       } else {
         const created = await createNote(rawText, category);
-        setNotes((current) => [{ ...created, category }, ...current]);
-        persistMuseAssignments([created.id], category);
+        // The note exists now, so a failure to file it must not invite saving it twice.
+        let savedCategory = category;
+        if (category) {
+          try { await assignNotesToDomain(requireUserId(), sampleMode, [created.id], category); }
+          catch (err) { savedCategory = null; domainError = safeErrorMessage(err, 'The note was saved, but not its Domain.'); }
+        }
+        setNotes((current) => [{ ...created, category: savedCategory }, ...current]);
         processNote(created.id).catch(() => {});
         savedNoteId = created.id;
       }
       setNoteEditor(null); setActiveNoteRetrievalMode('relevant'); setActiveNoteAutoSearch(true); setPreviousNoteId(null); setActiveNoteId(savedNoteId);
-      if (!findRelevant) flashSaved();
+      if (domainError) setError(domainError);
+      else if (!findRelevant) flashSaved();
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this note.')); }
     finally { setSaving(false); }
   };
@@ -627,7 +624,7 @@ export default function OcredaHome() {
   const removeNote = async () => {
     if (!noteEditor?.note || !confirm('Delete this note? This cannot be undone.')) return;
     setSaving(true);
-    try { const noteId = noteEditor.note.id; await deleteNote(noteId); persistMuseAssignments([noteId], null); setNotes((current) => current.filter((note) => note.id !== noteId)); setNoteEditor(null); }
+    try { const noteId = noteEditor.note.id; await deleteNote(noteId); setNotes((current) => current.filter((note) => note.id !== noteId)); setNoteEditor(null); }
     catch (err) { setError(safeErrorMessage(err, 'Unable to delete this note.')); }
     finally { setSaving(false); }
   };
@@ -650,10 +647,8 @@ export default function OcredaHome() {
     if (!current || cleanCategory(current.category) === nextCategory) return;
     setSaving(true); setError('');
     try {
-      const [updated] = await moveNotesToCategory([noteId], nextCategory);
-      if (!updated) throw new Error('Note not found.');
-      setNotes((items) => items.map((note) => note.id === noteId ? { ...note, category: nextCategory, category_updated_at: updated.category_updated_at } : note));
-      persistMuseAssignments([noteId], nextCategory);
+      await assignNotesToDomain(requireUserId(), sampleMode, [noteId], nextCategory);
+      showMuseAssignments([noteId], nextCategory);
     } catch (err) { setError(safeErrorMessage(err, 'Unable to change this note’s Domain.')); }
     finally { setSaving(false); }
   };
@@ -662,8 +657,8 @@ export default function OcredaHome() {
     if (!confirm('Delete this page? This cannot be undone.')) return;
     setSaving(true); setError('');
     try {
+      // Its Domain assignment is deleted with it.
       await deleteNote(note.id);
-      persistMuseAssignments([note.id], null);
       setNotes((items) => items.filter((item) => item.id !== note.id));
       if (activeNoteId === note.id) setActiveNoteId(null);
       if (previousNoteId === note.id) setPreviousNoteId(null);
@@ -713,19 +708,17 @@ export default function OcredaHome() {
     if (muses.some((item) => item.title.toLowerCase() === title.toLowerCase() && item.title !== museEditor.originalTitle)) { setError('A Domain with this title already exists.'); return; }
     setSaving(true); setError('');
     try {
+      // A rename takes the Domain's notes and pin with it.
+      await saveDomain(requireUserId(), sampleMode, title, description, museEditor.originalTitle);
       if (museEditor.originalTitle && museEditor.originalTitle !== title) {
-        const affected = notesByMuse.get(museEditor.originalTitle) ?? [];
-        const updated = await moveNotesToCategory(affected.map((note) => note.id), title);
-        const updates = new Map(updated.map((note) => [note.id, note]));
-        setNotes((current) => current.map((note) => updates.get(note.id) ?? note));
-        persistMuseAssignments(affected.map((note) => note.id), title);
+        showMuseAssignments((notesByMuse.get(museEditor.originalTitle) ?? []).map((note) => note.id), title);
       }
       const originalKey = museEditor.originalTitle?.toLowerCase();
       const next = museMeta.filter((item) => item.title.toLowerCase() !== originalKey && item.title.toLowerCase() !== title.toLowerCase());
       next.push({ title, description, createdAt: museMeta.find((item) => item.title.toLowerCase() === originalKey)?.createdAt ?? new Date().toISOString() });
-      persistMuseMeta(next);
+      setMuseMeta(next);
       if (museEditor.originalTitle && museEditor.originalTitle !== title) {
-        persistPinnedMuses(pinnedMuseTitles.map((pinned) => pinned.toLowerCase() === museEditor.originalTitle?.toLowerCase() ? title : pinned));
+        setPinnedMuseTitles(pinnedMuseTitles.map((pinned) => pinned.toLowerCase() === museEditor.originalTitle?.toLowerCase() ? title : pinned));
       }
       if (activeMuse === museEditor.originalTitle) setActiveMuse(title);
       if (!museEditor.originalTitle) setNoteEditor((current) => current ? { ...current, muse: title } : current);
@@ -738,12 +731,11 @@ export default function OcredaHome() {
     if (!confirm(`Delete “${title}”? Its notes will return to Instant retrieval.`)) return;
     setSaving(true);
     try {
-      const updated = await moveNotesToCategory((notesByMuse.get(title) ?? []).map((note) => note.id), null);
-      const updates = new Map(updated.map((note) => [note.id, note]));
-      setNotes((current) => current.map((note) => updates.get(note.id) ?? note));
-      persistMuseAssignments((notesByMuse.get(title) ?? []).map((note) => note.id), null);
-      persistMuseMeta(museMeta.filter((item) => item.title.toLowerCase() !== title.toLowerCase()));
-      persistPinnedMuses(pinnedMuseTitles.filter((pinned) => pinned.toLowerCase() !== title.toLowerCase()));
+      // Its notes are left without a Domain.
+      await deleteDomain(requireUserId(), sampleMode, title);
+      showMuseAssignments((notesByMuse.get(title) ?? []).map((note) => note.id), null);
+      setMuseMeta(museMeta.filter((item) => item.title.toLowerCase() !== title.toLowerCase()));
+      setPinnedMuseTitles(pinnedMuseTitles.filter((pinned) => pinned.toLowerCase() !== title.toLowerCase()));
       setActiveMuse(null);
     } catch (err) { setError(safeErrorMessage(err, 'Unable to delete this Domain.')); }
     finally { setSaving(false); }
@@ -834,19 +826,28 @@ export default function OcredaHome() {
         (completed, total) => setImportProgress({ completed, total })
       );
 
-      const nextMeta = new Map(museMeta.map((muse) => [muse.title.toLowerCase(), muse]));
-      importDomains.forEach((domain) => {
-        if (!nextMeta.has(domain.title.toLowerCase())) nextMeta.set(domain.title.toLowerCase(), domain);
-      });
-      persistMuseMeta(Array.from(nextMeta.values()));
-
       const categorized = imported.map((note, index) => ({ ...note, category: inputs[index].category }));
-      setNotes((current) => [...categorized, ...current]);
-      const idsByDomain = new Map<string, string[]>();
-      categorized.forEach((note) => idsByDomain.set(note.category!, [...(idsByDomain.get(note.category!) ?? []), note.id]));
-      idsByDomain.forEach((noteIds, category) => persistMuseAssignments(noteIds, category));
       categorized.forEach((note) => processNote(note.id).catch(() => {}));
-      setImportProgress(null); setImportOpen(false); flashSaved();
+      try {
+        const owner = requireUserId();
+        const nextMeta = new Map(museMeta.map((muse) => [muse.title.toLowerCase(), muse]));
+        const newDomains = importDomains.filter((domain) => !nextMeta.has(domain.title.toLowerCase()));
+        // Domains first, so their goals are saved before notes are filed in them.
+        for (const domain of newDomains) await saveDomain(owner, sampleMode, domain.title, domain.description);
+        newDomains.forEach((domain) => nextMeta.set(domain.title.toLowerCase(), domain));
+        setMuseMeta(Array.from(nextMeta.values()));
+
+        const idsByDomain = new Map<string, string[]>();
+        categorized.forEach((note) => idsByDomain.set(note.category!, [...(idsByDomain.get(note.category!) ?? []), note.id]));
+        for (const [category, noteIds] of Array.from(idsByDomain)) await assignNotesToDomain(owner, sampleMode, noteIds, category);
+        setNotes((current) => [...categorized, ...current]);
+        setImportProgress(null); setImportOpen(false); flashSaved();
+      } catch (err) {
+        // The notes are saved, so importing again would copy them twice. Show what was saved.
+        setImportProgress(null); setImportOpen(false);
+        await load();
+        setError(`Your notes were imported, but not all of them could be filed in their Domains. ${safeErrorMessage(err, '')}`.trim());
+      }
     } catch (err) { setImportProgress(null); setImportError(safeErrorMessage(err, 'Your notes could not be imported.')); throw err; }
   };
 
