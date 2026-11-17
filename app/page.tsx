@@ -1464,7 +1464,7 @@ function RelatedNotePanel({ note, relevance, focusText = '', onClose, onOpenFull
   // A quote can come from the title, which the body below does not show.
   const focusInBody = focusText && content.body && findAnchor(content.body, focusText) ? focusText : '';
   const matchedText = focusInBody || (relevance?.matched_text?.trim() ?? '');
-  const relation = relevance?.relation_type ? RELATION_BADGES[relevance.relation_type] : null;
+  const relation = relationBadgeFor(relevance);
 
   return <div className="flex min-h-0 flex-1 flex-col bg-[#f7f7f9]">
     <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-[#e2e2e2] bg-[#f7f7f9]/95 px-4 py-2 backdrop-blur">
@@ -1747,7 +1747,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
         const lineEnd = Math.min(lineEndAfter(displayedBody, span.end), limit);
         const choice = view.decision?.choice;
         // When this note answered an earlier one, the box goes on that note; here a chip points to it.
-        const answeredElsewhere = !view.fromNoteId && choice === 'solved' && view.item.direction === 'outbound';
+        // The same goes for a lesson marked as helping an earlier note: the help is this note.
+        const answeredElsewhere = !view.fromNoteId && (choice === 'solved' || choice === 'helped') && view.item.direction === 'outbound';
         if ((choice === 'solved' || choice === 'helped') && !answeredElsewhere) overlays.push({ type: 'block', at: lineEnd, view });
         else if (choice === 'merged') overlays.push({ type: 'chip', at: sentenceEnd, view }, { type: 'block', at: lineEnd, view });
         else overlays.push({ type: 'chip', at: sentenceEnd, view });
@@ -1938,6 +1939,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     // this note's answer to an earlier problem, that problem; otherwise the
     // past words the card quoted. An answer with an empty note id is this note's own.
     const outboundAnswer = item.direction === 'outbound' && choice === 'solved' && !view.fromNoteId;
+    const outboundHelp = item.direction === 'outbound' && choice === 'helped' && !view.fromNoteId;
     const sourceId = view.fromNoteId
       ?? (outboundAnswer ? item.problem?.note_id : undefined)
       ?? (item.answer?.note_id || item.quotes?.[0]?.note_id || item.note_ids[0]);
@@ -1958,6 +1960,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     if (overlay.type === 'chip') {
       const label = choice === 'merged' ? 'Extended'
         : outboundAnswer ? `Solves ${sourceTitle}`
+          : outboundHelp ? `Helps ${sourceTitle}`
         : choice === 'today' ? `Updates ${sourceTitle}`
           : choice === 'earlier' ? `${sourceTitle} holds`
             : choice === 'confirmed' ? `Pattern · ${sourceTitle}`
@@ -2420,6 +2423,16 @@ const RELATION_BADGES: Partial<Record<NoteRelationType, { label: string; classNa
   solves: { label: 'Solves', className: 'bg-[#e6f4ea] text-[#1e7b3c]' },
 };
 
+/**
+ * The badge for a related note. "Solves" alone hides which way it goes, so it
+ * says which note holds the answer: this related note, or the one being read.
+ */
+function relationBadgeFor(result: RelevanceResult | undefined): { label: string; className: string } | null {
+  const badge = result?.relation_type ? RELATION_BADGES[result.relation_type] : null;
+  if (!badge || result?.relation_type !== 'solves') return badge ?? null;
+  return { ...badge, label: result.direction === 'outbound' ? 'Your new note answers it' : 'Answers your new note' };
+}
+
 type CardDecisions = Record<string, CardDecision>;
 
 /** A card as the note view lays it out, or a mark another note's choice left here. */
@@ -2578,9 +2591,11 @@ function IconChoice({ kind, accept, label, onClick }: { kind: SuggestionKind; ac
  * The action under a card. Nothing here edits the note: every choice is kept
  * beside it and drawn over it, and every choice can be undone.
  */
-function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose, onOpenSource }: {
+function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound, onChoose, onOpenSource }: {
   insight: NoteInsight;
   kind: SuggestionKind;
+  /** True when this note is the help and the earlier note is the one helped. */
+  outbound: boolean;
   decision?: CardDecision;
   sourceTitle: string;
   sourceDate: string;
@@ -2611,7 +2626,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose
       </div>
     </div>;
     return <div className={box}>
-      <p className="text-[13px] leading-relaxed text-[#315078]">Click “Solved” and your earlier note will show this as its answer.</p>
+      <p className="text-[13px] leading-relaxed text-[#315078]">Your new note answers “{sourceTitle}”. Click “Solved” and that note will show this as its answer.</p>
       <div className="mt-3 flex gap-2">
         <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('solved'); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">Solved</button>
         {/* As a Helps card it would only quote this note's own words back, so Dismiss removes it. */}
@@ -2638,6 +2653,25 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose
     </div>;
   }
 
+  if (kind === 'helps' && outbound) {
+    // This note is the help and the earlier note is where it applies, so the
+    // wording says so rather than reading as advice for this note.
+    const idea = sentenceCase(insight.action);
+    if (choice === 'helped') return <div className={box}>
+      <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Marked as helping “{sourceTitle}”</p>
+      <p className="mt-1 text-[14px] font-medium leading-relaxed text-[#1f4d2e]">{idea}</p>
+      <div className="mt-2"><UndoButton onUndo={() => onChoose(null)} /></div>
+    </div>;
+    return <div className={`${box} flex items-center gap-3`}>
+      <div className="min-w-0 flex-1">
+        <p className={heading}>Your new note could help “{sourceTitle}”</p>
+        <p className="mt-1 text-[15px] font-semibold leading-relaxed text-[#1f4d2e]">{idea}</p>
+      </div>
+      <IconChoice kind={kind} accept={false} label="Doesn’t apply there" onClick={() => onChoose('rejected')} />
+      <IconChoice kind={kind} accept label="Yes, it helps there" onClick={() => onChoose('helped')} />
+    </div>;
+  }
+
   if (kind === 'helps') {
     // A dismissed solution has no idea of its own, so its answer stands in.
     const idea = insight.kind === 'helps' ? sentenceCase(insight.action) : `“${answer?.text ?? insight.action}”`;
@@ -2648,7 +2682,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, onChoose
     </div>;
     return <div className={`${box} flex items-center gap-3`}>
       <div className="min-w-0 flex-1">
-        <p className={heading}>This might help</p>
+        <p className={heading}>This might help your new note</p>
         <p className="mt-1 text-[15px] font-semibold leading-relaxed text-[#1f4d2e]">{idea}</p>
       </div>
       <IconChoice kind={kind} accept={false} label="Not helpful" onClick={() => onChoose('rejected')} />
@@ -2743,7 +2777,7 @@ function RelatedNotesList({ heading, results, notesById, onOpen }: {
       {results.slice(0, shown).map((result) => {
         const relatedNote = notesById.get(result.note_id);
         if (!relatedNote) return null;
-        const badge = result.relation_type ? RELATION_BADGES[result.relation_type] : null;
+        const badge = relationBadgeFor(result);
         const summary = result.gist.trim() || notePreview(relatedNote);
         const reason = result.explanation.trim();
         return <li key={result.note_id}>
@@ -2799,19 +2833,23 @@ function SuggestionCard({ insight, kind, decision, notesById, trigger, outbound 
   const sourceTitle = source ? noteLabel(source) : 'Earlier note';
   const sourceDate = source ? formatDate(source.created_at) : '';
   const cited = insight.note_ids.map((id) => notesById.get(id)).filter((note): note is Note => note !== undefined);
+  // When this note is the help, the badge says the earlier note is the one helped.
+  const badgeLabel = outbound && kind === 'solution' ? 'Answers an earlier note'
+    : outbound && kind === 'helps' ? 'Helps an earlier note'
+      : style.label;
   return (
     <section aria-label={`${style.label} suggestion`} className={`rounded-xl border bg-white shadow-sm ${style.border} ${compact ? 'p-4' : 'p-6'}`}>
       <div className="flex items-center justify-between gap-2">
-        <p className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${style.badge}`}>{style.label}</span></p>
+        <p className="flex min-w-0 items-center gap-2"><span className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium ${style.badge}`}>{badgeLabel}</span></p>
         {kind === 'contradiction' && onChoose && !decision && <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('rejected'); }} aria-label="Dismiss" title="Dismiss" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#999] hover:bg-[#f5f5f5] hover:text-[#555]"><X className="h-4 w-4" /></button>}
       </div>
       {(trigger || insight.anchor) && <blockquote className="mt-3 border-l-2 border-[#ddd] pl-3 text-[13px] italic leading-relaxed text-[#777]">“{trigger
         ? <>{trigger.before}<span className={`rounded-sm px-0.5 not-italic text-[#444] ${HIGHLIGHT_STYLES[kind].idle}`}>{trigger.key}</span>{trigger.after}</>
         : insight.anchor}”</blockquote>}
       <p className={`mt-4 leading-relaxed text-[#222] ${compact ? 'text-[14px]' : 'text-[16px]'}`}><InsightSentence insight={insight} kind={kind} onOpenSource={onOpenSource} /></p>
-      {source && <p className="mt-2 text-[11px] text-[#999]">From your notes: “{sourceTitle}” · {sourceDate}</p>}
+      {source && <p className="mt-2 text-[11px] text-[#999]">{outbound ? 'The earlier note this helps' : 'From your notes'}: “{sourceTitle}” · {sourceDate}</p>}
       {onChoose
-        ? <CardAction insight={insight} kind={kind} decision={decision} sourceTitle={sourceTitle} sourceDate={sourceDate} onChoose={onChoose} onOpenSource={onOpenSource} />
+        ? <CardAction insight={insight} kind={kind} decision={decision} sourceTitle={sourceTitle} sourceDate={sourceDate} outbound={outbound} onChoose={onChoose} onOpenSource={onOpenSource} />
         : <p className="mt-3 text-[11px] text-[#999]">Save the note to act on this.</p>}
       {cited.length > 0 && <div className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-t border-[#ececef] pt-3 text-[11px] text-[#999]">
         <span>{outbound ? 'Where this applies' : 'Notes used'}</span>
@@ -3031,7 +3069,7 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
               const note = noteById.get(result.note_id);
               if (!note) return null;
               const content = splitNote(note);
-              const badge = result.relation_type ? RELATION_BADGES[result.relation_type] : null;
+              const badge = relationBadgeFor(result);
               const expanded = expandedId === result.note_id;
               const flipped = Boolean(flippedById[result.note_id]);
               const hasHeading = content.hasTitle;
@@ -3079,7 +3117,7 @@ function RelevantNotesPanel({ notes, relevance, loading, progress, error, stale,
       {/* Only render the footer when it has something to say, otherwise it
           shows as an empty bordered strip under the results. */}
       {!loading && !error && relevance && (stale || coverage?.complete === false || results.length > RELEVANCE_PAGE_SIZE) && <footer className="shrink-0 space-y-2 border-t border-[#eee] px-4 py-3">
-        {stale && <p className="text-[11px] leading-relaxed text-[#a06a00]">Your draft changed since this search. Run it again to refresh.</p>}
+        {stale && <p className="text-[11px] leading-relaxed text-[#a06a00]">Your new note changed since this search. Run it again to refresh.</p>}
         {coverage && !coverage.complete && <p className="text-[11px] leading-relaxed text-[#a06a00]">Searched {coverage.notes_searched} of {coverage.notes_total} notes — the rest couldn’t be read. <button type="button" onClick={onRetry} className="underline">Search again</button></p>}
         {results.length > RELEVANCE_PAGE_SIZE && <div className="flex items-center justify-between">
           <button type="button" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 0} className="flex items-center gap-1 rounded px-2 py-1 text-xs text-[#555] hover:bg-[#f4f4f4] disabled:opacity-35"><ChevronLeft className="h-3.5 w-3.5" /> Previous</button>
