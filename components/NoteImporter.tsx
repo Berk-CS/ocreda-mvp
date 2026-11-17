@@ -100,7 +100,7 @@ export default function NoteImporter({
       return;
     }
     if (requested.some((domain) => !domain.description)) {
-      setSelectionError('Add a description so Ocreda can organize notes into that Domain.');
+      setSelectionError('Add a description so Ocreda understands the purpose of that Domain.');
       return;
     }
     const known = new Set(existingDomains.map((domain) => domain.title.trim().toLowerCase()).filter(Boolean));
@@ -253,12 +253,12 @@ export default function NoteImporter({
       <div className="w-full max-w-[424px] rounded-[20px] border border-[#e2e4e9] bg-white p-5 text-left sm:min-h-[338px] sm:p-6">
         <h2 className="text-center text-base font-semibold sm:text-[17px]">Organize your import</h2>
         <p className="mx-auto mt-2 max-w-[340px] text-center text-sm leading-relaxed text-muted-foreground">
-          Create Domains first and describe what belongs in each one. Ocreda will organize every imported note automatically.
+          Create Domains now if you want them ready. Imported notes stay in Orphans until you choose where each one belongs.
         </p>
 
         {existingDomains.length > 0 && (
           <div className="mt-5 rounded-lg bg-[#f5f7fb] px-3 py-2.5 text-xs leading-relaxed text-[#666]">
-            Existing Domains will also be used: {existingDomains.map((domain) => domain.title).join(', ')}.
+            Available while reviewing your imported notes: {existingDomains.map((domain) => domain.title).join(', ')}.
           </div>
         )}
 
@@ -306,7 +306,7 @@ export default function NoteImporter({
         <button type="button" onClick={continueToFiles} className="mx-auto mt-5 flex h-9 min-w-[180px] items-center justify-center rounded-md bg-primary px-5 text-sm font-medium text-primary-foreground hover:bg-primary/90">
           {existingDomains.length > 0 || domainDrafts.some((domain) => domain.title.trim() || domain.description.trim()) ? 'Continue to notes' : 'Continue without Domain'}
         </button>
-        <p className="mt-2 text-center text-[11px] text-muted-foreground">Notes that do not match a Domain will go to Orphans.</p>
+        <p className="mt-2 text-center text-[11px] text-muted-foreground">Every imported note goes to Orphans for review.</p>
       </div>
     );
   }

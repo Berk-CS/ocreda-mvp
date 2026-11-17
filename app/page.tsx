@@ -34,9 +34,8 @@ type SpeechRecognitionLike = {
   onerror: (() => void) | null; onend: (() => void) | null;
 };
 
-const AUTOMATIC_MUSE = '__automatic__';
 const ORPHANS_MUSE = 'Orphans';
-const ORPHANS_DESCRIPTION = 'Imported notes that did not match another Domain.';
+const ORPHANS_DESCRIPTION = 'Notes waiting to be placed in a Domain.';
 const ORPHANS_MIGRATION_VERSION = 'v1';
 const HOME_HISTORY_KEY = 'ocreda-home-view';
 const SAMPLE_EXIT_NOTICE = 'Back to your notes. Sample notes you wrote are kept with the samples.';
@@ -52,7 +51,7 @@ function cleanCategory(value: string | null | undefined): string | null {
  */
 function domainGoalFor(category: string | null | undefined, muses: MuseMeta[]): DomainGoal | null {
   const name = cleanCategory(category);
-  if (!name || name === AUTOMATIC_MUSE) return null;
+  if (!name || name.toLowerCase() === ORPHANS_MUSE.toLowerCase()) return null;
   const meta = muses.find((muse) => muse.title.toLowerCase() === name.toLowerCase());
   return { name, goal: meta?.description.trim() ?? '' };
 }
@@ -245,20 +244,6 @@ function normalizeProject(project: Omit<CortexProject, 'pages'> & { pages?: Proj
   return { ...project, content: project.content ?? '', pages };
 }
 
-function inferMuse(text: string, muses: MuseMeta[]): string | null {
-  if (!muses.length) return null;
-  const ignored = new Set(['this', 'that', 'with', 'from', 'have', 'will', 'your', 'about', 'into', 'were', 'when']);
-  const words = new Set((text.toLowerCase().match(/[a-z0-9']{3,}/g) ?? []).filter((word) => !ignored.has(word)));
-  const ranked = muses.map((muse) => {
-    const titleWords = muse.title.toLowerCase().match(/[a-z0-9']{3,}/g) ?? [];
-    const descriptionWords = muse.description.toLowerCase().match(/[a-z0-9']{3,}/g) ?? [];
-    const score = titleWords.reduce((sum, word) => sum + (words.has(word) ? 3 : 0), 0) + descriptionWords.reduce((sum, word) => sum + (words.has(word) ? 1 : 0), 0);
-    return { title: muse.title, score };
-  });
-  const best = ranked.sort((a, b) => b.score - a.score)[0];
-  return best && best.score > 0 ? best.title : null;
-}
-
 function OcredaMark({ className = '' }: { className?: string }) {
   // eslint-disable-next-line @next/next/no-img-element
   return <img src="/ocreda-logo.png" alt="" aria-hidden="true" className={`object-contain ${className}`} />;
@@ -304,6 +289,7 @@ export default function OcredaHome() {
   const [importProgress, setImportProgress] = useState<{ completed: number; total: number } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const orphanMigrationStartedRef = useRef(false);
+  const orphanCleanupStartedRef = useRef(false);
   // While this browser's Domains are not uploaded, its notes may look unsorted.
   const domainUploadFailedRef = useRef(false);
   const historySurfaceActiveRef = useRef(false);
@@ -559,6 +545,28 @@ export default function OcredaHome() {
     return grouped;
   }, [muses, notes]);
 
+  // Orphans is a temporary inbox, not a permanent empty Domain. Once every
+  // note has been placed (or deleted), remove it from the shared Domain store.
+  useEffect(() => {
+    if (!userId || loading || saving || notesScope !== scope || importProgress || domainUploadFailedRef.current) return;
+    if (notes.some((note) => !cleanCategory(note.category))) return;
+    const hasOrphanNotes = notes.some((note) => cleanCategory(note.category)?.toLowerCase() === ORPHANS_MUSE.toLowerCase());
+    const hasOrphanMeta = museMeta.some((muse) => muse.title.toLowerCase() === ORPHANS_MUSE.toLowerCase());
+    if (hasOrphanNotes || !hasOrphanMeta) { orphanCleanupStartedRef.current = false; return; }
+    if (orphanCleanupStartedRef.current) return;
+    orphanCleanupStartedRef.current = true;
+    deleteDomain(userId, sampleMode, ORPHANS_MUSE)
+      .then(() => {
+        setMuseMeta((current) => current.filter((muse) => muse.title.toLowerCase() !== ORPHANS_MUSE.toLowerCase()));
+        setPinnedMuseTitles((current) => current.filter((title) => title.toLowerCase() !== ORPHANS_MUSE.toLowerCase()));
+        if (activeMuse?.toLowerCase() === ORPHANS_MUSE.toLowerCase()) setActiveMuse(null);
+      })
+      .catch((err) => {
+        orphanCleanupStartedRef.current = false;
+        setError(safeErrorMessage(err, 'Unable to remove the empty Orphans Domain.'));
+      });
+  }, [activeMuse, importProgress, loading, museMeta, notes, notesScope, sampleMode, saving, scope, userId]);
+
   const unsortedNotes = useMemo(() => notes.filter((note) => !cleanCategory(note.category)), [notes]);
   const isEmpty = !loading && notes.length === 0 && muses.length === 0;
   const flashSaved = () => { setSavedOpen(true); window.setTimeout(() => setSavedOpen(false), 1350); };
@@ -568,7 +576,7 @@ export default function OcredaHome() {
     setShowUnsorted(false);
     setView('muses');
   }, []);
-  const openNewNote = (muse = AUTOMATIC_MUSE) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
+  const openNewNote = (muse = ORPHANS_MUSE) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
   const openExistingNote = (note: Note, autoSearch = true, fromNoteId: string | null = null) => {
     setError('');
     setActiveNoteRetrievalMode('relevant');
@@ -594,7 +602,11 @@ export default function OcredaHome() {
     const title = noteEditor.title.trim(); const body = noteEditor.body.trim();
     if (!title && !body) { setError('Write something before saving.'); return; }
     const rawText = title && body ? `${title}\n\n${body}` : title || body;
-    const category = noteEditor.muse === AUTOMATIC_MUSE ? inferMuse(rawText, muses) : cleanCategory(noteEditor.muse);
+    const category = cleanCategory(noteEditor.muse) ?? ORPHANS_MUSE;
+    if (findRelevant && category.toLowerCase() === ORPHANS_MUSE.toLowerCase()) {
+      setError('Choose a Domain before finding related notes.');
+      return;
+    }
     setSaving(true); setError('');
     try {
       let savedNoteId: string;
@@ -607,13 +619,16 @@ export default function OcredaHome() {
       } else {
         const created = await createNote(rawText, category);
         // The note exists now, so a failure to file it must not invite saving it twice.
-        let savedCategory = category;
+        let savedCategory: string | null = category;
         if (category) {
           try { await assignNotesToDomain(requireUserId(), sampleMode, [created.id], category); }
-          catch (err) { savedCategory = null; domainError = safeErrorMessage(err, 'The note was saved, but not its Domain.'); }
+          catch (err) {
+            savedCategory = category.toLowerCase() === ORPHANS_MUSE.toLowerCase() ? ORPHANS_MUSE : null;
+            domainError = safeErrorMessage(err, 'The note was saved, but not its Domain.');
+          }
         }
         setNotes((current) => [{ ...created, category: savedCategory }, ...current]);
-        processNote(created.id).catch(() => {});
+        if (savedCategory && savedCategory.toLowerCase() !== ORPHANS_MUSE.toLowerCase()) processNote(created.id).catch(() => {});
         savedNoteId = created.id;
       }
       setNoteEditor(null); setActiveNoteRetrievalMode('relevant'); setActiveNoteAutoSearch(true); setPreviousNoteId(null); setActiveNoteId(savedNoteId);
@@ -651,6 +666,9 @@ export default function OcredaHome() {
     try {
       await assignNotesToDomain(requireUserId(), sampleMode, [noteId], nextCategory);
       showMuseAssignments([noteId], nextCategory);
+      if (cleanCategory(current.category)?.toLowerCase() === ORPHANS_MUSE.toLowerCase() && nextCategory?.toLowerCase() !== ORPHANS_MUSE.toLowerCase()) {
+        processNote(noteId).catch(() => {});
+      }
     } catch (err) { setError(safeErrorMessage(err, 'Unable to change this note’s Domain.')); }
     finally { setSaving(false); }
   };
@@ -736,7 +754,11 @@ export default function OcredaHome() {
         setPinnedMuseTitles(pinnedMuseTitles.map((pinned) => pinned.toLowerCase() === museEditor.originalTitle?.toLowerCase() ? title : pinned));
       }
       if (activeMuse === museEditor.originalTitle) setActiveMuse(title);
-      if (!museEditor.originalTitle) setNoteEditor((current) => current ? { ...current, muse: title } : current);
+      if (!museEditor.originalTitle) {
+        setNoteEditor((current) => current ? { ...current, muse: title } : current);
+        const orphanNote = activeNoteId ? notes.find((note) => note.id === activeNoteId && cleanCategory(note.category)?.toLowerCase() === ORPHANS_MUSE.toLowerCase()) : null;
+        if (orphanNote) await changeReadingNoteDomain(orphanNote.id, title);
+      }
       setMuseEditor(null); flashSaved();
     } catch (err) { setError(safeErrorMessage(err, 'Unable to save this Domain.')); }
     finally { setSaving(false); }
@@ -830,11 +852,10 @@ export default function OcredaHome() {
       }
 
       const importDomains = Array.from(importDomainMap.values());
-      const matchingDomains = importDomains.filter((domain) => domain.title.toLowerCase() !== ORPHANS_MUSE.toLowerCase());
       const orphanTitle = importDomainMap.get(ORPHANS_MUSE.toLowerCase())?.title ?? ORPHANS_MUSE;
       const inputs = drafts.map((draft) => {
         const rawText = prepareImportedNoteText(draft.rawText);
-        return { rawText, category: inferMuse(rawText, matchingDomains) ?? orphanTitle };
+        return { rawText, category: orphanTitle };
       });
       const imported = await importNotes(
         inputs,
@@ -842,7 +863,6 @@ export default function OcredaHome() {
       );
 
       const categorized = imported.map((note, index) => ({ ...note, category: inputs[index].category }));
-      categorized.forEach((note) => processNote(note.id).catch(() => {}));
       try {
         const owner = requireUserId();
         const nextMeta = new Map(museMeta.map((muse) => [muse.title.toLowerCase(), muse]));
@@ -880,13 +900,13 @@ export default function OcredaHome() {
         {activeProject && activePage ? <ProjectPageWorkspace key={activePage.id} project={activeProject} page={activePage} notes={notes} muses={muses} projects={projects} saving={saving} onBack={() => setActivePageId(null)} onChange={(page) => updateProjectPage(activeProject.id, page)} onAddNote={() => openNewNote()} onOpenNote={openExistingNote} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onDelete={() => removeProjectPage(activeProject.id, activePage.id)} onSaveRetrieval={saveInstantRetrieval} />
           : activeProject ? <ProjectPagesGrid project={activeProject} onBack={() => { setActiveProjectId(null); setActivePageId(null); }} onAddPage={() => createProjectPage(activeProject.id)} onOpenPage={(page) => setActivePageId(page.id)} onEdit={() => setProjectEditor({ project: activeProject, title: activeProject.title, description: activeProject.description })} onDelete={() => removeProject(activeProject.id)} />
           : isEmpty ? <EmptyWorkspace displayName={displayName} userEmail={user?.email ?? ''} existingDomains={muses} onAddNote={() => openNewNote()} onImport={handleImport} onOpenImport={() => setImportOpen(true)} onTrySamples={user && !sampleMode ? () => setSampleMode(user.id, true) : undefined} importError={importError} progress={importProgress} />
-          : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? 'Instant retrieval' : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? AUTOMATIC_MUSE : activeMuse ?? AUTOMATIC_MUSE)} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} onShare={sampleMode || showUnsorted ? undefined : () => void shareNotes(notesByMuse.get(activeMuse ?? '') ?? [])} />
-          : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onAddNote={(muse) => openNewNote(muse ?? AUTOMATIC_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />
+          : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? 'Instant retrieval' : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? ORPHANS_MUSE : activeMuse ?? ORPHANS_MUSE)} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} onShare={sampleMode || showUnsorted ? undefined : () => void shareNotes(notesByMuse.get(activeMuse ?? '') ?? [])} />
+          : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onAddNote={(muse) => openNewNote(muse ?? ORPHANS_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />
           : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onSaveRetrieval={saveInstantRetrieval} />}
         {notice && !error && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
-      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={scope ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteAutoSearch(false); setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? AUTOMATIC_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onDelete={removeReadingNote} onShare={shareNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />}
+      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={scope ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteAutoSearch(false); setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? ORPHANS_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onCreateDomain={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onDelete={removeReadingNote} onShare={shareNote} onSaveRetrieval={saveInstantRetrieval} onSetDomainGoal={setDomainGoal} />}
       {shareNotice && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-[95] flex max-w-[90vw] -translate-x-1/2 items-center gap-3 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl"><span>{shareNotice}</span><Link href="/sharing" className="shrink-0 font-medium text-[#a8c4ff] hover:underline">Make a link</Link><button type="button" onClick={() => setShareNotice('')} aria-label="Dismiss"><X className="h-4 w-4" /></button></div>}
       {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onFindRelevantNotes={() => void saveNote(true)} onImport={() => { setImportError(''); setImportOpen(true); }} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
       {museEditor && <MuseEditor state={museEditor} saving={saving} error={error} onChange={setMuseEditor} onClose={() => { setMuseEditor(null); setError(''); }} onSave={() => void saveMuse()} />}
@@ -1493,10 +1513,10 @@ function RelatedNotePanel({ note, relevance, focusText = '', onClose, onOpenFull
   </div>;
 }
 
-function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, saving, userId, initialRetrievalMode, autoSearch, onClose, onReturnToPrevious, onAddNote, onOpenNote, onOpenPage, onUpdate, onChangeDomain, onDelete, onShare, onSaveRetrieval, onSetDomainGoal }: {
+function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, saving, userId, initialRetrievalMode, autoSearch, onClose, onReturnToPrevious, onAddNote, onOpenNote, onOpenPage, onUpdate, onChangeDomain, onCreateDomain, onDelete, onShare, onSaveRetrieval, onSetDomainGoal }: {
   note: Note; previousNote: Note | null; allNotes: Note[]; muses: MuseMeta[]; projects: CortexProject[]; saving: boolean; userId: string; initialRetrievalMode: 'similar' | 'relevant'; autoSearch: boolean;
   onClose: () => void; onReturnToPrevious: () => void; onAddNote: () => void; onOpenNote: (note: Note, autoSearch?: boolean) => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void;
-  onUpdate: (noteId: string, rawText: string) => Promise<void>; onChangeDomain: (category: string | null) => void; onDelete: (note: Note) => Promise<void>;
+  onUpdate: (noteId: string, rawText: string) => Promise<void>; onChangeDomain: (category: string | null) => void; onCreateDomain: () => void; onDelete: (note: Note) => Promise<void>;
   onSaveRetrieval: (queryText: string, resultNotes: Note[], projectId: string, newProjectTitle?: string) => Promise<void>;
   onSetDomainGoal: (domainTitle: string, goal: string) => void;
   /** Copies the note into the person's public notes, to share by link. */
@@ -1522,15 +1542,17 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   // The sample vault's Start here note explains the app; searching it would
   // only spend AI credit on a guide.
   const isGuide = isSampleGuide(note);
+  const requiresDomain = cleanCategory(note.category)?.toLowerCase() === ORPHANS_MUSE.toLowerCase();
+  const assignableMuses = muses.filter((muse) => muse.title.toLowerCase() !== ORPHANS_MUSE.toLowerCase());
   // Avoid briefly showing "Not searched yet" before an automatic search starts.
-  const [retrievalLoading, setRetrievalLoading] = useState(autoSearch && !isGuide);
+  const [retrievalLoading, setRetrievalLoading] = useState(autoSearch && !isGuide && !requiresDomain);
   const [retrievalProgress, setRetrievalProgress] = useState<RelevanceProgress | null>(null);
   const [retrievalError, setRetrievalError] = useState('');
   const [retrievalAttempt, setRetrievalAttempt] = useState(0);
   const [retrievalMode, setRetrievalMode] = useState(initialRetrievalMode);
   // Starts false for a note opened just to read it. Retrieval only begins
   // after an explicit request (or when the caller intentionally auto-searches).
-  const [searchRequested, setSearchRequested] = useState(autoSearch && !isGuide);
+  const [searchRequested, setSearchRequested] = useState(autoSearch && !isGuide && !requiresDomain);
   const [searchRequest, setSearchRequest] = useState<KnowledgeSearchRequest | null>(null);
   const [instantRetrievalOpen, setInstantRetrievalOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -1582,6 +1604,12 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
 
   useEffect(() => {
     let active = true;
+    if (requiresDomain) {
+      setRetrieval(null);
+      setRetrievalLoading(false);
+      setRetrievalProgress(null);
+      return;
+    }
     const inputs = retrievalInputsRef.current;
     const requestNote = { ...inputs.note, raw_text: inputs.rawText || inputs.note.raw_text };
     const requestSignature = retrievalInputSignature(requestNote.raw_text, inputs.goalText, inputs.aiMode);
@@ -1636,16 +1664,29 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
         if (!response.insight_failed) persistSavedRetrieval(userId, requestNote, inputs.goalText, retrievalMode, response, requestSignature);
         if (active) setRetrieval(response);
       })
-      .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
+      .catch((err) => {
+        if (cancel.signal.aborted || (err instanceof Error && err.name === 'AbortError')) return;
+        if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.'));
+      })
       .finally(() => { if (active) setRetrievalLoading(false); });
     return () => {
       active = false;
       if (!agentsFinished) cancel.abort();
     };
-  }, [note.id, retrievalAttempt, retrievalMode, searchRequested, userId]);
+  }, [note.id, requiresDomain, retrievalAttempt, retrievalMode, searchRequested, userId]);
+
+  const wasDomainRequiredRef = useRef(requiresDomain);
+  useEffect(() => {
+    const wasRequired = wasDomainRequiredRef.current;
+    wasDomainRequiredRef.current = requiresDomain;
+    if (wasRequired && !requiresDomain && autoSearch && !isGuide) {
+      setSearchRequested(true);
+      setRetrievalAttempt((attempt) => attempt + 1);
+    }
+  }, [autoSearch, isGuide, requiresDomain]);
 
   const requestReretrieval = (mode: 'similar' | 'relevant' = retrievalMode) => {
-    if (isGuide) return;
+    if (isGuide || requiresDomain) return;
     setRetrievalMode(mode);
     setSearchRequested(true);
     setRetrievalAttempt((attempt) => attempt + 1);
@@ -1803,7 +1844,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   };
 
   // A new note or search starts on the first section with something to show.
-  // Afterwards the gray section rail controls this, so a choice on a card, or
+  // Afterwards clicking a section controls this, so a choice on a card, or
   // typing in the note, never moves the reader somewhere else.
   useEffect(() => {
     const firstWithCard = noteSections.find((section) => cardLayout.shown.some((view) => view.section?.id === section.id))?.id;
@@ -1983,43 +2024,108 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     const marks = highlights.filter((span) => span.start >= section.start && span.end <= section.end);
     const inserts = overlays.filter((overlay) => overlay.at >= section.start && overlay.at <= section.end && overlay.view.section?.id === section.id);
     if (!marks.length && !inserts.length) return formattedBody ? <FormattedNoteBody text={section.text} /> : <span className="whitespace-pre-wrap break-words">{section.text}</span>;
-    const events = [
-      ...marks.map((mark) => ({ at: mark.start, mark })),
-      ...inserts.map((overlay) => ({ at: overlay.at, overlay })),
-    ].sort((x, y) => x.at - y.at || ('mark' in x ? -1 : 1));
-    const nodes: React.ReactNode[] = [];
-    let cursor = section.start;
-    events.forEach((event, position) => {
-      // Anything placed inside a passage already drawn goes just after it.
-      const at = Math.max(event.at, cursor);
-      if (at > cursor) nodes.push(displayedBody.slice(cursor, at));
-      cursor = at;
-      if ('overlay' in event && event.overlay) {
-        nodes.push(renderOverlay(event.overlay, `${section.id}-o${position}`));
-        // A box already ends the line, so its line break would leave a gap.
-        if (event.overlay.type === 'block' && displayedBody[cursor] === '\n') cursor++;
-        return;
-      }
-      const mark = 'mark' in event ? event.mark : null;
-      if (!mark || mark.start < cursor) return;
-      const view = cardLayout.views[mark.index];
-      const highlightStyle = HIGHLIGHT_STYLES[view.kind];
-      const active = view.item === insight;
-      const openInsight = () => selectInsight(mark.index);
-      nodes.push(<mark
-        key={`${section.id}-m${mark.index}`}
-        role="button"
-        tabIndex={0}
-        onClick={(clickEvent) => { clickEvent.stopPropagation(); openInsight(); }}
-        onKeyDown={(keyEvent) => { if (keyEvent.key === 'Enter' || keyEvent.key === ' ') { keyEvent.preventDefault(); keyEvent.stopPropagation(); openInsight(); } }}
-        aria-pressed={active}
-        title="See what your notes say about this"
-        className={`cursor-pointer rounded-sm px-0.5 text-inherit underline decoration-2 underline-offset-4 [box-decoration-break:clone] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${active ? highlightStyle.active : `${highlightStyle.idle} hover:brightness-[0.98]`}`}
-      >{displayedBody.slice(mark.start, mark.end)}</mark>);
-      cursor = mark.end;
-    });
-    if (cursor < section.end) nodes.push(displayedBody.slice(cursor, section.end));
-    return <span className="whitespace-pre-wrap break-words">{nodes}</span>;
+
+    type DecoratedEvent =
+      | { kind: 'mark'; at: number; end: number; mark: (typeof marks)[number] }
+      | { kind: 'overlay'; at: number; overlay: (typeof inserts)[number] };
+
+    /** Draw retrieval marks and accepted suggestions without changing source offsets. */
+    const renderDecoratedRange = (start: number, end: number, keyPrefix: string): React.ReactNode[] => {
+      const events: DecoratedEvent[] = [
+        ...marks
+          .filter((mark) => mark.end > start && mark.start < end)
+          .map((mark) => ({ kind: 'mark' as const, at: Math.max(mark.start, start), end: Math.min(mark.end, end), mark })),
+        ...inserts
+          .filter((overlay) => overlay.at >= start && overlay.at <= end)
+          .map((overlay) => ({ kind: 'overlay' as const, at: overlay.at, overlay })),
+      ].sort((left, right) => left.at - right.at || (left.kind === 'mark' ? -1 : 1));
+      const nodes: React.ReactNode[] = [];
+      let cursor = start;
+      events.forEach((event, position) => {
+        // Anything placed inside a passage already drawn goes just after it.
+        const at = Math.max(event.at, cursor);
+        if (at > cursor) nodes.push(displayedBody.slice(cursor, at));
+        cursor = at;
+        if (event.kind === 'overlay') {
+          nodes.push(renderOverlay(event.overlay, `${keyPrefix}-o${position}`));
+          // A box already ends the line, so its line break would leave a gap.
+          if (event.overlay.type === 'block' && cursor < end && displayedBody[cursor] === '\n') cursor++;
+          return;
+        }
+        if (event.at < cursor) return;
+        const { mark } = event;
+        const view = cardLayout.views[mark.index];
+        const style = SUGGESTION_STYLES[view.kind];
+        const highlightStyle = HIGHLIGHT_STYLES[view.kind];
+        const active = view.item === insight;
+        const openInsight = () => selectInsight(mark.index);
+        nodes.push(<mark
+          key={`${keyPrefix}-m${mark.index}-${event.at}`}
+          role="button"
+          tabIndex={0}
+          onClick={(clickEvent) => { clickEvent.stopPropagation(); openInsight(); }}
+          onKeyDown={(keyEvent) => { if (keyEvent.key === 'Enter' || keyEvent.key === ' ') { keyEvent.preventDefault(); keyEvent.stopPropagation(); openInsight(); } }}
+          aria-pressed={active}
+          title="See what your notes say about this"
+          className={`cursor-pointer rounded-sm px-0.5 text-inherit underline decoration-2 underline-offset-4 [box-decoration-break:clone] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${active ? highlightStyle.active : `${highlightStyle.idle} hover:brightness-[0.98]`}`}
+        ><InlineNoteFormatting text={displayedBody.slice(event.at, event.end)} />{event.end === mark.end && <span className={`ml-1 inline-block rounded px-1 align-[1px] text-[10px] font-medium leading-4 ${style.badge}`}>{style.label}</span>}</mark>);
+        cursor = event.end;
+      });
+      if (cursor < end) nodes.push(displayedBody.slice(cursor, end));
+      return nodes;
+    };
+
+    /** Hide lightweight Markdown markers while retaining retrieval decorations. */
+    const renderInlineRange = (start: number, end: number, keyPrefix: string): React.ReactNode[] => {
+      const value = displayedBody.slice(start, end);
+      const expression = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
+      const nodes: React.ReactNode[] = [];
+      let cursor = start;
+      Array.from(value.matchAll(expression)).forEach((match, index) => {
+        const matched = match[0];
+        const matchStart = start + (match.index ?? 0);
+        const matchEnd = matchStart + matched.length;
+        const markerLength = matched.startsWith('**') || matched.startsWith('__') ? 2 : 1;
+        if (matchStart > cursor) nodes.push(...renderDecoratedRange(cursor, matchStart, `${keyPrefix}-p${index}`));
+        const content = renderDecoratedRange(matchStart + markerLength, matchEnd - markerLength, `${keyPrefix}-f${index}`);
+        nodes.push(markerLength === 2
+          ? <strong key={`${keyPrefix}-strong${index}`}>{content}</strong>
+          : <em key={`${keyPrefix}-em${index}`}>{content}</em>);
+        cursor = matchEnd;
+      });
+      if (cursor < end) nodes.push(...renderDecoratedRange(cursor, end, `${keyPrefix}-tail`));
+      return nodes;
+    };
+
+    if (formattedBody) {
+      let lineStart = section.start;
+      return <div className="space-y-3 break-words">{displayedBody.slice(section.start, section.end).split('\n').map((rawLine, index) => {
+        const currentStart = lineStart;
+        const lineEnd = currentStart + rawLine.length;
+        lineStart = lineEnd + 1;
+        const heading = rawLine.match(/^(#{1,3})\s+(.*)$/);
+        if (heading) {
+          const level = heading[1].length;
+          const contentStart = lineEnd - heading[2].length;
+          const className = level === 1 ? 'pt-2 text-2xl font-semibold leading-snug' : level === 2 ? 'pt-2 text-xl font-semibold leading-snug' : 'pt-1 text-lg font-semibold leading-snug';
+          return <div key={index} role="heading" aria-level={Math.min(level + 1, 6)} className={className}>{renderInlineRange(contentStart, lineEnd, `${section.id}-l${index}`)}</div>;
+        }
+        const bullet = rawLine.match(/^[-+*•]\s+(.*)$/);
+        if (bullet) {
+          const contentStart = lineEnd - bullet[1].length;
+          return <div key={index} className="flex gap-3 pl-2"><span aria-hidden="true" className="mt-[0.72em] h-1.5 w-1.5 shrink-0 rounded-full bg-current" /><span>{renderInlineRange(contentStart, lineEnd, `${section.id}-l${index}`)}</span></div>;
+        }
+        const numbered = rawLine.match(/^(\d+)\.\s+(.*)$/);
+        if (numbered) {
+          const contentStart = lineEnd - numbered[2].length;
+          return <div key={index} className="flex gap-3 pl-1"><span className="min-w-5 shrink-0 text-right text-[#777]">{numbered[1]}.</span><span>{renderInlineRange(contentStart, lineEnd, `${section.id}-l${index}`)}</span></div>;
+        }
+        if (!rawLine.trim()) return <div key={index} className="min-h-2" aria-hidden={!inserts.some((overlay) => overlay.at === currentStart)}>{renderDecoratedRange(currentStart, lineEnd, `${section.id}-blank${index}`)}</div>;
+        return <div key={index} className="whitespace-pre-wrap">{renderInlineRange(currentStart, lineEnd, `${section.id}-l${index}`)}</div>;
+      })}</div>;
+    }
+
+    return <span className="whitespace-pre-wrap break-words">{renderDecoratedRange(section.start, section.end, section.id)}</span>;
   };
 
   return (
@@ -2040,7 +2146,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
               {usedInNotes.map((item) => <button key={item.id} role="menuitem" type="button" onClick={() => { setUsedInMenuOpen(false); void leaveWorkspace(item, false); }} className="block w-full truncate px-4 py-2.5 text-left text-sm text-[#333] hover:bg-[#edf3ff] hover:text-[#315fc5]">{noteLabel(item)}</button>)}
             </div>}
           </div>}
-          <button type="button" disabled={retrievalLoading || isGuide} onClick={() => requestReretrieval()} aria-label="Reload related notes" title="Reload related notes" className="flex h-10 w-10 items-center justify-center rounded-md border border-[#dedede] bg-white shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] disabled:cursor-wait disabled:opacity-50 sm:h-9 sm:w-9"><RefreshCw className={`h-4 w-4 ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
+          <button type="button" disabled={retrievalLoading || isGuide || requiresDomain} onClick={() => requestReretrieval()} aria-label="Reload related notes" title={requiresDomain ? 'Choose a Domain before retrieval' : 'Reload related notes'} className="flex h-10 w-10 items-center justify-center rounded-md border border-[#dedede] bg-white shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] disabled:cursor-wait disabled:opacity-50 sm:h-9 sm:w-9"><RefreshCw className={`h-4 w-4 ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
           <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote, false)} aria-label="Newer note" title="Newer note" className="hidden h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25 sm:flex"><ChevronLeft className="h-4 w-4" /></button>
           <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote, false)} aria-label="Older note" title="Older note" className="hidden h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25 sm:flex"><ChevronRight className="h-4 w-4" /></button>
           <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f4f4f4] sm:h-9 sm:w-9"><MoreHorizontal className="h-5 w-5" /></button>
@@ -2057,10 +2163,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-24 pt-14 sm:px-12 sm:pt-12 xl:px-[8%]">
             {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" placeholder="Title (optional)" className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6]" /><textarea ref={bodyRef} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="relative mx-auto max-w-3xl" onDoubleClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} title="Double-click to edit">{title.trim() && <h1 className="break-words px-2 py-1 text-2xl font-semibold">{title}</h1>}<div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]" onDoubleClick={(event) => event.stopPropagation()}><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div>
-              <div className="mt-9 flex w-full gap-4 rounded-md px-2 py-2 text-left text-base leading-[1.7]">
-                {noteSections.length > 1 && <nav aria-label="Note sections" onClick={(event) => event.stopPropagation()} className="sticky top-2 flex h-fit w-5 shrink-0 flex-col gap-2 py-1">
-                  {noteSections.map((section) => <button key={section.id} type="button" onClick={() => { selectSection(section.id); document.getElementById(`note-${section.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }} aria-label={`Select section ${section.index + 1}${section.label ? `: ${section.label}` : ''}`} title={section.label || undefined} aria-pressed={selectedSectionId === section.id} className={`h-8 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedSectionId === section.id ? 'w-2.5 bg-[#666]' : 'w-1.5 bg-[#d2d2d5] hover:w-2.5 hover:bg-[#888]'}`} />)}
-                </nav>}
+              <div className="mt-9 w-full rounded-md px-2 py-2 text-left text-base leading-[1.7]">
                 <div className="min-w-0 flex-1 space-y-7">
                   {noteSections.length ? noteSections.map((section) => <section key={section.id} id={`note-${section.id}`} tabIndex={0} aria-label={`Section ${section.index + 1}`} aria-current={selectedSectionId === section.id ? 'true' : undefined} onClick={() => selectSection(section.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectSection(section.id); } }} className={`cursor-text scroll-mt-20 border-l-[3px] pl-4 outline-none transition hover:border-[#888] focus-visible:ring-2 focus-visible:ring-[#477bea]/30 ${selectedSectionId === section.id ? 'border-[#666]' : 'border-[#d2d2d5]'}`}>{renderSectionContent(section)}</section>) : <span className="text-left text-[#999]">Double-click to start writing.</span>}
                 </div>
@@ -2120,6 +2223,20 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
 
       {searchRequest && <KnowledgeSearchOverlay request={searchRequest} notes={allNotes} muses={muses} projects={projects} onClose={() => setSearchRequest(null)} onOpenPage={(project, page) => { setSearchRequest(null); onOpenPage(project, page); }} onOpenNote={(item) => { setSearchRequest(null); onOpenNote(item); }} onInstantRetrieval={() => { setSearchRequest(null); setInstantRetrievalOpen(true); }} />}
       {instantRetrievalOpen && <InstantRetrievalOverlay notes={allNotes} muses={muses} projects={projects} saving={saving} onClose={() => setInstantRetrievalOpen(false)} onOpenNote={(item) => { setInstantRetrievalOpen(false); onOpenNote(item); }} onSave={onSaveRetrieval} />}
+      {requiresDomain && <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]" role="dialog" aria-modal="true" aria-labelledby="orphan-domain-title">
+        <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl sm:p-8">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[#edf3ff] text-[#477bea]"><FolderPlus className="h-5 w-5" /></div>
+          <h2 id="orphan-domain-title" className="mt-5 text-xl font-semibold text-[#202020]">Choose a Domain before retrieval</h2>
+          <p className="mt-2 text-sm leading-relaxed text-[#666]">This note is in Orphans. Place it in a real Domain so Ocreda has the right context before finding related notes.</p>
+          {assignableMuses.length > 0 ? <div className="mt-6 max-h-64 space-y-2 overflow-y-auto">
+            {assignableMuses.map((domain) => <button key={domain.title} type="button" disabled={saving} onClick={() => onChangeDomain(domain.title)} className="flex w-full items-start justify-between gap-4 rounded-lg border border-[#dedede] px-4 py-3 text-left hover:border-[#8fb1ff] hover:bg-[#f7f9ff] disabled:opacity-50"><span><span className="block text-sm font-medium text-[#222]">{domain.title}</span>{domain.description && <span className="mt-1 line-clamp-2 block text-xs leading-relaxed text-[#777]">{domain.description}</span>}</span><ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[#999]" /></button>)}
+          </div> : <p className="mt-6 rounded-lg bg-[#f7f7f9] px-4 py-3 text-sm text-[#666]">Create your first Domain, then this note will be placed there.</p>}
+          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+            <button type="button" disabled={saving} onClick={() => void leaveWorkspace()} className="rounded-md px-4 py-2 text-sm text-[#666] hover:bg-[#f4f4f4] disabled:opacity-50">Back to notes</button>
+            <button type="button" disabled={saving} onClick={onCreateDomain} className="flex items-center justify-center gap-2 rounded-md bg-[#477bea] px-4 py-2 text-sm font-medium text-white hover:bg-[#3d6ed7] disabled:opacity-50"><Plus className="h-4 w-4" /> Create a Domain</button>
+          </div>
+        </div>
+      </div>}
     </div>
     </div>
   );
@@ -3125,6 +3242,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
   }, [state.body, state.title]);
 
   const draftTooShort = draftText.length < MIN_RELEVANCE_DRAFT_CHARS;
+  const domainRequired = cleanCategory(state.muse)?.toLowerCase() === ORPHANS_MUSE.toLowerCase();
   const draftChangedSinceSearch = Boolean(relevance) && searchedDraft !== draftText;
   const domainCapture = state.context === 'domain';
 
@@ -3143,6 +3261,11 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
   }, [domainCapture, museOpen]);
 
   const runRelevanceSearch = async () => {
+    if (domainRequired) {
+      setPanelOpen(true);
+      setRelevanceError('Choose a Domain before finding related notes.');
+      return;
+    }
     if (draftTooShort || relevanceLoading) return;
     setPanelOpen(true); setRelevanceError(''); setRelevancePage(0);
 
@@ -3200,7 +3323,12 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
     speechRef.current = recognition; setDictating(true); recognition.start();
   };
 
-  const museLabel = state.muse === AUTOMATIC_MUSE ? 'Automatically organize' : state.muse;
+  const museLabel = cleanCategory(state.muse) ?? ORPHANS_MUSE;
+  const relevanceTitle = domainRequired
+    ? 'Choose a Domain before finding related notes'
+    : draftTooShort
+      ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters to search your notes`
+      : 'Find relevant notes';
   return (
     <div className={`fixed inset-0 z-50 flex items-center justify-center ${domainCapture ? 'bg-[#e5e5e5] p-3 sm:p-6' : 'bg-black/25 p-4 backdrop-blur-[5px]'}`} role="dialog" aria-modal="true" aria-label={state.note ? 'Edit note' : 'Create note'} onMouseDown={(event) => { if (!domainCapture && event.target === event.currentTarget && !saving) onClose(); }}>
       {!domainCapture && <button type="button" onClick={onClose} aria-label="Close note editor" className="absolute right-5 top-5 z-10 text-white drop-shadow sm:right-8 sm:top-7"><X className="h-7 w-7" /></button>}
@@ -3210,12 +3338,11 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
             <button type="button" onClick={onClose} aria-label="Close note editor" title="Close note editor" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#555]"><ArrowLeft className="h-5 w-5" /></button>
             <span aria-hidden="true" className="flex h-8 w-8 items-center justify-center rounded-md bg-[#477bea] text-white"><Plus className="h-4 w-4" /></span>
             <button type="button" onClick={onImport} aria-label="Import notes" title="Import notes" className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#555]"><Upload className="h-5 w-5" /></button>
-            <button type="button" onClick={onFindRelevantNotes} disabled={draftTooShort || saving} aria-label="Find relevant notes" title={draftTooShort ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters to search your notes` : 'Find relevant notes'} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#477bea] disabled:opacity-35">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-5 w-5" />}</button>
+            <button type="button" onClick={onFindRelevantNotes} disabled={domainRequired || draftTooShort || saving} aria-label="Find relevant notes" title={relevanceTitle} className="flex h-9 w-9 items-center justify-center rounded-md hover:bg-[#f5f5f6] hover:text-[#477bea] disabled:opacity-35">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-5 w-5" />}</button>
           </div>
           <div ref={museMenuRef} className="relative col-span-2 row-start-2 z-40 max-w-full justify-self-center sm:absolute sm:left-1/2 sm:-translate-x-1/2">
             <button type="button" onClick={() => setMuseOpen((value) => !value)} aria-expanded={museOpen} className="flex max-w-[calc(100vw-3rem)] items-center rounded px-2 py-1 text-xs text-[#555] hover:bg-[#f5f5f6] sm:max-w-[40vw]"><span className="shrink-0">Domain:&nbsp;</span><span className="truncate border-b border-[#999]">{museLabel}</span><ChevronDown className="ml-1 h-3.5 w-3.5 shrink-0" /></button>
             {museOpen && <div className="absolute left-1/2 top-8 z-50 w-[285px] -translate-x-1/2 overflow-hidden rounded-lg border border-[#ddd] bg-white py-2 text-left text-[#555] shadow-xl">
-              <button type="button" onClick={() => { onChange({ ...state, muse: AUTOMATIC_MUSE }); setMuseOpen(false); }} className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-[#f6f6f6] focus:bg-[#f6f6f6] focus:outline-none">Automatically organize {state.muse === AUTOMATIC_MUSE && <Check className="h-4 w-4 text-[#477bea]" />}</button>
               {muses.map((muse) => <button key={muse.title} type="button" onClick={() => { onChange({ ...state, muse: muse.title }); setMuseOpen(false); }} className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-[#f6f6f6] focus:bg-[#f6f6f6] focus:outline-none">{muse.title} {state.muse === muse.title && <Check className="h-4 w-4 text-[#477bea]" />}</button>)}
             </div>}
           </div>
@@ -3241,14 +3368,13 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
             <span className="mx-2 h-7 w-px bg-[#ddd]" />
           </div>
           <div className={`${domainCapture ? 'flex w-full items-center gap-2 lg:w-auto lg:gap-1' : 'contents'}`}>
-            <button type="button" onClick={onFindRelevantNotes} disabled={draftTooShort || saving} title={draftTooShort ? `Write at least ${MIN_RELEVANCE_DRAFT_CHARS} characters to search your notes` : 'Find relevant notes'} className="flex items-center gap-1.5 rounded px-2 py-1.5 font-medium text-[#477bea] hover:bg-white disabled:opacity-40">
+            <button type="button" onClick={onFindRelevantNotes} disabled={domainRequired || draftTooShort || saving} title={relevanceTitle} className="flex items-center gap-1.5 rounded px-2 py-1.5 font-medium text-[#477bea] hover:bg-white disabled:opacity-40">
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
               <span className="hidden lg:inline">Find relevant notes</span>
             </button>
           {!domainCapture && <div className="relative ml-auto shrink-0">
             <button type="button" onClick={() => setMuseOpen((value) => !value)} className="flex items-center text-sm"><span className="text-[#477bea]">Domain:</span>&nbsp;<span className="border-b border-[#999]">{museLabel}</span><ChevronDown className="ml-1 h-3.5 w-3.5" /></button>
             {museOpen && <div className="absolute bottom-9 right-0 z-[60] w-[285px] overflow-hidden rounded-lg border border-[#ddd] bg-white py-2 shadow-xl">
-              <button type="button" onClick={() => { onChange({ ...state, muse: AUTOMATIC_MUSE }); setMuseOpen(false); }} className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-[#f6f6f6]">Automatically organize {state.muse === AUTOMATIC_MUSE && <Check className="h-4 w-4 text-[#477bea]" />}</button>
               {muses.map((muse) => <button key={muse.title} type="button" onClick={() => { onChange({ ...state, muse: muse.title }); setMuseOpen(false); }} className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-[#f6f6f6]">{muse.title} {state.muse === muse.title && <Check className="h-4 w-4 text-[#477bea]" />}</button>)}
               <div className="flex items-center gap-2 border-t border-[#eee] px-4 py-2">
                 <Plus className="h-4 w-4 shrink-0 text-[#777]" />
@@ -3271,7 +3397,7 @@ function MuseEditor({ state, saving, error, onChange, onClose, onSave }: {
   state: MuseEditorState; saving: boolean; error: string; onChange: (state: MuseEditorState) => void; onClose: () => void; onSave: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4 backdrop-blur-[6px]" role="dialog" aria-modal="true" aria-label={state.originalTitle ? 'Edit Domain' : 'Create Domain'} onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+    <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/30 p-4 backdrop-blur-[6px]" role="dialog" aria-modal="true" aria-label={state.originalTitle ? 'Edit Domain' : 'Create Domain'} onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
       <div className="relative w-[min(92vw,570px)]">
         <button type="button" onClick={onClose} aria-label="Close Domain editor" className="absolute right-2 top-2 z-10 text-[#777] sm:-right-10 sm:-top-8 sm:text-white"><X className="h-7 w-7" /></button>
         <div className="rounded-xl border-[9px] border-[#f4f4f6] bg-white px-6 py-7 shadow-2xl sm:px-8">
