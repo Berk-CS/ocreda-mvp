@@ -15,7 +15,7 @@ import { prepareImportedNoteText } from '@/lib/import-note-content';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 import { CardChoice, CardDecision, CardKind, DomainGoal, IncomingCardDecision, InsightIntent, Note, NoteInsight, NoteRelationType, RelevanceCoverage, RelevanceResult, RelevanceSection, SuggestionKind } from '@/lib/types';
 import { loadCardDecisions, saveCardDecision } from '@/lib/card-decisions';
-import { findAnchor, RELATED_NOTES_PAGE_SIZE, splitIntoParagraphs } from '@/supabase/functions/_shared/relevance';
+import { defaultNoteTitle, findAnchor, readNoteTitle, RELATED_NOTES_PAGE_SIZE, splitIntoParagraphs } from '@/supabase/functions/_shared/relevance';
 import { getAiMode, useAiMode } from '@/lib/ai-mode';
 import { setSampleMode, useSampleMode, workspaceScope } from '@/lib/sample-mode';
 import { isSampleGuide, loadSampleVault, SampleVault } from '@/lib/sample-vault';
@@ -58,17 +58,33 @@ function domainGoalFor(category: string | null | undefined, muses: MuseMeta[]): 
 }
 
 /**
- * Existing notes keep the app's original storage convention: line one is the
- * title and all later lines are the body. Title generation for titleless files
- * happens only in the import path, before a new note is inserted.
+ * A note's title and body. Line one is the title, as notes are stored, unless
+ * the note was saved without one: then the title is its first five words and
+ * the body is all of its text. That reading also fixes notes saved before,
+ * whose whole text sat in the title. `written` is false for a made-up title.
  */
-function splitNote(note: Note): { title: string; body: string; hasTitle: boolean } {
-  const text = note.raw_text.trim();
-  if (!text) return { title: '', body: '', hasTitle: false };
-  const [first, ...rest] = text.split('\n');
-  const heading = first.trim();
-  const body = rest.join('\n').trim();
-  return { title: heading, body, hasTitle: Boolean(heading) };
+function splitNote(note: Note): { title: string; body: string; hasTitle: boolean; written: boolean } {
+  const { title, body, written } = readNoteTitle(note.raw_text);
+  return { title, body, hasTitle: Boolean(title), written };
+}
+
+/** What the title field starts with: empty when the person never wrote a title. */
+function editableTitle(note: Note): string {
+  const { title, written } = splitNote(note);
+  return written ? title : '';
+}
+
+/**
+ * The stored text for a title and body. With no title, a note longer than five
+ * words gets its first five words and "..." as one, so the text stays in the body.
+ */
+function composeNoteText(title: string, body: string): string {
+  const cleanBody = body.trim();
+  const cleanTitle = title.trim() || (cleanBody ? defaultNoteTitle(cleanBody) : '');
+  if (!cleanBody) return cleanTitle;
+  // A note of five words or fewer is its own title.
+  if (!title.trim() && !cleanTitle.endsWith('...')) return cleanBody;
+  return `${cleanTitle}\n\n${cleanBody}`;
 }
 
 const MAX_LABEL_CHARS = 60;
@@ -593,7 +609,7 @@ export default function OcredaHome() {
     if (!noteEditor) return;
     const title = noteEditor.title.trim(); const body = noteEditor.body.trim();
     if (!title && !body) { setError('Write something before saving.'); return; }
-    const rawText = title && body ? `${title}\n\n${body}` : title || body;
+    const rawText = composeNoteText(title, body);
     const category = noteEditor.muse === AUTOMATIC_MUSE ? inferMuse(rawText, muses) : cleanCategory(noteEditor.muse);
     setSaving(true); setError('');
     try {
@@ -1503,7 +1519,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   onShare: (note: Note) => Promise<void>;
 }) {
   const initial = splitNote(note);
-  const [title, setTitle] = useState(initial.title);
+  const [title, setTitle] = useState(editableTitle(note));
   const [body, setBody] = useState(initial.body);
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1541,14 +1557,18 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const latestSaveRef = useRef(onUpdate);
   latestSaveRef.current = onUpdate;
   const muse = cleanCategory(note.category) || 'Instant retrieval';
-  const rawText = title.trim() && body.trim() ? `${title.trim()}\n\n${body.trim()}` : title.trim() || body.trim();
+  const rawText = composeNoteText(title, body);
+  // An older note without a title reads back as a made-up title over its text;
+  // opening it is not an edit, so only a real change saves.
+  const unchangedText = useMemo(() => composeNoteText(editableTitle(note), splitNote(note).body), [note]);
+  const noteChanged = Boolean(rawText) && rawText !== note.raw_text.trim() && rawText !== unchangedText;
 
   useEffect(() => {
     if (window.matchMedia('(min-width: 1280px)').matches) setSummaryOpen(true);
   }, []);
 
   useEffect(() => {
-    if (!editing || !rawText || rawText === note.raw_text.trim()) return;
+    if (!editing || !noteChanged) return;
     setSaveState('saving');
     const timeout = window.setTimeout(() => {
       latestSaveRef.current(note.id, rawText).then(() => setSaveState('saved')).catch(() => setSaveState('error'));
@@ -1561,7 +1581,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   // restored, so a quick mobile exit does not discard the latest edit.
   useEffect(() => {
     const saveBeforeHistoryExit = () => {
-      if (rawText && rawText !== note.raw_text.trim()) void latestSaveRef.current(note.id, rawText);
+      if (noteChanged) void latestSaveRef.current(note.id, rawText);
     };
     window.addEventListener('popstate', saveBeforeHistoryExit);
     return () => window.removeEventListener('popstate', saveBeforeHistoryExit);
@@ -1875,7 +1895,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
 
   /** Saves any edit, then opens `next` (without a search unless asked) or closes the note. */
   const leaveWorkspace = async (next?: Note | null, autoSearch = false) => {
-    if (rawText && rawText !== note.raw_text.trim()) {
+    if (noteChanged) {
       setSaveState('saving');
       try { await latestSaveRef.current(note.id, rawText); setSaveState('saved'); }
       catch { setSaveState('error'); return; }
@@ -1884,7 +1904,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   };
 
   const returnToPrevious = async () => {
-    if (rawText && rawText !== note.raw_text.trim()) {
+    if (noteChanged) {
       setSaveState('saving');
       try { await latestSaveRef.current(note.id, rawText); setSaveState('saved'); }
       catch { setSaveState('error'); return; }
@@ -1894,7 +1914,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
 
   const finishEditing = () => {
     setEditing(false);
-    if (!rawText || rawText === note.raw_text.trim()) return;
+    if (!noteChanged) return;
     setSaveState('saving');
     latestSaveRef.current(note.id, rawText)
       .then(() => setSaveState('saved'))
@@ -2059,7 +2079,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
             {!summaryOpen && <button type="button" onClick={() => setSummaryOpen(true)} aria-controls="note-suggestions-panel" className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">Show suggestions</button>}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-24 pt-14 sm:px-12 sm:pt-12 xl:px-[8%]">
-            {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" placeholder="Title (optional)" className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6]" /><textarea ref={bodyRef} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="relative mx-auto max-w-3xl" onDoubleClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} title="Double-click to edit">{title.trim() && <h1 className="break-words px-2 py-1 text-2xl font-semibold">{title}</h1>}<div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]" onDoubleClick={(event) => event.stopPropagation()}><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div>
+            {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" placeholder={defaultNoteTitle(body) || 'Title (optional)'} className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6]" /><textarea ref={bodyRef} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="relative mx-auto max-w-3xl" onDoubleClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} title="Double-click to edit">{(title.trim() || body.trim()) && <h1 className="break-words px-2 py-1 text-2xl font-semibold">{title.trim() || defaultNoteTitle(body)}</h1>}<div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]" onDoubleClick={(event) => event.stopPropagation()}><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div>
               <div className="mt-9 flex w-full gap-4 rounded-md px-2 py-2 text-left text-base leading-[1.7]">
                 {noteSections.length > 1 && <nav aria-label="Note sections" onClick={(event) => event.stopPropagation()} className="sticky top-2 flex h-fit w-5 shrink-0 flex-col gap-2 py-1">
                   {noteSections.map((section) => <button key={section.id} type="button" onClick={() => { selectSection(section.id); document.getElementById(`note-${section.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }); }} aria-label={`Select section ${section.index + 1}${section.label ? `: ${section.label}` : ''}`} title={section.label || undefined} aria-pressed={selectedSectionId === section.id} className={`h-8 rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${selectedSectionId === section.id ? 'w-2.5 bg-[#666]' : 'w-1.5 bg-[#d2d2d5] hover:w-2.5 hover:bg-[#888]'}`} />)}
@@ -2135,13 +2155,17 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
   onUpdate: (noteId: string, rawText: string) => Promise<void>; onDelete: (note: Note) => Promise<void>;
 }) {
   const initial = splitNote(note);
-  const [title, setTitle] = useState(initial.title);
+  const [title, setTitle] = useState(editableTitle(note));
   const [body, setBody] = useState(initial.body);
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const bodyRef = useRef<HTMLTextAreaElement>(null);
-  const rawText = title.trim() && body.trim() ? `${title.trim()}\n\n${body.trim()}` : title.trim() || body.trim();
+  const rawText = composeNoteText(title, body);
+  // An older note without a title reads back as a made-up title over its text;
+  // opening it is not an edit, so only a real change saves.
+  const unchangedText = useMemo(() => composeNoteText(editableTitle(note), splitNote(note).body), [note]);
+  const noteChanged = Boolean(rawText) && rawText !== note.raw_text.trim() && rawText !== unchangedText;
   const muse = cleanCategory(note.category) || 'Instant retrieval';
   const usedMuses = useMemo(() => {
     const direct = muses.filter((item) => item.title.toLowerCase() === muse.toLowerCase());
@@ -2149,7 +2173,7 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
   }, [muses, muse]);
 
   useEffect(() => {
-    if (!editing || !rawText || rawText === note.raw_text.trim()) return;
+    if (!editing || !noteChanged) return;
     setSaveState('saving');
     const timeout = window.setTimeout(() => {
       onUpdate(note.id, rawText).then(() => setSaveState('saved')).catch(() => setSaveState('error'));
@@ -2191,7 +2215,7 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
         <div className="grid min-h-0 flex-1 overflow-hidden rounded-2xl border-[9px] border-white/80 bg-[#f7f7f9] shadow-2xl lg:grid-cols-[minmax(0,1fr)_330px]">
           <section className="relative flex min-h-0 flex-col overflow-hidden bg-white shadow-[4px_0_14px_rgba(0,0,0,0.14)]">
             <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-28 pt-12 sm:px-16 lg:px-[11%] lg:pt-20">
-              <input value={title} readOnly={!editing} onClick={() => setEditing(true)} onChange={(event) => setTitle(event.target.value)} aria-label="Retrieved note title" placeholder={editing ? 'Title (optional)' : ''} className={`w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6] ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
+              <input value={title} readOnly={!editing} onClick={() => setEditing(true)} onChange={(event) => setTitle(event.target.value)} aria-label="Retrieved note title" placeholder={defaultNoteTitle(body) || (editing ? 'Title (optional)' : '')} className={`w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6] ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
               <textarea ref={bodyRef} value={body} readOnly={!editing} onClick={() => setEditing(true)} onChange={(event) => setBody(event.target.value)} aria-label="Retrieved note text" className={`mt-8 min-h-[540px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
             </div>
             <ReadingFormatBar onFormat={applyFormat} onDone={() => setEditing(false)} editing={editing} />

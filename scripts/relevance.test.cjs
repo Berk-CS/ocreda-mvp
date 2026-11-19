@@ -30,6 +30,8 @@ const {
   diversifyByRelation,
   recencyBoost,
   splitNoteTitle,
+  defaultNoteTitle,
+  readNoteTitle,
   applyCardRules,
   readCardHistory,
   inferIdeaKinds,
@@ -613,6 +615,34 @@ test('a note\'s first line is its title, kept apart from the text; a one-line no
   assert.deepStrictEqual(splitNoteTitle('Counting test\n\nRan the test. 94% accuracy.'), { title: 'Counting test', text: 'Ran the test. 94% accuracy.' });
   assert.deepStrictEqual(splitNoteTitle('  Just one line here  '), { title: '', text: 'Just one line here' });
   assert.deepStrictEqual(splitNoteTitle('Title only\n\n   '), { title: '', text: 'Title only' });
+});
+
+test('a note without a title gets its first five words, with "..." only when it goes on', () => {
+  assert.strictEqual(defaultNoteTitle('I am trying to open up to Kate but it has been hard'), 'I am trying to open...');
+  assert.strictEqual(defaultNoteTitle('## Golden rule: never ask, if your idea is good'), 'Golden rule: never ask, if...');
+  assert.strictEqual(defaultNoteTitle('one two three four five, six'), 'one two three four five...');
+  assert.strictEqual(defaultNoteTitle('Call mom tomorrow'), 'Call mom tomorrow');
+});
+
+test('an older note saved without a title reads as five words over its whole text', () => {
+  const kate = "I am trying to open up to Kate but it's been hard like I don't fully know what to say.";
+  // The whole note on one line used to become the title, with nothing in the body.
+  assert.deepStrictEqual(readNoteTitle(kate), { title: 'I am trying to open...', body: kate, written: false });
+  // A first paragraph far longer than a title.
+  const long = `${kate}\n\nI want to be more open with her.`;
+  assert.deepStrictEqual(readNoteTitle(long), { title: 'I am trying to open...', body: long, written: false });
+  // An older import whose title was the body's first sentence.
+  const imported = `I went to the store today.\n\nI went to the store today. It was closed.`;
+  assert.deepStrictEqual(readNoteTitle(imported), { title: 'I went to the store...', body: 'I went to the store today. It was closed.', written: false });
+  // A title saved by the new rule reads back the same way.
+  assert.deepStrictEqual(readNoteTitle(`I am trying to open...\n\n${kate}`), { title: 'I am trying to open...', body: kate, written: false });
+  // Titles people wrote stay as they are, even when the body starts the same way.
+  assert.deepStrictEqual(readNoteTitle('Pricing\n\nPricing is too high for teams.'), { title: 'Pricing', body: 'Pricing is too high for teams.', written: true });
+  assert.deepStrictEqual(readNoteTitle('Call mom tomorrow'), { title: 'Call mom tomorrow', body: '', written: true });
+  assert.deepStrictEqual(readNoteTitle('# A long heading that someone wrote on purpose here and there\n\nBody.'), { title: '# A long heading that someone wrote on purpose here and there', body: 'Body.', written: true });
+  // The search reads the whole text, not the made-up title.
+  assert.deepStrictEqual(splitNoteTitle(kate), { title: '', text: kate });
+  assert.deepStrictEqual(splitNoteTitle(`I am trying to open...\n\n${kate}`), { title: '', text: kate });
 });
 
 const LONG_NOTE = 'Ran the camera counting test at the depot over the weekend. Accuracy: 94% accuracy across 400 cars, with the misses almost all at night. Rain did not seem to matter at all.';

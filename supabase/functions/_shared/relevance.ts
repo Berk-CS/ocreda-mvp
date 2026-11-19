@@ -1233,16 +1233,78 @@ const MAX_ANSWER_CHARS = 250;
 const WHOLE_NOTE_SHARE = 0.8;
 const WHOLE_NOTE_MIN_CHARS = 160;
 
+/** How many words of a note make its title when the person gave it none. */
+export const DEFAULT_TITLE_WORDS = 5;
+/** Longer than this, a first line is the start of the note, not a title someone typed. */
+const MAX_TITLE_WORDS = 12;
+const MAX_TITLE_CHARS = 90;
+
+function titleWords(text: string): string[] {
+  return text
+    .replace(/^[\s>]*(?:#{1,6}|[-*+•]|\d+\.)[ \t]+/gm, "")
+    .replace(/[*_`~]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
 /**
- * A note's title and its text. The app shows the first line as the title, so
- * it is a label, never something to quote; a note that is one line is all text.
+ * The title a note gets when the person gave it none: its first five words,
+ * with "..." when the note goes on past them.
+ */
+export function defaultNoteTitle(text: string): string {
+  const words = titleWords(text);
+  if (words.length <= DEFAULT_TITLE_WORDS) return words.join(" ");
+  return `${words.slice(0, DEFAULT_TITLE_WORDS).join(" ").replace(/[\s,.;:!?…\-–—]+$/, "")}...`;
+}
+
+/** Lowercased words only, to tell when a title is just the start of the text. */
+function titleKey(text: string): string {
+  return titleWords(text).join(" ").toLowerCase().replace(/(?:\.\.\.|…)$/, "").replace(/[^\p{L}\p{N} ]+/gu, "");
+}
+
+/**
+ * A note's title and body. The first line is the title, as the app stores it,
+ * unless it is plainly not one, which is how notes saved without a title look:
+ * - the whole note is one long line, so the title would be the entire note;
+ * - the first line is a sentence or paragraph, far longer than a title;
+ * - the first line is just the start of the body, as an older import wrote it.
+ * Then the title is the note's first five words and the body is all its text,
+ * so nothing reads as if it were written in the title. `written` is false for
+ * a title made this way.
+ */
+export function readNoteTitle(rawText: string): { title: string; body: string; written: boolean } {
+  const text = rawText.trim();
+  if (!text) return { title: "", body: "", written: false };
+  const newline = text.indexOf("\n");
+  const first = (newline === -1 ? text : text.slice(0, newline)).trim();
+  const rest = newline === -1 ? "" : text.slice(newline + 1).trim();
+  const isHeading = /^#{1,6}\s+\S/.test(first);
+  const words = titleWords(first).length;
+  if (!rest) {
+    return isHeading || words <= DEFAULT_TITLE_WORDS
+      ? { title: first, body: "", written: true }
+      : { title: defaultNoteTitle(text), body: text, written: false };
+  }
+  if (!isHeading && (words > MAX_TITLE_WORDS || first.length > MAX_TITLE_CHARS)) {
+    return { title: defaultNoteTitle(text), body: text, written: false };
+  }
+  // A title that only repeats how the body starts was made for the note, not by
+  // its writer: a whole first sentence, or five words and "...". A short title
+  // someone typed can share the body's first word or two, so that alone is not enough.
+  const key = titleKey(first);
+  const madeUp = words > DEFAULT_TITLE_WORDS || /(?:\.\.\.|…)$/.test(first);
+  if (key && madeUp && titleKey(rest).startsWith(key)) return { title: defaultNoteTitle(rest), body: rest, written: false };
+  return { title: first, body: rest, written: true };
+}
+
+/**
+ * A note's title and its text. The title is a label, never something to
+ * quote; a note with no title of its own is all text.
  */
 export function splitNoteTitle(rawText: string): { title: string; text: string } {
-  const trimmed = rawText.trim();
-  const newline = trimmed.indexOf("\n");
-  if (newline === -1) return { title: "", text: trimmed };
-  const text = trimmed.slice(newline + 1).trim();
-  return text ? { title: trimmed.slice(0, newline).trim(), text } : { title: "", text: trimmed };
+  const { title, body, written } = readNoteTitle(rawText);
+  if (!body) return { title: "", text: title };
+  return { title: written ? title : "", text: body };
 }
 const MAX_IDEA_CHARS = 160;
 const MAX_PATTERN_CHARS = 260;
