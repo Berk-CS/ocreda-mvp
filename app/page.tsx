@@ -15,6 +15,7 @@ import { prepareImportedNoteText } from '@/lib/import-note-content';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 import { CardChoice, CardDecision, CardKind, DomainGoal, IncomingCardDecision, InsightIntent, Note, NoteInsight, NoteRelationType, RelevanceCoverage, RelevanceResult, RelevanceSection, SuggestionKind } from '@/lib/types';
 import { loadCardDecisions, saveCardDecision } from '@/lib/card-decisions';
+import { loadNotesUsing, loadSharedRetrieval, SharedRetrieval, storeSharedRetrieval } from '@/lib/saved-retrievals';
 import { defaultNoteTitle, findAnchor, readNoteTitle, RELATED_NOTES_PAGE_SIZE, splitIntoParagraphs } from '@/supabase/functions/_shared/relevance';
 import { getAiMode, useAiMode } from '@/lib/ai-mode';
 import { setSampleMode, useSampleMode, workspaceScope } from '@/lib/sample-mode';
@@ -158,10 +159,21 @@ function noteSignature(note: Note, goal: string): string {
   return retrievalInputSignature(note.raw_text, goal, getAiMode());
 }
 
-function readSavedRetrieval(userId: string, note: Note): { mode: 'similar' | 'relevant'; search: RelevanceSearch; signature: string } | null {
+type SavedRetrieval = { mode: 'similar' | 'relevant'; search: RelevanceSearch; signature: string; savedAt: string };
+
+function readSavedRetrieval(userId: string, note: Note): SavedRetrieval | null {
   try {
-    const saved = JSON.parse(localStorage.getItem(savedRetrievalKey(userId, note.id)) ?? 'null') as {
-      signature?: string; mode?: string; search?: RelevanceSearch;
+    return checkSavedRetrieval(JSON.parse(localStorage.getItem(savedRetrievalKey(userId, note.id)) ?? 'null'));
+  } catch {
+    return null;
+  }
+}
+
+/** A saved retrieval, from this browser or the database, if it is complete enough to show. */
+function checkSavedRetrieval(value: unknown): SavedRetrieval | null {
+  try {
+    const saved = value as {
+      signature?: string; mode?: string; search?: RelevanceSearch; savedAt?: string;
     } | null;
     // Keep a valid older retrieval visible after the note or Domain changes.
     // Its signature is returned so the UI can mark it stale and offer an
@@ -173,18 +185,32 @@ function readSavedRetrieval(userId: string, note: Note): { mode: 'similar' | 're
     // Older similarity-only responses have empty explanations. Do not reuse
     // them in the annotated reading view, where every card needs a reason.
     if (saved.mode === 'relevant' && !saved.search.results.every((result) => typeof result.explanation === 'string' && result.explanation.trim())) return null;
-    return { mode: saved.mode, search: saved.search, signature: saved.signature };
+    // Copies saved before the database kept them have no date: any shared copy is newer.
+    const savedAt = typeof saved.savedAt === 'string' ? saved.savedAt : '';
+    return { mode: saved.mode, search: saved.search, signature: saved.signature, savedAt };
   } catch {
     return null;
   }
 }
 
-function persistSavedRetrieval(userId: string, note: Note, goal: string, mode: 'similar' | 'relevant', search: RelevanceSearch, signature = noteSignature(note, goal)): void {
+/** Keeps a retrieval in this browser, for showing it instantly next time. */
+function cacheSavedRetrieval(userId: string, noteId: string, saved: Omit<SavedRetrieval, 'search'> & { search: unknown }): void {
   try {
-    localStorage.setItem(savedRetrievalKey(userId, note.id), JSON.stringify({ signature, mode, search }));
+    localStorage.setItem(savedRetrievalKey(userId, noteId), JSON.stringify(saved));
   } catch {
     // A full or disabled browser store should not prevent the note itself from being saved.
   }
+}
+
+/** Saves a finished retrieval here and in the database, so every device shows it without searching again. */
+function persistSavedRetrieval(userId: string, note: Note, goal: string, mode: 'similar' | 'relevant', search: RelevanceSearch, signature = noteSignature(note, goal)): void {
+  cacheSavedRetrieval(userId, note.id, { signature, mode, search, savedAt: new Date().toISOString() });
+  storeSharedRetrieval(note.id, SAVED_RETRIEVAL_VERSION, { signature, mode, search });
+}
+
+/** A retrieval saved on another device, checked like a browser copy. */
+function fromShared(shared: SharedRetrieval | null): SavedRetrieval | null {
+  return shared ? checkSavedRetrieval(shared) : null;
 }
 
 function safeErrorMessage(error: unknown, fallback: string): string {
@@ -1563,58 +1589,86 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     // what the reader shows.
     const searchedText = requestNote.raw_text.trim();
     const requestBody = splitNote(requestNote).body || searchedText;
-    const saved = retrievalAttempt === 0 ? readSavedRetrieval(userId, requestNote) : null;
     const availableNoteIds = new Set(inputs.allNotes.filter((item) => item.id !== requestNote.id).map((item) => item.id));
-    const savedHasVisibleNotes = Boolean(saved?.search.results.some((result) => availableNoteIds.has(result.note_id)));
-    const savedMatchesMode = Boolean(saved && (retrievalMode === 'similar' || saved.mode === 'relevant'));
     // A saved search costs nothing to show, so it shows even for a note opened
-    // only to read it. A new search runs only when one was asked for.
-    if (saved && savedHasVisibleNotes && savedMatchesMode) {
+    // only to read it, as long as it still names notes that exist and suits the mode.
+    const canShow = (saved: SavedRetrieval | null): saved is SavedRetrieval => Boolean(saved
+      && saved.search.results.some((result) => availableNoteIds.has(result.note_id))
+      && (retrievalMode === 'similar' || saved.mode === 'relevant'));
+    const savedTime = (saved: SavedRetrieval) => Date.parse(saved.savedAt) || 0;
+    const showSaved = (saved: SavedRetrieval) => {
+      cacheSavedRetrieval(userId, requestNote.id, saved);
       setRetrieval(saved.search);
       setRetrievalLoading(false);
-      return;
-    }
-    if (!searchRequested || isSampleGuide(requestNote)) return;
-    setRetrievalError(''); setRetrievalProgress(null);
-    // Empty retrievals and caches whose notes no longer exist are not useful
-    // completed searches. Retry instead of leaving the panel blank forever.
-    setRetrieval(null);
-    const requestTooShort = requestNote.raw_text.trim().length < MIN_RELEVANCE_DRAFT_CHARS;
-    const requestHasOtherNotes = inputs.allNotes.some((item) => item.id !== requestNote.id);
-    if (requestTooShort || !requestHasOtherNotes) { setRetrievalLoading(false); return; }
-    setRetrievalLoading(true);
+    };
     // Whether every agent has reported back, which decides what leaving does.
     let agentsFinished = false;
-    const onProgress = (progress: RelevanceProgress) => {
-      agentsFinished = progress.agents_total > 0 && progress.agents_done >= progress.agents_total;
-      if (active) setRetrievalProgress(progress);
-    };
     // Leaving the note (or searching again) before the agents finish hangs up,
     // and the server stops before its next model call. After they finish, the
     // costly part is paid for and only the insight call is left, so the search
     // finishes in the background and is saved for the next time the note opens.
     const cancel = new AbortController();
-    // One search for the whole note. In relevant mode the server splits it
-    // into its ideas and keeps up to three notes for each, reading every note
-    // once however many ideas there are.
-    const search = retrievalMode === 'relevant'
-      ? findRelevantNotes(searchedText, requestNote.id, onProgress, inputs.domainName ? { name: inputs.domainName, goal: inputs.goalText } : null, cancel.signal)
-      : findSimilarNotes(searchedText, requestNote.id, onProgress, inputs.allNotes);
-    search
-      .then((found) => {
-        const response: RelevanceSearch = { ...found, sections: sectionsInBody(found.sections, searchedText, requestBody) };
-        // Saved even when the person has already left, so the note shows it
-        // next time without searching again. A failed insight step is not
-        // saved, so opening the note again retries it.
-        if (!response.insight_failed) persistSavedRetrieval(userId, requestNote, inputs.goalText, retrievalMode, response, requestSignature);
-        if (active) setRetrieval(response);
-      })
-      .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
-      .finally(() => { if (active) setRetrievalLoading(false); });
-    return () => {
+    const cleanup = () => {
       active = false;
       if (!agentsFinished) cancel.abort();
     };
+
+    // A new search runs only when one was asked for.
+    const runSearch = () => {
+      if (!searchRequested || isSampleGuide(requestNote)) return;
+      setRetrievalError(''); setRetrievalProgress(null);
+      // Empty retrievals and caches whose notes no longer exist are not useful
+      // completed searches. Retry instead of leaving the panel blank forever.
+      setRetrieval(null);
+      const requestTooShort = requestNote.raw_text.trim().length < MIN_RELEVANCE_DRAFT_CHARS;
+      const requestHasOtherNotes = inputs.allNotes.some((item) => item.id !== requestNote.id);
+      if (requestTooShort || !requestHasOtherNotes) { setRetrievalLoading(false); return; }
+      setRetrievalLoading(true);
+      const onProgress = (progress: RelevanceProgress) => {
+        agentsFinished = progress.agents_total > 0 && progress.agents_done >= progress.agents_total;
+        if (active) setRetrievalProgress(progress);
+      };
+      // One search for the whole note. In relevant mode the server splits it
+      // into its ideas and keeps up to three notes for each, reading every note
+      // once however many ideas there are.
+      const search = retrievalMode === 'relevant'
+        ? findRelevantNotes(searchedText, requestNote.id, onProgress, inputs.domainName ? { name: inputs.domainName, goal: inputs.goalText } : null, cancel.signal)
+        : findSimilarNotes(searchedText, requestNote.id, onProgress, inputs.allNotes);
+      search
+        .then((found) => {
+          const response: RelevanceSearch = { ...found, sections: sectionsInBody(found.sections, searchedText, requestBody) };
+          // Saved even when the person has already left, so the note shows it
+          // next time without searching again. A failed insight step is not
+          // saved, so opening the note again retries it.
+          if (!response.insight_failed) persistSavedRetrieval(userId, requestNote, inputs.goalText, retrievalMode, response, requestSignature);
+          if (active) setRetrieval(response);
+        })
+        .catch((err) => { if (active) setRetrievalError(safeErrorMessage(err, 'Could not retrieve related notes.')); })
+        .finally(() => { if (active) setRetrievalLoading(false); });
+    };
+
+    if (retrievalAttempt > 0) { runSearch(); return cleanup; }
+    const local = readSavedRetrieval(userId, requestNote);
+    if (canShow(local)) {
+      setRetrieval(local.search);
+      setRetrievalLoading(false);
+      // Another device may have searched this note since: its newer result replaces this one.
+      void loadSharedRetrieval(requestNote.id, SAVED_RETRIEVAL_VERSION).then((shared) => {
+        const remote = fromShared(shared);
+        if (active && canShow(remote) && savedTime(remote) > savedTime(local)) showSaved(remote);
+      });
+      return cleanup;
+    }
+    // Nothing saved in this browser. Another device may have searched this
+    // note already; only when none has does it run the AI calls again.
+    if (searchRequested) setRetrievalLoading(true);
+    void loadSharedRetrieval(requestNote.id, SAVED_RETRIEVAL_VERSION).then((shared) => {
+      if (!active) return;
+      const remote = fromShared(shared);
+      if (canShow(remote)) showSaved(remote);
+      else runSearch();
+    });
+    return cleanup;
   }, [note.id, retrievalAttempt, retrievalMode, searchRequested, userId]);
 
   const requestReretrieval = (mode: 'similar' | 'relevant' = retrievalMode) => {
@@ -1634,12 +1688,22 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     () => new Map((retrieval?.results ?? []).map((result) => [result.note_id, result])),
     [retrieval]
   );
+  // Retrievals saved on other devices aren't in this browser until those
+  // notes are opened here, so the database names the rest.
+  const [usedInElsewhere, setUsedInElsewhere] = useState<string[]>([]);
+  useEffect(() => {
+    let active = true;
+    setUsedInElsewhere([]);
+    void loadNotesUsing(note.id, SAVED_RETRIEVAL_VERSION).then((ids) => { if (active) setUsedInElsewhere(ids); });
+    return () => { active = false; };
+  }, [note.id, retrieval]);
   const usedInNotes = useMemo(() => allNotes.filter((item) => {
     if (item.id === note.id) return false;
+    if (usedInElsewhere.includes(item.id)) return true;
     const saved = readSavedRetrieval(userId, item);
     return Boolean(saved?.search.results.some((result) => result.note_id === note.id)
       || saved?.search.insights?.some((itemInsight) => itemInsight.note_ids.includes(note.id)));
-  }), [allNotes, note.id, retrieval, userId]);
+  }), [allNotes, note.id, retrieval, usedInElsewhere, userId]);
   const panelNote = panelNoteId ? allNotes.find((item) => item.id === panelNoteId) ?? null : null;
   const displayedBody = body || note.raw_text;
   const noteSections = useMemo(() => noteSectionsFor(displayedBody, retrieval?.sections), [displayedBody, retrieval]);
