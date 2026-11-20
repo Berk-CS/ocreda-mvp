@@ -616,6 +616,10 @@ export async function findRelevantNotes(
       }),
     });
   } catch (error) {
+    // Cancelling an in-flight search is expected when the reader closes or a
+    // newer search replaces it. Do not turn that lifecycle event into a
+    // visible network error (or a Next.js development error overlay).
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
     // A missing Edge Function or failed CORS preflight surfaces as an opaque
     // "Failed to fetch" TypeError, which is useless to show a user.
     if (process.env.NODE_ENV !== 'production') console.error('Relevance search request failed:', error);
