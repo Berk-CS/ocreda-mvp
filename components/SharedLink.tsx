@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Check, Loader as Loader2, Lock } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
+import { previewNoteText } from '@/lib/note-markdown';
 import { clearPendingShare, copySharedNotes, FREE_SHARED_NOTES, getSharedLink, rememberPendingShare, SharedLinkView, SharedNote } from '@/lib/sharing-api';
 import { IS_LOCAL_MODE } from '@/dev/local-mode';  // DEV-LOCAL-MODE
 
@@ -40,7 +41,7 @@ function NoteCard({ note }: { note: SharedNote }) {
   return (
     <article className="rounded-xl border border-[#e6e7eb] bg-white p-5 shadow-sm">
       <h3 className="text-base font-semibold text-[#222]">{note.title || 'Untitled note'}</h3>
-      {body && <p className={`mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[#555] ${long && !open ? 'line-clamp-6' : ''}`}>{body}</p>}
+      {body && <p className={`mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[#555] ${long && !open ? 'line-clamp-6' : ''}`}>{previewNoteText(body)}</p>}
       {long && <button type="button" onClick={() => setOpen((value) => !value)} className="mt-2 text-sm font-medium text-[#477bea] hover:underline">{open ? 'Show less' : 'Read the whole note'}</button>}
     </article>
   );

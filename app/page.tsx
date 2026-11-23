@@ -1,5 +1,8 @@
 'use client';
 
+import { NoteBodyEditor, type NoteBodyEditorHandle, type NoteFormat } from '@/components/NoteBodyEditor';
+import { inlineRuns, LINE_MARKER, plainNoteText, previewNoteText, stripInlineMarkdown, type InlineRun } from '@/lib/note-markdown';
+
 import Link from 'next/link';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, Filter, FolderPlus, Grid2X2, Italic, Layers3, List, ListOrdered, Loader as Loader2, Mic, MoreHorizontal, PanelRightOpen, Pin, Plus, RefreshCw, Rows3, ScanSearch, Search, Share2, Trash2, Upload, X } from 'lucide-react';
@@ -63,15 +66,28 @@ function domainGoalFor(category: string | null | undefined, muses: MuseMeta[]): 
  * the body is all of its text. That reading also fixes notes saved before,
  * whose whole text sat in the title. `written` is false for a made-up title.
  */
+/**
+ * A note's title and body for showing it. The title is plain text: a short
+ * note is its own title, so its bold or other markers would otherwise show as
+ * symbols in headings and labels.
+ */
 function splitNote(note: Note): { title: string; body: string; hasTitle: boolean; written: boolean } {
   const { title, body, written } = readNoteTitle(note.raw_text);
-  return { title, body, hasTitle: Boolean(title), written };
+  const plainTitle = plainNoteText(title);
+  return { title: plainTitle, body, hasTitle: Boolean(plainTitle), written };
 }
 
-/** What the title field starts with: empty when the person never wrote a title. */
-function editableTitle(note: Note): string {
-  const { title, written } = splitNote(note);
-  return written ? title : '';
+/**
+ * What the title field and the body editor start with. A one-line note (a
+ * short note, which is its own title, or a lone heading) opens in the body
+ * editor, so its formatting can still be changed there; saving it again
+ * stores the same text. The title field is empty when the person never wrote one.
+ */
+function editableNote(note: Note): { title: string; body: string } {
+  const { title, body, written } = readNoteTitle(note.raw_text);
+  const text = note.raw_text.trim();
+  if (written && !body && !text.includes('\n')) return { title: '', body: text };
+  return { title: written ? title : '', body };
 }
 
 /**
@@ -118,28 +134,6 @@ function notePreview(note: Note): string {
     .replace(/[*_`~]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-/** Markers at the start of a line: headings, quotes, bullets, numbered items. */
-const LINE_MARKER = /^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-+*•][ \t]+|\d+\.[ \t]+)+/gm;
-
-/**
- * Inline markers only: emphasis, strikethrough, code ticks, and links (their
- * text kept). A lone * or _ inside a word, as in snake_case, is kept.
- */
-function stripInlineMarkdown(text: string): string {
-  return text
-    .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, '$1')
-    .replace(/\*\*|__|~~|`/g, '')
-    .replace(/(?<![\p{L}\p{N}])[*_]|[*_](?![\p{L}\p{N}])/gu, '');
-}
-
-/**
- * A note's words as plain text, for anywhere they are quoted outside the note
- * body itself (cards, chips, merged text), where markdown would show as symbols.
- */
-function plainNoteText(text: string): string {
-  return stripInlineMarkdown(text.replace(LINE_MARKER, '')).replace(/[ \t]+/g, ' ').trim();
 }
 
 function formatDate(value: string): string {
@@ -1207,7 +1201,7 @@ function ProjectPageWorkspace({ project, page, notes, muses, projects, saving, o
         {contextOpen && <aside className="min-h-[420px] overflow-y-auto border-l border-[#dedede] bg-white p-4 lg:min-h-0">
           <h2 className="mb-4 text-center text-sm font-normal text-[#999]">Retrieved for this page</h2>
           <div className="space-y-4">
-            {surfacedNotes.map((note) => { const noteContent = splitNote(note); return <button key={note.id} type="button" title={noteContent.title || undefined} onMouseEnter={() => setSelectedNoteId(note.id)} onFocus={() => setSelectedNoteId(note.id)} onClick={() => onOpenNote(note)} className={`flex h-[190px] w-full flex-col overflow-hidden rounded-md border bg-white p-4 text-left shadow-[0_2px_8px_rgba(0,0,0,0.08)] transition hover:border-[#8fb1ff] ${selectedNoteId === note.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e3e3e5]'}`}><span className="flex shrink-0 items-start gap-2">{noteContent.hasTitle && <strong className="line-clamp-2 min-w-0 flex-1 text-sm leading-snug">{defaultNoteTitle(noteContent.title)}</strong>}<span className="ml-auto shrink-0 text-[11px] text-[#477bea]">note</span></span><span className="mt-2 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-4 text-xs leading-relaxed text-[#777]">{noteContent.body || notePreview(note)}</span></span><span className="mt-2 flex shrink-0 items-center justify-between gap-2 text-[11px] text-[#aaa]"><span className="min-w-0 truncate">Domain: {cleanCategory(note.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(note.created_at)}</span></span></button>; })}
+            {surfacedNotes.map((note) => { const noteContent = splitNote(note); return <button key={note.id} type="button" title={noteContent.title || undefined} onMouseEnter={() => setSelectedNoteId(note.id)} onFocus={() => setSelectedNoteId(note.id)} onClick={() => onOpenNote(note)} className={`flex h-[190px] w-full flex-col overflow-hidden rounded-md border bg-white p-4 text-left shadow-[0_2px_8px_rgba(0,0,0,0.08)] transition hover:border-[#8fb1ff] ${selectedNoteId === note.id ? 'border-[#7ca2ff] ring-1 ring-[#7ca2ff]/30' : 'border-[#e3e3e5]'}`}><span className="flex shrink-0 items-start gap-2">{noteContent.hasTitle && <strong className="line-clamp-2 min-w-0 flex-1 text-sm leading-snug">{defaultNoteTitle(noteContent.title)}</strong>}<span className="ml-auto shrink-0 text-[11px] text-[#477bea]">note</span></span><span className="mt-2 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-4 text-xs leading-relaxed text-[#777]">{noteContent.body ? previewNoteText(noteContent.body) : notePreview(note)}</span></span><span className="mt-2 flex shrink-0 items-center justify-between gap-2 text-[11px] text-[#aaa]"><span className="min-w-0 truncate">Domain: {cleanCategory(note.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(note.created_at)}</span></span></button>; })}
             {!surfacedNotes.length && <p className="px-4 py-12 text-center text-sm leading-relaxed text-[#999]">Related notes will appear here as your knowledge base grows.</p>}
           </div>
         </aside>}
@@ -1309,7 +1303,7 @@ function AddLibraryCard({ layout, onClick }: { layout: LibraryLayout; onClick: (
 function LibraryNoteCard({ note, query, layout, onClick }: { note: Note; query: string; layout: LibraryLayout | 'search'; onClick: () => void }) {
   const content = splitNote(note);
   const isLarge = layout === 'large';
-  return <button type="button" onClick={onClick} title={content.title || undefined} className={`flex flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#7ca2ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${isLarge ? 'h-[440px] p-8' : 'h-[360px] p-7'}`}>{content.hasTitle && <strong className={`line-clamp-2 shrink-0 leading-snug text-[#151515] ${isLarge ? 'text-lg' : 'text-base'}`}><HighlightedText text={defaultNoteTitle(content.title)} query={query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className={`whitespace-pre-wrap text-[15px] leading-[1.55] text-[#777] ${isLarge ? 'line-clamp-[11]' : 'line-clamp-[8]'}`}><HighlightedText text={content.body || notePreview(note)} query={query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{cleanCategory(note.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(note.created_at)}</span></span><span className="sr-only">{isLarge ? 'large card' : layout} layout</span></button>;
+  return <button type="button" onClick={onClick} title={content.title || undefined} className={`flex flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#7ca2ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${isLarge ? 'h-[440px] p-8' : 'h-[360px] p-7'}`}>{content.hasTitle && <strong className={`line-clamp-2 shrink-0 leading-snug text-[#151515] ${isLarge ? 'text-lg' : 'text-base'}`}><HighlightedText text={defaultNoteTitle(content.title)} query={query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className={`whitespace-pre-wrap text-[15px] leading-[1.55] text-[#777] ${isLarge ? 'line-clamp-[11]' : 'line-clamp-[8]'}`}><HighlightedText text={content.body ? previewNoteText(content.body) : notePreview(note)} query={query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{cleanCategory(note.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(note.created_at)}</span></span><span className="sr-only">{isLarge ? 'large card' : layout} layout</span></button>;
 }
 
 function MuseSelector({ muses, notesByMuse, selected, busy, onClose, onSave, onCreate, onEdit, onDelete }: {
@@ -1360,7 +1354,7 @@ function MuseDetail({ title, notes, isUnsorted, busy, onClose, onAddNote, onOpen
       {searchOpen && <label className="mx-auto mt-6 flex h-11 w-full max-w-md items-center rounded-xl bg-[#f7f7f9] px-4 shadow-sm"><Search className="mr-3 h-4 w-4 text-[#aaa]" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${title}`} className="min-w-0 flex-1 bg-transparent text-sm text-[#222] outline-none placeholder:text-[#aaa]" /></label>}
       {!isUnsorted && <div className="absolute right-5 top-4 sm:right-8"><button type="button" onClick={() => setMenuOpen((value) => !value)} aria-label="Domain options" aria-expanded={menuOpen} className="flex h-10 w-10 items-center justify-center rounded-md text-[#222] hover:bg-[#f4f4f4]"><MoreHorizontal className="h-5 w-5" /></button>{menuOpen && <div className="absolute right-0 top-11 z-10 w-60 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl"><button type="button" onClick={() => { setMenuOpen(false); onEdit(); }} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f5f5]">Edit Domain</button>{onShare && notes.length > 0 && <button type="button" disabled={busy} onClick={() => { setMenuOpen(false); onShare(); }} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f5f5]">Copy all {notes.length} to public notes</button>}<button type="button" disabled={busy} onClick={() => { setMenuOpen(false); onDelete(); }} className="block w-full px-4 py-2.5 text-left text-red-600 hover:bg-red-50">Delete Domain</button></div>}</div>}
       <div className={`mx-auto mt-14 grid max-w-[1510px] grid-cols-1 gap-8 sm:grid-cols-2 lg:gap-x-12 lg:gap-y-10 ${compact ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
-        {visibleNotes.map((note) => { const content = splitNote(note); return <button key={note.id} type="button" onClick={() => onOpenNote(note)} title={content.title || undefined} className="flex h-[360px] min-w-0 flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-7 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#7ca2ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">{content.hasTitle && <strong className="line-clamp-2 shrink-0 text-base leading-snug text-[#151515]">{defaultNoteTitle(content.title)}</strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-[8] whitespace-pre-wrap text-[15px] leading-[1.55] text-[#777]">{content.body || notePreview(note)}</span></span><span className="mt-4 shrink-0 text-right text-xs text-[#aaa]">{formatDate(note.created_at)}</span></button>; })}
+        {visibleNotes.map((note) => { const content = splitNote(note); return <button key={note.id} type="button" onClick={() => onOpenNote(note)} title={content.title || undefined} className="flex h-[360px] min-w-0 flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-7 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#7ca2ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">{content.hasTitle && <strong className="line-clamp-2 shrink-0 text-base leading-snug text-[#151515]">{defaultNoteTitle(content.title)}</strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-[8] whitespace-pre-wrap text-[15px] leading-[1.55] text-[#777]">{content.body ? previewNoteText(content.body) : notePreview(note)}</span></span><span className="mt-4 shrink-0 text-right text-xs text-[#aaa]">{formatDate(note.created_at)}</span></button>; })}
         <button type="button" onClick={onAddNote} aria-label={`Add a note to ${title}`} className="relative flex h-[360px] items-start rounded-lg border border-[#e1e1e3] bg-white p-8 text-[#477bea] shadow-[0_3px_12px_rgba(0,0,0,0.15)] transition hover:-translate-y-0.5 hover:border-[#a9c0f5] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><span className="flex items-center gap-2"><Plus className="h-5 w-5" /> Add</span><span className="absolute inset-x-5 bottom-6 text-center text-sm italic text-[#b4b4b8]">You can always add more</span></button>
       </div>
       {!visibleNotes.length && query.trim() && <p className="mt-8 text-center text-sm text-[#999]">No notes contain “{query.trim()}”.</p>}
@@ -1405,13 +1399,14 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   return <>{text.split(expression).map((part, index) => termSet.has(part.toLowerCase()) ? <mark key={`${part}-${index}`} className="rounded-sm bg-[#eaf1ff] px-0.5 text-[#477bea]">{part}</mark> : part)}</>;
 }
 
+/** Draws a stretch of note text in its run's style: bold, italic, or both. */
+function styledRun(run: InlineRun, content: React.ReactNode, key: React.Key): React.ReactNode {
+  const inner = run.italic ? <em>{content}</em> : content;
+  return <Fragment key={key}>{run.bold ? <strong>{inner}</strong> : inner}</Fragment>;
+}
+
 function InlineNoteFormatting({ text }: { text: string }) {
-  const expression = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
-  return <>{text.split(expression).filter(Boolean).map((part, index) => {
-    if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) return <strong key={index}>{part.slice(2, -2)}</strong>;
-    if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) return <em key={index}>{part.slice(1, -1)}</em>;
-    return <Fragment key={index}>{part}</Fragment>;
-  })}</>;
+  return <>{inlineRuns(text).map((run, index) => styledRun(run, text.slice(run.start, run.end), index))}</>;
 }
 
 function hasNoteFormatting(text: string): boolean {
@@ -1428,17 +1423,7 @@ type NoteMark = { start: number; end: number; label: string; markRef?: React.Ref
 function InlineWithMark({ text, offset, mark }: { text: string; offset: number; mark?: NoteMark }) {
   if (!mark || mark.end <= offset || mark.start >= offset + text.length) return <InlineNoteFormatting text={text} />;
   // Visible runs of the line, each with where it sits in the note and its style.
-  const runs: { start: number; end: number; strong: boolean; em: boolean }[] = [];
-  const expression = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
-  let cursor = 0;
-  for (const match of text.matchAll(expression)) {
-    const at = match.index ?? 0;
-    const marker = match[0].startsWith('**') || match[0].startsWith('__') ? 2 : 1;
-    if (at > cursor) runs.push({ start: offset + cursor, end: offset + at, strong: false, em: false });
-    runs.push({ start: offset + at + marker, end: offset + at + match[0].length - marker, strong: marker === 2, em: marker === 1 });
-    cursor = at + match[0].length;
-  }
-  if (cursor < text.length) runs.push({ start: offset + cursor, end: offset + text.length, strong: false, em: false });
+  const runs = inlineRuns(text, offset);
   const nodes: React.ReactNode[] = [];
   let first = true;
   let lastMarked = -1;
@@ -1448,7 +1433,7 @@ function InlineWithMark({ text, offset, mark }: { text: string; offset: number; 
       const [from, to] = [cuts[piece], cuts[piece + 1]];
       if (to <= from) continue;
       const slice = text.slice(from - offset, to - offset);
-      let node: React.ReactNode = run.strong ? <strong>{slice}</strong> : run.em ? <em>{slice}</em> : slice;
+      let node: React.ReactNode = styledRun(run, slice, 'text');
       if (piece === 1) {
         node = <mark ref={first ? mark.markRef : undefined} className="rounded-sm bg-[#fff4c7] px-0.5 text-inherit underline decoration-[#e5b72f] decoration-2 underline-offset-4 [box-decoration-break:clone]" title={mark.label}>{node}</mark>;
         first = false;
@@ -1582,8 +1567,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   onShare: (note: Note) => Promise<void>;
 }) {
   const initial = splitNote(note);
-  const [title, setTitle] = useState(editableTitle(note));
-  const [body, setBody] = useState(initial.body);
+  const [title, setTitle] = useState(() => editableNote(note).title);
+  const [body, setBody] = useState(() => editableNote(note).body);
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [usedInMenuOpen, setUsedInMenuOpen] = useState(false);
@@ -1617,14 +1602,15 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const [selectedInsightIndex, setSelectedInsightIndex] = useState(0);
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
   const aiMode = useAiMode();
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const bodyRef = useRef<NoteBodyEditorHandle>(null);
+  const [activeFormats, setActiveFormats] = useState<NoteFormat[]>([]);
   const latestSaveRef = useRef(onUpdate);
   latestSaveRef.current = onUpdate;
   const muse = cleanCategory(note.category) || ORPHANS_MUSE;
   const rawText = composeNoteText(title, body);
   // An older note without a title reads back as a made-up title over its text;
   // opening it is not an edit, so only a real change saves.
-  const unchangedText = useMemo(() => composeNoteText(editableTitle(note), splitNote(note).body), [note]);
+  const unchangedText = useMemo(() => { const start = editableNote(note); return composeNoteText(start.title, start.body); }, [note]);
   const noteChanged = Boolean(rawText) && rawText !== note.raw_text.trim() && rawText !== unchangedText;
 
   useEffect(() => {
@@ -2049,21 +2035,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     return () => window.removeEventListener('keydown', closeOnEscape);
   });
 
-  const applyReadingFormat = (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => {
-    const field = bodyRef.current; if (!field) return;
-    const start = field.selectionStart; const end = field.selectionEnd; const selection = body.slice(start, end);
-    let replacement = selection;
-    if (kind === 'bold') replacement = `**${selection || 'bold text'}**`;
-    if (kind === 'italic') replacement = `*${selection || 'italic text'}*`;
-    if (kind === 'h1') replacement = `# ${selection || 'Heading'}`;
-    if (kind === 'h2') replacement = `## ${selection || 'Heading'}`;
-    if (kind === 'h3') replacement = `### ${selection || 'Heading'}`;
-    if (kind === 'body') replacement = selection.replace(/^#{1,3}\s+/gm, '');
-    if (kind === 'bullet') replacement = (selection || 'List item').split('\n').map((line) => `• ${line.replace(/^[-•]\s*/, '')}`).join('\n');
-    if (kind === 'number') replacement = (selection || 'List item').split('\n').map((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s*/, '')}`).join('\n');
-    setBody(`${body.slice(0, start)}${replacement}${body.slice(end)}`);
-    requestAnimationFrame(() => { field.focus(); field.setSelectionRange(start, start + replacement.length); });
-  };
+  const applyReadingFormat = (kind: NoteFormat) => bodyRef.current?.format(kind);
 
   const openDate = () => setSearchRequest({ query: '', filter: { kind: 'date', value: localDateKey(note.created_at), label: fullNoteDate(note.created_at) } });
 
@@ -2181,23 +2153,23 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
 
     /** Hide lightweight Markdown markers while retaining retrieval decorations. */
     const renderInlineRange = (start: number, end: number, keyPrefix: string): React.ReactNode[] => {
-      const value = displayedBody.slice(start, end);
-      const expression = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
+      const runs = inlineRuns(displayedBody.slice(start, end), start);
       const nodes: React.ReactNode[] = [];
-      let cursor = start;
-      Array.from(value.matchAll(expression)).forEach((match, index) => {
-        const matched = match[0];
-        const matchStart = start + (match.index ?? 0);
-        const matchEnd = matchStart + matched.length;
-        const markerLength = matched.startsWith('**') || matched.startsWith('__') ? 2 : 1;
-        if (matchStart > cursor) nodes.push(...renderDecoratedRange(cursor, matchStart, `${keyPrefix}-p${index}`));
-        const content = renderDecoratedRange(matchStart + markerLength, matchEnd - markerLength, `${keyPrefix}-f${index}`);
-        nodes.push(markerLength === 2
-          ? <strong key={`${keyPrefix}-strong${index}`}>{content}</strong>
-          : <em key={`${keyPrefix}-em${index}`}>{content}</em>);
-        cursor = matchEnd;
+      // The markers themselves are not drawn, so a chip or box placed on one
+      // (a fully bold sentence puts it right after the closing **) is drawn
+      // next to the words instead of being dropped with the marker. Each run
+      // draws what sits on it, ends included; a gap draws what is strictly
+      // between runs, and at the line's own start and end.
+      const overlaysOnMarkers = (after: number, before: number, keyPart: string) => inserts
+        .filter((overlay) => overlay.at > after && overlay.at < before)
+        .map((overlay, position) => renderOverlay(overlay, `${keyPrefix}-${keyPart}${position}`));
+      let previousEnd = start - 1;
+      runs.forEach((run, index) => {
+        nodes.push(...overlaysOnMarkers(previousEnd, run.start, `gap${index}-`));
+        nodes.push(styledRun(run, renderDecoratedRange(run.start, run.end, `${keyPrefix}-r${index}`), `${keyPrefix}-s${index}`));
+        previousEnd = run.end;
       });
-      if (cursor < end) nodes.push(...renderDecoratedRange(cursor, end, `${keyPrefix}-tail`));
+      nodes.push(...overlaysOnMarkers(previousEnd, end + 1, 'tail-'));
       return nodes;
     };
 
@@ -2265,7 +2237,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
             {!summaryOpen && <button type="button" onClick={() => setSummaryOpen(true)} aria-controls="note-suggestions-panel" className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">Show suggestions</button>}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-24 pt-14 sm:px-12 sm:pt-12 xl:px-[8%]">
-            {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" placeholder={defaultNoteTitle(body) || 'Title (optional)'} className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6]" /><textarea ref={bodyRef} value={body} onChange={(event) => setBody(event.target.value)} aria-label="Note text" className="mt-10 min-h-[520px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none" /></div> : <article className="relative mx-auto max-w-3xl" onDoubleClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} title="Double-click to edit">{(title.trim() || body.trim()) && <h1 className="break-words px-2 py-1 text-2xl font-semibold">{title.trim() || defaultNoteTitle(body)}</h1>}<div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]" onDoubleClick={(event) => event.stopPropagation()}><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div>
+            {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" placeholder={defaultNoteTitle(body) || 'Title (optional)'} className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6]" /><NoteBodyEditor ref={bodyRef} value={body} onChange={setBody} autoFocus ariaLabel="Note text" onActiveFormatsChange={setActiveFormats} wrapperClassName="mt-10" className="min-h-[520px] w-full bg-transparent text-base leading-[1.7]" /></div> : <article className="relative mx-auto max-w-3xl" onDoubleClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} title="Double-click to edit">{(title.trim() || body.trim()) && <h1 className="break-words px-2 py-1 text-2xl font-semibold">{plainNoteText(title) || defaultNoteTitle(body)}</h1>}<div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]" onDoubleClick={(event) => event.stopPropagation()}><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div>
               <div className="mt-9 w-full rounded-md px-2 py-2 text-left text-base leading-[1.7]">
                 <div className="min-w-0 flex-1 space-y-7">
                   {noteSections.length ? noteSections.map((section) => <section key={section.id} id={`note-${section.id}`} tabIndex={0} aria-label={`Section ${section.index + 1}`} aria-current={selectedSectionId === section.id ? 'true' : undefined} onClick={() => selectSection(section.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectSection(section.id); } }} className={`cursor-text scroll-mt-20 border-l-[3px] pl-4 outline-none transition hover:border-[#888] focus-visible:ring-2 focus-visible:ring-[#477bea]/30 ${selectedSectionId === section.id ? 'border-[#666]' : 'border-[#d2d2d5]'}`}>{renderSectionContent(section)}</section>) : <span className="text-left text-[#999]">Double-click to start writing.</span>}
@@ -2273,7 +2245,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
               </div>
             </article>}
           </div>
-          <ReadingFormatBar onFormat={applyReadingFormat} onDone={finishEditing} editing={editing} />
+          <ReadingFormatBar onFormat={applyReadingFormat} onDone={finishEditing} editing={editing} active={activeFormats} />
           <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
         </section>
 
@@ -2351,16 +2323,17 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
   onUpdate: (noteId: string, rawText: string) => Promise<void>; onDelete: (note: Note) => Promise<void>;
 }) {
   const initial = splitNote(note);
-  const [title, setTitle] = useState(editableTitle(note));
-  const [body, setBody] = useState(initial.body);
+  const [title, setTitle] = useState(() => editableNote(note).title);
+  const [body, setBody] = useState(() => editableNote(note).body);
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const bodyRef = useRef<NoteBodyEditorHandle>(null);
+  const [activeFormats, setActiveFormats] = useState<NoteFormat[]>([]);
   const rawText = composeNoteText(title, body);
   // An older note without a title reads back as a made-up title over its text;
   // opening it is not an edit, so only a real change saves.
-  const unchangedText = useMemo(() => composeNoteText(editableTitle(note), splitNote(note).body), [note]);
+  const unchangedText = useMemo(() => { const start = editableNote(note); return composeNoteText(start.title, start.body); }, [note]);
   const noteChanged = Boolean(rawText) && rawText !== note.raw_text.trim() && rawText !== unchangedText;
   const muse = cleanCategory(note.category) || ORPHANS_MUSE;
   const usedMuses = useMemo(() => {
@@ -2377,21 +2350,9 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
     return () => window.clearTimeout(timeout);
   }, [body, editing, note.id, note.raw_text, onUpdate, rawText, title]);
 
-  const applyFormat = (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => {
+  const applyFormat = (kind: NoteFormat) => {
     setEditing(true);
-    const field = bodyRef.current; if (!field) return;
-    const start = field.selectionStart; const end = field.selectionEnd; const selection = body.slice(start, end);
-    let replacement = selection;
-    if (kind === 'bold') replacement = `**${selection || 'bold text'}**`;
-    if (kind === 'italic') replacement = `*${selection || 'italic text'}*`;
-    if (kind === 'h1') replacement = `# ${selection || 'Heading'}`;
-    if (kind === 'h2') replacement = `## ${selection || 'Heading'}`;
-    if (kind === 'h3') replacement = `### ${selection || 'Heading'}`;
-    if (kind === 'body') replacement = selection.replace(/^#{1,3}\s+/gm, '');
-    if (kind === 'bullet') replacement = (selection || 'List item').split('\n').map((line) => `• ${line.replace(/^[-•]\s*/, '')}`).join('\n');
-    if (kind === 'number') replacement = (selection || 'List item').split('\n').map((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s*/, '')}`).join('\n');
-    setBody(`${body.slice(0, start)}${replacement}${body.slice(end)}`);
-    requestAnimationFrame(() => { field.focus(); field.setSelectionRange(start, start + replacement.length); });
+    bodyRef.current?.format(kind);
   };
 
   const openDate = () => onSearch({ query: '', filter: { kind: 'date', value: localDateKey(note.created_at), label: fullNoteDate(note.created_at) } });
@@ -2412,9 +2373,9 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
           <section className="relative flex min-h-0 flex-col overflow-hidden bg-white shadow-[4px_0_14px_rgba(0,0,0,0.14)]">
             <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-28 pt-12 sm:px-16 lg:px-[11%] lg:pt-20">
               <input value={title} readOnly={!editing} onClick={() => setEditing(true)} onChange={(event) => setTitle(event.target.value)} aria-label="Retrieved note title" placeholder={defaultNoteTitle(body) || (editing ? 'Title (optional)' : '')} className={`w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6] ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
-              <textarea ref={bodyRef} value={body} readOnly={!editing} onClick={() => setEditing(true)} onChange={(event) => setBody(event.target.value)} aria-label="Retrieved note text" className={`mt-8 min-h-[540px] w-full resize-none bg-transparent text-base leading-[1.7] outline-none ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
+              <NoteBodyEditor ref={bodyRef} value={body} editable={editing} onClick={() => setEditing(true)} onChange={setBody} ariaLabel="Retrieved note text" onActiveFormatsChange={setActiveFormats} className={`mt-8 min-h-[540px] w-full bg-transparent text-base leading-[1.7] ${editing ? 'cursor-text' : 'cursor-pointer'}`} />
             </div>
-            <ReadingFormatBar onFormat={applyFormat} onDone={() => setEditing(false)} editing={editing} />
+            <ReadingFormatBar onFormat={applyFormat} onDone={() => setEditing(false)} editing={editing} active={activeFormats} />
             <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
           </section>
           <aside className="relative min-h-0 overflow-y-auto bg-[#f7f7f9] px-6 pb-8 pt-16">
@@ -2434,9 +2395,13 @@ function RetrievedNoteOverlay({ note, muses, saving, onClose, onAddNote, onImpor
   );
 }
 
-function ReadingFormatBar({ onFormat, onDone, editing }: { onFormat: (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => void; onDone: () => void; editing: boolean }) {
+function ReadingFormatBar({ onFormat, onDone, editing, active = [] }: { onFormat: (kind: NoteFormat) => void; onDone: () => void; editing: boolean; active?: NoteFormat[] }) {
   if (!editing) return null;
-  return <div className="absolute bottom-5 left-1/2 z-20 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-1 rounded-xl bg-[#f7f7f9] px-3 py-2 text-sm text-[#555] shadow-sm"><button type="button" aria-label="Voice input" className="flex h-8 w-8 items-center justify-center rounded hover:bg-white"><Mic className="h-4 w-4" /></button><span className="mx-1 h-7 w-px bg-[#ddd]" /><button type="button" onClick={() => onFormat('bold')} className="h-8 w-8 rounded font-bold hover:bg-white">B</button><button type="button" onClick={() => onFormat('italic')} className="h-8 w-8 rounded italic hover:bg-white">I</button><span className="mx-1 h-7 w-px bg-[#ddd]" />{(['h1', 'h2', 'h3'] as const).map((kind) => <button key={kind} type="button" onClick={() => onFormat(kind)} className="hidden h-8 rounded px-2 font-semibold hover:bg-white sm:block">{kind.toUpperCase()}</button>)}<button type="button" onClick={() => onFormat('body')} className="hidden h-8 rounded px-2 hover:bg-white md:block">Body</button><span className="mx-1 hidden h-7 w-px bg-[#ddd] md:block" /><button type="button" onClick={() => onFormat('bullet')} className="hidden h-8 items-center gap-1 rounded px-2 hover:bg-white lg:flex"><List className="h-4 w-4" /> Bullet list</button><button type="button" onClick={() => onFormat('number')} className="hidden h-8 items-center gap-1 rounded px-2 hover:bg-white xl:flex"><ListOrdered className="h-4 w-4" /> Numbered list</button><button type="button" onClick={onDone} className="ml-2 h-8 rounded-md bg-[#477bea] px-3 text-white hover:bg-[#3d6ed7]">Done</button></div>;
+  // Buttons keep the editor focused, so the selection, or a format turned on
+  // for what is typed next, survives the click.
+  const keepFocus = (event: React.MouseEvent) => event.preventDefault();
+  const on = (kind: NoteFormat) => (active.includes(kind) ? 'bg-white text-[#477bea] shadow-sm' : '');
+  return <div className="absolute bottom-5 left-1/2 z-20 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-1 rounded-xl bg-[#f7f7f9] px-3 py-2 text-sm text-[#555] shadow-sm"><button type="button" aria-label="Voice input" className="flex h-8 w-8 items-center justify-center rounded hover:bg-white"><Mic className="h-4 w-4" /></button><span className="mx-1 h-7 w-px bg-[#ddd]" /><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('bold')} aria-label="Bold" aria-pressed={active.includes('bold')} className={`h-8 w-8 rounded font-bold hover:bg-white ${on('bold')}`}>B</button><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('italic')} aria-label="Italic" aria-pressed={active.includes('italic')} className={`h-8 w-8 rounded italic hover:bg-white ${on('italic')}`}>I</button><span className="mx-1 h-7 w-px bg-[#ddd]" />{(['h1', 'h2', 'h3'] as const).map((kind) => <button key={kind} type="button" onMouseDown={keepFocus} onClick={() => onFormat(kind)} aria-pressed={active.includes(kind)} className={`hidden h-8 rounded px-2 font-semibold hover:bg-white sm:block ${on(kind)}`}>{kind.toUpperCase()}</button>)}<button type="button" onMouseDown={keepFocus} onClick={() => onFormat('body')} className="hidden h-8 rounded px-2 hover:bg-white md:block">Body</button><span className="mx-1 hidden h-7 w-px bg-[#ddd] md:block" /><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('bullet')} aria-pressed={active.includes('bullet')} className={`hidden h-8 items-center gap-1 rounded px-2 hover:bg-white lg:flex ${on('bullet')}`}><List className="h-4 w-4" /> Bullet list</button><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('number')} aria-pressed={active.includes('number')} className={`hidden h-8 items-center gap-1 rounded px-2 hover:bg-white xl:flex ${on('number')}`}><ListOrdered className="h-4 w-4" /> Numbered list</button><button type="button" onClick={onDone} className="ml-2 h-8 rounded-md bg-[#477bea] px-3 text-white hover:bg-[#3d6ed7]">Done</button></div>;
 }
 
 function KnowledgeSearchOverlay({ request, notes, muses, projects, hideProjectColumn = false, onClose, onOpenPage, onOpenNote }: {
@@ -2472,7 +2437,7 @@ function KnowledgeSearchOverlay({ request, notes, muses, projects, hideProjectCo
         <div className="flex h-20 shrink-0 items-center border-b border-[#ddd] px-7 sm:px-10"><Search className="mr-4 h-6 w-6 shrink-0 text-[#aaa]" /><input autoFocus value={query} onChange={(event) => changeQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }} placeholder="Search notes, pages, and Domains" className="h-full min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-[#b3b3b3] sm:text-2xl" />{filter && <button type="button" onClick={() => { setFilter(undefined); setQuery(''); }} className="rounded-full bg-[#edf3ff] px-3 py-1.5 text-xs text-[#477bea]">Clear {filter.kind === 'muse' ? 'domain' : filter.kind}</button>}</div>
         {!query.trim() && !filter ? <div className="min-h-0 flex-1 overflow-y-auto px-10 py-12 sm:px-16"><p className="text-sm text-[#aaa]">Recent</p><div className="mt-5 max-w-2xl space-y-1">{recentTerms.map((term) => <button key={term} type="button" onClick={() => setQuery(term)} className="block w-full rounded-lg px-1 py-3 text-left text-base text-[#555] hover:bg-[#f6f6f6] hover:px-3">{term}</button>)}</div></div> : <div className={`grid min-h-0 flex-1 overflow-y-auto lg:overflow-hidden ${showProjectColumn ? 'lg:grid-cols-[450px_minmax(0,1fr)]' : 'lg:grid-cols-1'}`}>
           {showProjectColumn && <aside className="border-b border-[#ddd] px-7 py-10 lg:overflow-y-auto lg:border-b-0 lg:border-r sm:px-10"><p className="mb-7 text-sm text-[#aaa]">Found in project pages</p><div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">{matchingPages.map(({ project, page }) => <button key={`${project.id}-${page.id}`} type="button" onClick={() => onOpenPage(project, page)} title={page.title || undefined} className="flex h-[300px] flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-7 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff]"><strong className="line-clamp-2 shrink-0 text-base leading-snug"><HighlightedText text={page.title} query={query} /></strong><span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-6 whitespace-pre-wrap text-sm leading-relaxed text-[#777]"><HighlightedText text={page.content || 'Empty page'} query={query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{project.title}</span><span className="shrink-0">{formatDate(page.updatedAt)}</span></span></button>)}{!matchingPages.length && <p className="text-sm text-[#999] sm:col-span-2 lg:col-span-1">No project page contains this search.</p>}</div></aside>}
-          <section className="min-h-0 px-7 py-10 lg:overflow-y-auto sm:px-12"><p className="mb-7 text-sm text-[#aaa]">{heading}</p><div className={`grid gap-7 ${showProjectColumn ? 'xl:grid-cols-2' : 'lg:grid-cols-2 xl:grid-cols-3'}`}>{filteredNotes.map((item) => { const content = splitNote(item); const preview = content.body || notePreview(item); return <button key={item.id} type="button" onClick={() => onOpenNote(item)} title={content.title || undefined} className="flex h-[280px] flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-6 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff]">{content.hasTitle && <strong className="line-clamp-2 shrink-0 text-base leading-snug"><HighlightedText text={defaultNoteTitle(content.title)} query={filter ? '' : query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-5 text-sm leading-relaxed text-[#777]"><HighlightedText text={preview} query={filter ? '' : query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{cleanCategory(item.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span></button>; })}{!filteredNotes.length && <p className="text-sm text-[#999] xl:col-span-2">No notes match this search.</p>}</div></section>
+          <section className="min-h-0 px-7 py-10 lg:overflow-y-auto sm:px-12"><p className="mb-7 text-sm text-[#aaa]">{heading}</p><div className={`grid gap-7 ${showProjectColumn ? 'xl:grid-cols-2' : 'lg:grid-cols-2 xl:grid-cols-3'}`}>{filteredNotes.map((item) => { const content = splitNote(item); const preview = content.body ? previewNoteText(content.body) : notePreview(item); return <button key={item.id} type="button" onClick={() => onOpenNote(item)} title={content.title || undefined} className="flex h-[280px] flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-6 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff]">{content.hasTitle && <strong className="line-clamp-2 shrink-0 text-base leading-snug"><HighlightedText text={defaultNoteTitle(content.title)} query={filter ? '' : query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-5 text-sm leading-relaxed text-[#777]"><HighlightedText text={preview} query={filter ? '' : query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{cleanCategory(item.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span></button>; })}{!filteredNotes.length && <p className="text-sm text-[#999] xl:col-span-2">No notes match this search.</p>}</div></section>
         </div>}
       </div>
     </div>
@@ -3273,7 +3238,8 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
   onChange: (state: NoteEditorState) => void; onCreateMuse: (title: string) => void;
   onClose: () => void; onSave: () => void; onFindRelevantNotes: () => void; onImport: () => void; onDelete?: () => void;
 }) {
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const bodyRef = useRef<NoteBodyEditorHandle>(null);
+  const [activeFormats, setActiveFormats] = useState<NoteFormat[]>([]);
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
   const museMenuRef = useRef<HTMLDivElement>(null);
   const [dictating, setDictating] = useState(false);
@@ -3350,23 +3316,7 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
     }
   };
 
-  const applyFormat = (kind: 'bold' | 'italic' | 'h1' | 'h2' | 'h3' | 'body' | 'bullet' | 'number') => {
-    const field = bodyRef.current;
-    if (!field) return;
-    const start = field.selectionStart; const end = field.selectionEnd;
-    const selection = state.body.slice(start, end);
-    let replacement = selection;
-    if (kind === 'bold') replacement = `**${selection || 'bold text'}**`;
-    if (kind === 'italic') replacement = `*${selection || 'italic text'}*`;
-    if (kind === 'h1') replacement = `# ${selection || 'Heading'}`;
-    if (kind === 'h2') replacement = `## ${selection || 'Heading'}`;
-    if (kind === 'h3') replacement = `### ${selection || 'Heading'}`;
-    if (kind === 'body') replacement = selection.replace(/^#{1,3}\s+/gm, '');
-    if (kind === 'bullet') replacement = (selection || 'List item').split('\n').map((line) => `• ${line.replace(/^[-•]\s*/, '')}`).join('\n');
-    if (kind === 'number') replacement = (selection || 'List item').split('\n').map((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s*/, '')}`).join('\n');
-    onChange({ ...state, body: `${state.body.slice(0, start)}${replacement}${state.body.slice(end)}` });
-    requestAnimationFrame(() => { field.focus(); field.setSelectionRange(start, start + replacement.length); });
-  };
+  const applyFormat = (kind: NoteFormat) => bodyRef.current?.format(kind);
 
   const toggleDictation = () => {
     if (speechRef.current && dictating) { speechRef.current.stop(); return; }
@@ -3414,17 +3364,17 @@ function NoteEditor({ state, muses, notes, saving, error, onChange, onCreateMuse
         <div className="relative flex min-h-0 flex-1">
           <div className={`flex min-h-0 min-w-0 flex-1 flex-col ${domainCapture ? 'items-center px-8 pb-8 pt-[10vh]' : 'px-8 pb-5 pt-10 sm:px-16 sm:pt-12'}`}>
             <input value={state.title} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, title: event.target.value })} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); setEditingStarted(true); bodyRef.current?.focus(); } }} placeholder={domainCapture ? 'Title' : 'What’s on your mind?'} aria-label="Note title" className={`w-full shrink-0 bg-transparent outline-none placeholder:text-[#555] ${domainCapture ? 'max-w-2xl text-xl font-semibold sm:text-2xl' : 'text-xl font-medium italic sm:text-2xl'}`} />
-            <textarea ref={bodyRef} value={state.body} onFocus={() => setEditingStarted(true)} onChange={(event) => onChange({ ...state, body: event.target.value })} placeholder={editingStarted ? '' : domainCapture ? 'Knowledge is what makes people special, and special people do special things, so make this one count.' : "For example: Someone made the point that we mostly don't choose our beliefs, we absorb them and backfill reasons after. Uncomfortable but I can't argue with it. Makes me wonder how much of what I think is actually mine."} aria-label="Note body" className={`mt-5 min-h-0 w-full flex-1 resize-none bg-transparent text-base leading-relaxed outline-none placeholder:text-[#aaa] ${domainCapture ? 'max-w-2xl sm:text-lg sm:leading-[1.65]' : ''}`} />
+            <NoteBodyEditor ref={bodyRef} value={state.body} onFocus={() => setEditingStarted(true)} onChange={(body) => onChange({ ...state, body })} placeholder={editingStarted ? '' : domainCapture ? 'Knowledge is what makes people special, and special people do special things, so make this one count.' : "For example: Someone made the point that we mostly don't choose our beliefs, we absorb them and backfill reasons after. Uncomfortable but I can't argue with it. Makes me wonder how much of what I think is actually mine."} ariaLabel="Note body" onActiveFormatsChange={setActiveFormats} wrapperClassName={`mt-5 min-h-0 w-full flex-1 overflow-y-auto ${domainCapture ? 'max-w-2xl' : ''}`} className={`min-h-full w-full bg-transparent text-base leading-relaxed ${domainCapture ? 'sm:text-lg sm:leading-[1.65]' : ''}`} />
           </div>
           {panelOpen && <RelevantNotesPanel notes={notes} relevance={relevance} loading={relevanceLoading} progress={relevanceProgress} error={relevanceError} stale={draftChangedSinceSearch} page={relevancePage} onPageChange={setRelevancePage} onRetry={() => void runRelevanceSearch()} onClose={() => setPanelOpen(false)} />}
         </div>
         <div className={`relative border-t border-[#eee] bg-[#f8f8fa] px-3 py-2 text-sm text-[#555] sm:px-5 ${domainCapture ? 'flex min-h-[62px] flex-col items-stretch gap-2 lg:flex-row lg:items-center lg:gap-1' : 'flex min-h-[58px] flex-wrap items-center gap-1'}`}>
           <div className={`${domainCapture ? 'flex w-full min-w-0 items-center gap-1 overflow-x-auto pb-1 lg:flex-1 lg:overflow-visible lg:pb-0' : 'contents'}`}>
             <button type="button" onClick={toggleDictation} aria-label={dictating ? 'Stop dictation' : 'Start dictation'} className={`mr-3 rounded p-2 hover:bg-white ${dictating ? 'text-red-600' : ''}`}><Mic className="h-4 w-4" /></button><span className="mr-3 h-7 w-px bg-[#ddd]" />
-            <button type="button" onClick={() => applyFormat('bold')} aria-label="Bold" className="rounded p-2 font-bold hover:bg-white"><Bold className="h-4 w-4" /></button>
-            <button type="button" onClick={() => applyFormat('italic')} aria-label="Italic" className="rounded p-2 italic hover:bg-white"><Italic className="h-4 w-4" /></button><span className="mx-2 h-7 w-px bg-[#ddd]" />
-            <button type="button" onClick={() => applyFormat('h1')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H1</button><button type="button" onClick={() => applyFormat('h2')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H2</button><button type="button" onClick={() => applyFormat('h3')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H3</button><button type="button" onClick={() => applyFormat('body')} className="rounded px-2 py-1.5 hover:bg-white">Body</button><span className="mx-2 hidden h-7 w-px bg-[#ddd] lg:block" />
-            <button type="button" onClick={() => applyFormat('bullet')} className="hidden items-center gap-1 rounded px-2 py-1.5 hover:bg-white sm:flex"><List className="h-4 w-4" /> Bullet list</button><button type="button" onClick={() => applyFormat('number')} className="hidden items-center gap-1 rounded px-2 py-1.5 hover:bg-white md:flex"><ListOrdered className="h-4 w-4" /> Numbered list</button>
+            <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('bold')} aria-pressed={activeFormats.includes('bold')} aria-label="Bold" className={`rounded p-2 font-bold hover:bg-white ${activeFormats.includes('bold') ? 'bg-white text-[#477bea] shadow-sm' : ''}`}><Bold className="h-4 w-4" /></button>
+            <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('italic')} aria-pressed={activeFormats.includes('italic')} aria-label="Italic" className={`rounded p-2 italic hover:bg-white ${activeFormats.includes('italic') ? 'bg-white text-[#477bea] shadow-sm' : ''}`}><Italic className="h-4 w-4" /></button><span className="mx-2 h-7 w-px bg-[#ddd]" />
+            <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('h1')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H1</button><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('h2')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H2</button><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('h3')} className="rounded px-2 py-1.5 font-semibold hover:bg-white">H3</button><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('body')} className="rounded px-2 py-1.5 hover:bg-white">Body</button><span className="mx-2 hidden h-7 w-px bg-[#ddd] lg:block" />
+            <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('bullet')} className="hidden items-center gap-1 rounded px-2 py-1.5 hover:bg-white sm:flex"><List className="h-4 w-4" /> Bullet list</button><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => applyFormat('number')} className="hidden items-center gap-1 rounded px-2 py-1.5 hover:bg-white md:flex"><ListOrdered className="h-4 w-4" /> Numbered list</button>
             <span className="mx-2 h-7 w-px bg-[#ddd]" />
           </div>
           <div className={`${domainCapture ? 'flex w-full items-center gap-2 lg:w-auto lg:gap-1' : 'contents'}`}>
