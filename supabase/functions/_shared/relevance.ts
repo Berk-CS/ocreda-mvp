@@ -374,10 +374,18 @@ export function dealIntoChunks<T>(items: T[], chunkCount: number): T[][] {
  * variable too, so it sits beside the draft; only its instructions are fixed,
  * and so are the instructions about ideas, whether or not the draft has several.
  */
+/** The line that marks a note someone else wrote and shared with the person. */
+function sharedByLine(note: NoteLike): string {
+  return note.shared_by ? `\nShared by: ${truncate(note.shared_by.replace(/\s+/g, " ").trim(), 80)}` : "";
+}
+
 export function buildPrompt(draft: string, notes: NoteLike[], goal: string | null = null, sections: DraftSection[] = []): string {
   const candidates = notes
-    .map((note) => `ID: ${note.id}\n${truncate((note.summary || note.raw_text).trim(), MAX_NOTE_CHARS)}`)
+    .map((note) => `ID: ${note.id}${sharedByLine(note)}\n${truncate((note.summary || note.raw_text).trim(), MAX_NOTE_CHARS)}`)
     .join("\n\n---\n\n");
+  const sharedBlock = notes.some((note) => note.shared_by)
+    ? `\n\nSome notes are marked "Shared by": someone else wrote them and shared them with this person. Judge them exactly like the rest, but in their gist and explanation name that person ("Alice found…", "Alice's note…") instead of saying the person did or wrote it.`
+    : "";
   const goalBlock = goal
     ? `\n\nWhat they are working toward in this area:\n<goal>\n${goal}\n</goal>`
     : "";
@@ -462,7 +470,7 @@ OUTPUT - a JSON object and nothing else, with one entry in "results" per note th
 Here is the draft:
 <draft>
 ${renderDraft(draft, sections)}
-</draft>${goalBlock}
+</draft>${goalBlock}${sharedBlock}
 
 Here are the candidate notes:
 
@@ -1444,7 +1452,7 @@ export function buildInsightPrompt({ draft, context, recentNotes, matches, secti
   const related = matches
     .map(({ note, result }) => {
       const { title, text } = splitNoteTitle(note.raw_text);
-      return `ID: ${note.id}\nTitle: ${title || "(none)"}\nWritten: ${note.created_at.slice(0, 10)}${ideaLine(result)}\nDirection: ${result.direction === "outbound" ? "outbound (the note being written helps this one)" : "inbound (this note helps the one being written)"}\nHow it relates: ${result.relation_type} - ${result.explanation}${solvedBeforeLine(result)}${turnedDownLines(note.id)}\nText:\n${truncate(text, MAX_NOTE_CHARS)}`;
+      return `ID: ${note.id}\nTitle: ${title || "(none)"}\nWritten: ${note.created_at.slice(0, 10)}${note.shared_by ? `\nWritten by: ${truncate(note.shared_by.replace(/\s+/g, " ").trim(), 80)} (someone else, who shared this note with them)` : ""}${ideaLine(result)}\nDirection: ${result.direction === "outbound" ? "outbound (the note being written helps this one)" : "inbound (this note helps the one being written)"}\nHow it relates: ${result.relation_type} - ${result.explanation}${solvedBeforeLine(result)}${turnedDownLines(note.id)}\nText:\n${truncate(text, MAX_NOTE_CHARS)}`;
     })
     .join("\n\n---\n\n");
   const solutionIdeas = sections.filter((section) => section.kind === "solution");
@@ -1457,6 +1465,12 @@ export function buildInsightPrompt({ draft, context, recentNotes, matches, secti
     ? `HOW MANY - the note works on ${sections.length} separate ideas, marked as numbered <idea> blocks, and each related note says which idea it bears on. Give at most one insight per idea, built on that idea's related notes, plus at most one about the note as a whole. Skip any idea where nothing clears the bar; an idea with no insight is a normal, frequent, and correct outcome. Do not stretch to cover every idea.`
     : `HOW MANY - a note can raise several separate issues. Give one insight per issue that clears the bar, at most ${MAX_INSIGHTS}, strongest first. Each must be about a different passage of the note, and must not repeat another insight's point. One insight is often right, and an empty list is a normal, frequent, and correct answer. Do not stretch to fill the slots.`;
 
+  const sharedNames = Array.from(new Set(matches.map(({ note }) => note.shared_by?.trim()).filter((name): name is string => Boolean(name))));
+  const sharedRule = sharedNames.length
+    ? `
+SOMEONE ELSE'S NOTES - a related note with "Written by" was written by that person (${sharedNames.join(", ")}) and shared with them; every other note is their own. Quote it word for word like any note, but never present it as theirs: no "you wrote", "you said", "your note", "you solved this before", "you changed your mind". Name the person instead: "Alice's note says {1}", "Alice found that {1}". A contradiction with someone else's note is a difference of view, not a change of mind: "Alice sees it differently: {1}". A card can rest on both their own notes and someone else's; say whose each quote is.
+`
+    : "";
   return `Someone is writing a note. You have the past notes of theirs that relate to it. Decide whether anything in those past notes should change what they do next, and if so, tell them in one short card.
 
 INTENT - first work out what the note is doing. Pick exactly one:
@@ -1481,7 +1495,7 @@ GOAL - if they have said what they are working toward in this area, use it to de
 ${howMany}
 
 THEIR WORDS, NOT YOURS - a card is their own past words, connected by you. You write only the short sentence that links those words to the note; everything taken from a past note appears inside it exactly as they wrote it, so the card sounds familiar.
-
+${sharedRule}
 For each insight:
 KIND - pick exactly one, by what the past notes actually offer:
 "solution" - a past note holds a clear, specific answer to a question or problem in the note being written: a number, a name, a decision, a fix. Whenever such an answer exists, give this card; it is the most valuable one, so never water it down to "helps".

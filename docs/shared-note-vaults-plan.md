@@ -1,6 +1,6 @@
 # Shared-note vaults: plan
 
-Status: being built (step 1 done in `20261124120000_shared_note_vaults.sql`). Decisions from the 2026-11-23 session (see `decisions.txt`).
+Status: built (steps 1-3). Not deployed: apply `20261124120000_shared_note_vaults.sql` before deploying the app and functions. Decisions from the 2026-11-23 session (see `decisions.txt`).
 
 ## What we decided
 

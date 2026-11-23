@@ -1140,7 +1140,7 @@ function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault
         <span>{notes.length} {notes.length === 1 ? 'Note' : 'Notes'}</span>
       </button>
 
-      {searchOpen && <KnowledgeSearchOverlay request={{ query: '' }} notes={notes} muses={muses} projects={projects} hideProjectColumn onClose={() => setSearchOpen(false)} onOpenPage={(project, page) => { setSearchOpen(false); onOpenPage(project, page); }} onOpenNote={(note) => { setSearchOpen(false); onOpenNote(note); }} />}
+      {searchOpen && <KnowledgeSearchOverlay request={{ query: '' }} notes={notes} sharedNotes={vaults.flatMap((vault) => vault.notes)} muses={muses} projects={projects} hideProjectColumn onClose={() => setSearchOpen(false)} onOpenPage={(project, page) => { setSearchOpen(false); onOpenPage(project, page); }} onOpenNote={(note) => { setSearchOpen(false); onOpenNote(note); }} />}
     </div>
   );
 }
@@ -1673,7 +1673,7 @@ function RelatedNotePanel({ note, relevance, focusText = '', onClose, onOpenFull
       <div className="min-w-0 text-xs text-[#999]">
         <span>{fullNoteDate(note.created_at)}</span>
         <span className="mx-2 text-[#ccc]" aria-hidden="true">·</span>
-        <span className="truncate">{cleanCategory(note.category) || ORPHANS_MUSE}</span>
+        <span className="truncate">{note.shared_by ? `Shared by ${note.shared_by}` : cleanCategory(note.category) || ORPHANS_MUSE}</span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <button type="button" onClick={onOpenFull} className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#477bea] shadow-sm hover:border-[#adc3ff] hover:bg-[#edf3ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">Open full note</button>
@@ -2202,6 +2202,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
       ?? (item.answer?.note_id || item.quotes?.[0]?.note_id || item.note_ids[0]);
     const source = sourceId ? noteById.get(sourceId) : undefined;
     const sourceTitle = source ? noteLabel(source) : 'earlier note';
+    // Someone else's note is named as theirs, never as one of yours.
+    const sharedBy = source?.shared_by ?? null;
     const focus = view.fromNoteId ? item.answer?.text ?? ''
       : outboundAnswer ? item.problem?.text ?? ''
         : (item.answer?.note_id ? item.answer.text : '') || item.quotes?.[0]?.text || '';
@@ -2218,8 +2220,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
       const label = choice === 'merged' ? 'Extended'
         : outboundAnswer ? `Solves ${sourceTitle}`
           : outboundHelp ? `Helps ${sourceTitle}`
-        : choice === 'today' ? `Updates ${sourceTitle}`
-          : choice === 'earlier' ? `${sourceTitle} holds`
+        : choice === 'today' ? (sharedBy ? `Differs from ${sharedBy}` : `Updates ${sourceTitle}`)
+          : choice === 'earlier' ? (sharedBy ? `${sharedBy}’s view holds` : `${sourceTitle} holds`)
             : choice === 'confirmed' ? `Pattern · ${sourceTitle}`
               : sourceTitle;
       return <span key={key} {...handlers} className={`ml-1.5 inline-block max-w-[16rem] cursor-pointer truncate rounded-full border px-2 align-[2px] text-[11px] font-medium leading-5 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${style.chip}`}>{label}</span>;
@@ -2231,7 +2233,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
     return <span key={key} {...handlers} className={`my-2 block cursor-pointer rounded-lg border px-3 py-2 text-[15px] leading-relaxed hover:brightness-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${choice === 'merged' ? 'border-y-0 border-r-0 border-l-[3px] border-[#c8acea] bg-[#fbf8ff] text-[#3d2a57]' : `border-dashed ${style.outline} text-[#2d2d2d]`}`}>
       {choice === 'solved' && <span className={`mr-1.5 text-[12px] font-semibold ${style.actionText}`}>Solution:</span>}
       {words}
-      <span className="mt-0.5 block text-[11px] text-[#999]">From “{sourceTitle}”{source ? ` · ${formatDate(source.created_at)}` : ''} ↗</span>
+      <span className="mt-0.5 block text-[11px] text-[#999]">From {sharedBy ? `${sharedBy}’s ` : ''}“{sourceTitle}”{source ? ` · ${formatDate(source.created_at)}` : ''} ↗</span>
     </span>;
   };
 
@@ -2547,8 +2549,10 @@ function ReadingFormatBar({ onFormat, onDone, editing, active = [] }: { onFormat
   return <div className="absolute bottom-5 left-1/2 z-20 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-1 rounded-xl bg-[#f7f7f9] px-3 py-2 text-sm text-[#555] shadow-sm"><button type="button" aria-label="Voice input" className="flex h-8 w-8 items-center justify-center rounded hover:bg-white"><Mic className="h-4 w-4" /></button><span className="mx-1 h-7 w-px bg-[#ddd]" /><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('bold')} aria-label="Bold" aria-pressed={active.includes('bold')} className={`h-8 w-8 rounded font-bold hover:bg-white ${on('bold')}`}>B</button><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('italic')} aria-label="Italic" aria-pressed={active.includes('italic')} className={`h-8 w-8 rounded italic hover:bg-white ${on('italic')}`}>I</button><span className="mx-1 h-7 w-px bg-[#ddd]" />{(['h1', 'h2', 'h3'] as const).map((kind) => <button key={kind} type="button" onMouseDown={keepFocus} onClick={() => onFormat(kind)} aria-pressed={active.includes(kind)} className={`hidden h-8 rounded px-2 font-semibold hover:bg-white sm:block ${on(kind)}`}>{kind.toUpperCase()}</button>)}<button type="button" onMouseDown={keepFocus} onClick={() => onFormat('body')} className="hidden h-8 rounded px-2 hover:bg-white md:block">Body</button><span className="mx-1 hidden h-7 w-px bg-[#ddd] md:block" /><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('bullet')} aria-pressed={active.includes('bullet')} className={`hidden h-8 items-center gap-1 rounded px-2 hover:bg-white lg:flex ${on('bullet')}`}><List className="h-4 w-4" /> Bullet list</button><button type="button" onMouseDown={keepFocus} onClick={() => onFormat('number')} aria-pressed={active.includes('number')} className={`hidden h-8 items-center gap-1 rounded px-2 hover:bg-white xl:flex ${on('number')}`}><ListOrdered className="h-4 w-4" /> Numbered list</button><button type="button" onClick={onDone} className="ml-2 h-8 rounded-md bg-[#477bea] px-3 text-white hover:bg-[#3d6ed7]">Done</button></div>;
 }
 
-function KnowledgeSearchOverlay({ request, notes, muses, projects, hideProjectColumn = false, onClose, onOpenPage, onOpenNote }: {
+function KnowledgeSearchOverlay({ request, notes, sharedNotes = [], muses, projects, hideProjectColumn = false, onClose, onOpenPage, onOpenNote }: {
   request: KnowledgeSearchRequest; notes: Note[]; muses: MuseMeta[]; projects: CortexProject[]; hideProjectColumn?: boolean; onClose: () => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void; onOpenNote: (note: Note) => void;
+  /** Notes others shared with you, shown as their own group under a text search. */
+  sharedNotes?: Note[];
 }) {
   const [query, setQuery] = useState(request.query);
   const [filter, setFilter] = useState<KnowledgeFilter | undefined>(request.filter);
@@ -2560,6 +2564,10 @@ function KnowledgeSearchOverlay({ request, notes, muses, projects, hideProjectCo
     if (filter) return true;
     return !normalized || `${note.raw_text} ${note.category ?? ''}`.toLowerCase().includes(normalized);
   }), [filter, normalized, sortedNotes]);
+  // Only a text search reaches shared notes: the date and Domain filters are about your own.
+  const matchingShared = useMemo(() => (filter || !normalized ? [] : sharedNotes
+    .filter((note) => `${note.raw_text} ${note.shared_by ?? ''}`.toLowerCase().includes(normalized))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))), [filter, normalized, sharedNotes]);
   const matchingPages = useMemo(() => projects.flatMap((project) => project.pages.map((page) => ({ project, page }))).filter(({ page }) => {
     if (!normalized) return true;
     return `${page.title} ${page.content}`.toLowerCase().includes(normalized);
@@ -2580,7 +2588,7 @@ function KnowledgeSearchOverlay({ request, notes, muses, projects, hideProjectCo
         <div className="flex h-20 shrink-0 items-center border-b border-[#ddd] px-7 sm:px-10"><Search className="mr-4 h-6 w-6 shrink-0 text-[#aaa]" /><input autoFocus value={query} onChange={(event) => changeQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') onClose(); }} placeholder="Search notes, pages, and Domains" className="h-full min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-[#b3b3b3] sm:text-2xl" />{filter && <button type="button" onClick={() => { setFilter(undefined); setQuery(''); }} className="rounded-full bg-[#edf3ff] px-3 py-1.5 text-xs text-[#477bea]">Clear {filter.kind === 'muse' ? 'domain' : filter.kind}</button>}</div>
         {!query.trim() && !filter ? <div className="min-h-0 flex-1 overflow-y-auto px-10 py-12 sm:px-16"><p className="text-sm text-[#aaa]">Recent</p><div className="mt-5 max-w-2xl space-y-1">{recentTerms.map((term) => <button key={term} type="button" onClick={() => setQuery(term)} className="block w-full rounded-lg px-1 py-3 text-left text-base text-[#555] hover:bg-[#f6f6f6] hover:px-3">{term}</button>)}</div></div> : <div className={`grid min-h-0 flex-1 overflow-y-auto lg:overflow-hidden ${showProjectColumn ? 'lg:grid-cols-[450px_minmax(0,1fr)]' : 'lg:grid-cols-1'}`}>
           {showProjectColumn && <aside className="border-b border-[#ddd] px-7 py-10 lg:overflow-y-auto lg:border-b-0 lg:border-r sm:px-10"><p className="mb-7 text-sm text-[#aaa]">Found in project pages</p><div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-1">{matchingPages.map(({ project, page }) => <button key={`${project.id}-${page.id}`} type="button" onClick={() => onOpenPage(project, page)} title={page.title || undefined} className="flex h-[300px] flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-7 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff]"><strong className="line-clamp-2 shrink-0 text-base leading-snug"><HighlightedText text={page.title} query={query} /></strong><span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-6 whitespace-pre-wrap text-sm leading-relaxed text-[#777]"><HighlightedText text={page.content || 'Empty page'} query={query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{project.title}</span><span className="shrink-0">{formatDate(page.updatedAt)}</span></span></button>)}{!matchingPages.length && <p className="text-sm text-[#999] sm:col-span-2 lg:col-span-1">No project page contains this search.</p>}</div></aside>}
-          <section className="min-h-0 px-7 py-10 lg:overflow-y-auto sm:px-12"><p className="mb-7 text-sm text-[#aaa]">{heading}</p><div className={`grid gap-7 ${showProjectColumn ? 'xl:grid-cols-2' : 'lg:grid-cols-2 xl:grid-cols-3'}`}>{filteredNotes.map((item) => { const content = splitNote(item); const preview = content.body ? previewNoteText(content.body) : notePreview(item); return <button key={item.id} type="button" onClick={() => onOpenNote(item)} title={content.title || undefined} className="flex h-[280px] flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-6 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff]">{content.hasTitle && <strong className="line-clamp-2 shrink-0 text-base leading-snug"><HighlightedText text={defaultNoteTitle(content.title)} query={filter ? '' : query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-5 text-sm leading-relaxed text-[#777]"><HighlightedText text={preview} query={filter ? '' : query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{cleanCategory(item.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span></button>; })}{!filteredNotes.length && <p className="text-sm text-[#999] xl:col-span-2">No notes match this search.</p>}</div></section>
+          <section className="min-h-0 px-7 py-10 lg:overflow-y-auto sm:px-12"><p className="mb-7 text-sm text-[#aaa]">{heading}</p><div className={`grid gap-7 ${showProjectColumn ? 'xl:grid-cols-2' : 'lg:grid-cols-2 xl:grid-cols-3'}`}>{filteredNotes.map((item) => { const content = splitNote(item); const preview = content.body ? previewNoteText(content.body) : notePreview(item); return <button key={item.id} type="button" onClick={() => onOpenNote(item)} title={content.title || undefined} className="flex h-[280px] flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-6 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#8fb1ff]">{content.hasTitle && <strong className="line-clamp-2 shrink-0 text-base leading-snug"><HighlightedText text={defaultNoteTitle(content.title)} query={filter ? '' : query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-5 text-sm leading-relaxed text-[#777]"><HighlightedText text={preview} query={filter ? '' : query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{cleanCategory(item.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(item.created_at)}</span></span></button>; })}{!filteredNotes.length && <p className="text-sm text-[#999] xl:col-span-2">No notes match this search.</p>}</div>{matchingShared.length > 0 && <><p className="mb-7 mt-12 text-sm text-[#aaa]">Shared with me</p><div className={`grid gap-7 ${showProjectColumn ? 'xl:grid-cols-2' : 'lg:grid-cols-2 xl:grid-cols-3'}`}>{matchingShared.map((item) => <LibraryNoteCard key={item.id} note={item} query={query} layout="search" onClick={() => onOpenNote(item)} />)}</div></>}</section>
         </div>}
       </div>
     </div>
@@ -2837,13 +2845,15 @@ function IconChoice({ kind, accept, label, onClick }: { kind: SuggestionKind; ac
  * The action under a card. Nothing here edits the note: every choice is kept
  * beside it and drawn over it, and every choice can be undone.
  */
-function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound, onChoose, onOpenSource }: {
+function CardAction({ insight, kind, decision, sourceTitle, sourceDate, sharedBy = null, outbound, onChoose, onOpenSource }: {
   insight: NoteInsight;
   kind: SuggestionKind;
   /** True when this note is the help and the earlier note is the one helped. */
   outbound: boolean;
   decision?: CardDecision;
   sourceTitle: string;
+  /** Who shared the note the card rests on, when it is someone else's. */
+  sharedBy?: string | null;
   sourceDate: string;
   onChoose: (choice: CardChoice | null, text?: string) => void;
   onOpenSource: (noteId: string, focus?: string) => void;
@@ -2891,7 +2901,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
     return <div className={box}>
       <p className={heading}>Solution</p>
       <p className="mt-1 text-[15px] leading-relaxed text-[#26467a]">{answerText}</p>
-      {answer && <button type="button" onClick={(event) => { event.stopPropagation(); openAnswer(); }} className="mt-1 text-[11px] text-[#5b7fc9] hover:underline">From “{sourceTitle}” · {sourceDate} ↗</button>}
+      {answer && <button type="button" onClick={(event) => { event.stopPropagation(); openAnswer(); }} className="mt-1 text-[11px] text-[#5b7fc9] hover:underline">From {sharedBy ? `${sharedBy}’s ` : ''}“{sourceTitle}” · {sourceDate} ↗</button>}
       <div className="mt-3 flex gap-2">
         <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('solved'); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">Solved</button>
         <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('downgraded'); }} className="rounded-md bg-white px-3 py-1.5 text-xs font-medium text-[#666] shadow-sm hover:bg-[#f5f5f5]">Dismiss</button>
@@ -2956,7 +2966,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
       <div className="min-w-0 flex-1">
         <p className={heading}>Merge adds to your note</p>
         <p className="mt-1 text-[14px] leading-relaxed text-[#4d3569]">“{words}”</p>
-        <p className="mt-1 text-[11px] text-[#9a7fbf]">Word for word, linked to {sourceDate}</p>
+        <p className="mt-1 text-[11px] text-[#9a7fbf]">Word for word{sharedBy ? ` from ${sharedBy}` : ''}, linked to {sourceDate}</p>
       </div>
       <IconChoice kind={kind} accept={false} label="Dismiss" onClick={() => onChoose('rejected')} />
       <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('merged', words); }} className="shrink-0 rounded-md bg-[#8254b5] px-4 py-2 text-xs font-medium text-white hover:bg-[#70449f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8254b5] focus-visible:ring-offset-2">Merge</button>
@@ -2966,7 +2976,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
   if (kind === 'contradiction') {
     const options: { choice: CardChoice; label: string }[] = [
       { choice: 'today', label: 'Today stands' },
-      { choice: 'earlier', label: `${sourceTitle} holds` },
+      { choice: 'earlier', label: sharedBy ? `${sharedBy}’s view holds` : `${sourceTitle} holds` },
       { choice: 'both', label: 'Both are true' },
     ];
     return <div className={box}>
@@ -3094,9 +3104,9 @@ function SuggestionCard({ insight, kind, decision, notesById, trigger, outbound 
         ? <>{trigger.before}<span className={`rounded-sm px-0.5 not-italic text-[#444] ${HIGHLIGHT_STYLES[kind].idle}`}>{trigger.key}</span>{trigger.after}</>
         : plainNoteText(insight.anchor)}”</blockquote>}
       <p className={`mt-4 leading-relaxed text-[#222] ${compact ? 'text-[14px]' : 'text-[16px]'}`}><InsightSentence insight={insight} kind={kind} onOpenSource={onOpenSource} /></p>
-      {source && <p className="mt-2 text-[11px] text-[#999]">{outbound ? 'The earlier note this helps' : 'From your notes'}: “{sourceTitle}” · {sourceDate}</p>}
+      {source && <p className="mt-2 text-[11px] text-[#999]">{outbound ? 'The earlier note this helps' : source.shared_by ? `From ${source.shared_by}’s notes` : 'From your notes'}: “{sourceTitle}” · {sourceDate}</p>}
       {onChoose
-        ? <CardAction insight={insight} kind={kind} decision={decision} sourceTitle={sourceTitle} sourceDate={sourceDate} outbound={outbound} onChoose={onChoose} onOpenSource={onOpenSource} />
+        ? <CardAction insight={insight} kind={kind} decision={decision} sourceTitle={sourceTitle} sourceDate={sourceDate} sharedBy={source?.shared_by ?? null} outbound={outbound} onChoose={onChoose} onOpenSource={onOpenSource} />
         : <p className="mt-3 text-[11px] text-[#999]">Save the note to act on this.</p>}
       {cited.length > 0 && <div className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-t border-[#ececef] pt-3 text-[11px] text-[#999]">
         <span>{outbound ? 'Where this applies' : 'Notes used'}</span>

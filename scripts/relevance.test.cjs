@@ -1182,6 +1182,25 @@ test('a finished search reports its funnel', async () => {
   assert.strictEqual(funnel.cards, null, 'no insight step was given');
 });
 
+test("someone else's note is named in both prompts, and cards are told not to call it theirs", () => {
+  const shared = { ...note('alice-note'), shared_by: 'Alice' };
+  const agents = buildPrompt('a draft about pricing', [note('mine'), shared]);
+  assert.ok(agents.includes('ID: alice-note\nShared by: Alice'));
+  assert.ok(!agents.includes('ID: mine\nShared by'));
+  assert.ok(agents.includes('name that person'));
+  const insight = buildInsightPrompt({ draft: 'd', context: { domain: null, goal: 'g' }, recentNotes: [], matches: [{ note: shared, result: hit('alice-note', 0.9) }, { note: note('mine'), result: hit('mine', 0.8) }] });
+  assert.ok(insight.includes('Written by: Alice (someone else, who shared this note with them)'));
+  assert.ok(insight.includes("SOMEONE ELSE'S NOTES"));
+  assert.ok(insight.includes('(Alice)'));
+});
+
+test('prompts without shared notes are unchanged by the shared-note rules', () => {
+  assert.ok(!buildPrompt('a draft', [note('mine')]).includes('Shared by'));
+  const insight = buildInsightPrompt({ draft: 'd', context: { domain: null, goal: 'g' }, recentNotes: [], matches: [{ note: note('mine'), result: hit('mine', 0.9) }] });
+  assert.ok(!insight.includes("SOMEONE ELSE'S NOTES"));
+  assert.ok(!insight.includes('Written by:'));
+});
+
 // ------------------------------------------------------------ card rules
 
 const match = (over = {}) => ({
