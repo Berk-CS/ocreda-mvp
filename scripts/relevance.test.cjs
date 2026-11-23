@@ -1241,6 +1241,36 @@ test('rule 1: a solution idea gets no inbound solves or helps, but keeps its out
   assert.strictEqual(out.dropped.help_for_solution, 2);
 });
 
+test('rule 5: nothing is ever marked on a note someone shared; it can only inform the draft', () => {
+  const out = rules({
+    notes: [fullNote('mine', 'My old problem'), { ...fullNote('theirs', 'Their old problem'), shared_by: 'Alice' }],
+    results: [
+      match({ note_id: 'theirs', direction: 'outbound' }),
+      match({ note_id: 'mine', direction: 'outbound' }),
+      match({ note_id: 'theirs-advice', direction: 'inbound', relation_type: 'supports' }),
+    ],
+  });
+  assert.deepStrictEqual(out.results.map((r) => r.note_id), ['mine', 'theirs-advice']);
+  assert.strictEqual(out.dropped.onto_shared, 1);
+});
+
+test('rule 5: "you solved this before" is never about a shared note', () => {
+  const history = {
+    ...EMPTY_CARD_HISTORY,
+    settled: [{ choice: 'solved', problem_note_id: 'theirs', problem_text: 'Their old problem', by_note_id: 'fix', answer_text: 'the fix' }],
+  };
+  const run = (problem) => rules({
+    history,
+    notes: [problem, fullNote('fix', 'the fix')],
+    results: [match({ note_id: 'theirs', relation_type: 'supports', matched_text: 'Their old problem' })],
+  });
+  // The same match on a note of their own brings the solver; on a shared note it does not.
+  assert.strictEqual(run(fullNote('theirs', 'Their old problem')).added_solvers, 1);
+  const shared = run({ ...fullNote('theirs', 'Their old problem'), shared_by: 'Alice' });
+  assert.deepStrictEqual(shared.results.map((r) => r.note_id), ['theirs']);
+  assert.strictEqual(shared.added_solvers, 0);
+});
+
 test('rule 1: a match on the whole draft is held back only when every idea is a solution', () => {
   const whole = match({ note_id: 'w', section_id: 'whole' });
   assert.strictEqual(rules({ sections: [sec('1', 'solution'), sec('2', 'situation')], results: [whole] }).results.length, 1);
@@ -1422,7 +1452,7 @@ test('a search applies the card rules before the insight call and reports them i
     onFunnel: (value) => { funnel = value; },
   });
   assert.deepStrictEqual(insightSaw, ['b']);
-  assert.deepStrictEqual(funnel.dropped_by_rules, { help_for_solution: 1, already_settled: 0, turned_down: 0 });
+  assert.deepStrictEqual(funnel.dropped_by_rules, { help_for_solution: 1, already_settled: 0, turned_down: 0, onto_shared: 0 });
   assert.strictEqual(funnel.added_solvers, 0);
 });
 

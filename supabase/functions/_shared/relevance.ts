@@ -86,6 +86,11 @@ export interface NoteLike {
   created_at: string;
   /** The note's Domain name. Only read when building an insight's context. */
   category?: string | null;
+  /**
+   * Set on a note someone else shared with the person: who shared it. A
+   * shared note can inform their draft, but nothing is ever marked on it.
+   */
+  shared_by?: string | null;
 }
 
 /**
@@ -1004,7 +1009,7 @@ export interface CardRulesOutcome {
   results: RelevanceResult[];
   /** The sections, with any kind the split left out inferred. */
   sections: DraftSection[];
-  dropped: { help_for_solution: number; already_settled: number; turned_down: number };
+  dropped: { help_for_solution: number; already_settled: number; turned_down: number; onto_shared: number };
   /** Notes added because they solved an earlier problem that matched. */
   added_solvers: number;
 }
@@ -1026,11 +1031,16 @@ export interface CardRulesOutcome {
  * 4. Solved before. When a match is an earlier note facing the same problem,
  *    and the person marked another note as what solved it, that solving note
  *    is added right after it, so the card can say they solved this before.
+ * 5. Shared notes are never the target. An outbound match says the draft
+ *    helps or answers an earlier note, and acting on it marks that note. A
+ *    note someone else shared is theirs, so those matches are dropped; shared
+ *    notes only ever inform the draft (docs/shared-note-vaults-plan.md).
  */
 export function applyCardRules({ draft, results, sections: given, notes, history, draftNoteId }: CardRulesInput): CardRulesOutcome {
   const sections = inferIdeaKinds(given, results);
   const textById = new Map(notes.map((note) => [note.id, note.raw_text]));
-  const dropped = { help_for_solution: 0, already_settled: 0, turned_down: 0 };
+  const sharedIds = new Set(notes.filter((note) => note.shared_by).map((note) => note.id));
+  const dropped = { help_for_solution: 0, already_settled: 0, turned_down: 0, onto_shared: 0 };
   const helping = (result: RelevanceResult) => result.relation_type === "solves" || result.relation_type === "helps";
 
   // Which section of this draft each rejection on it was about. A passage no
@@ -1043,6 +1053,10 @@ export function applyCardRules({ draft, results, sections: given, notes, history
     });
 
   const kept = results.filter((result) => {
+    if (result.direction === "outbound" && sharedIds.has(result.note_id)) {
+      dropped.onto_shared++;
+      return false;
+    }
     if (result.direction === "inbound" && helping(result) && isSolutionSection(sections, result.section_id)) {
       dropped.help_for_solution++;
       return false;
@@ -1075,6 +1089,8 @@ export function applyCardRules({ draft, results, sections: given, notes, history
     out.push(result);
     if (result.direction !== "inbound" || !SAME_PROBLEM_RELATIONS.includes(result.relation_type)) continue;
     if (isSolutionSection(sections, result.section_id)) continue;
+    // "You solved this before" is about their own problems only.
+    if (sharedIds.has(result.note_id)) continue;
     const text = textById.get(result.note_id) ?? "";
     const solved = history.settled.find((item) =>
       item.choice === "solved"
