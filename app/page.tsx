@@ -24,6 +24,7 @@ import { getAiMode, useAiMode } from '@/lib/ai-mode';
 import { setSampleMode, useSampleMode, workspaceScope } from '@/lib/sample-mode';
 import { isSampleGuide, loadSampleVault, SampleVault } from '@/lib/sample-vault';
 import { copyNotesToPublic } from '@/lib/sharing-api';
+import { listVaults, removeVault, setVaultInRetrieval, Vault } from '@/lib/vaults-api';
 
 type MuseMeta = { title: string; description: string; createdAt: string };
 type ProjectPage = { id: string; title: string; content: string; sourceNoteIds: string[]; createdAt: string; updatedAt: string };
@@ -340,6 +341,10 @@ export default function OcredaHome() {
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const [activeMuse, setActiveMuse] = useState<string | null>(null);
   const [showUnsorted, setShowUnsorted] = useState(false);
+  // Notes others shared with you, one vault per person, kept apart from your own.
+  const [vaults, setVaults] = useState<Vault[]>([]);
+  const [activeVaultId, setActiveVaultId] = useState<string | null>(null);
+  const [activeSharedNoteId, setActiveSharedNoteId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedOpen, setSavedOpen] = useState(false);
   const [error, setError] = useState('');
@@ -363,6 +368,8 @@ export default function OcredaHome() {
     setActivePageId(null);
     setActiveMuse(null);
     setShowUnsorted(false);
+    setActiveVaultId(null);
+    setActiveSharedNoteId(null);
     setView('cortex');
     setImportOpen(false);
   }, []);
@@ -388,7 +395,7 @@ export default function OcredaHome() {
 
   const hasInAppSurface = Boolean(
     noteEditor || activeNoteId || museEditor || projectEditor || activeProjectId
-    || activeMuse || showUnsorted || view === 'muses' || importOpen
+    || activeMuse || showUnsorted || view === 'muses' || importOpen || activeVaultId || activeSharedNoteId
   );
 
   useEffect(() => {
@@ -410,13 +417,20 @@ export default function OcredaHome() {
       if (!userId) return;
       let loaded: Note[];
       let domains: Awaited<ReturnType<typeof loadDomainState>>;
+      // Shared notes go with your own notes only, never with the samples.
+      let loadedVaults: Vault[] = [];
       if (sampleMode) {
         const vault = await loadSampleVault();
         if (request !== loadRequestRef.current) return;
         domains = await loadDomainState(userId, true, vault);
         loaded = vault.notes;
       } else {
-        [loaded, domains] = await Promise.all([getNotes(), loadDomainState(userId, false)]);
+        [loaded, domains, loadedVaults] = await Promise.all([
+          getNotes(),
+          loadDomainState(userId, false),
+          // A vault that fails to load leaves your own notes working.
+          listVaults().catch((err) => { console.error('Could not load shared notes:', err); return [] as Vault[]; }),
+        ]);
       }
       if (request !== loadRequestRef.current) return;
       // The latest load decides which Domains show, so a switch always ends
@@ -428,6 +442,7 @@ export default function OcredaHome() {
       setPinnedMuseTitles(state.pinned);
       // A note's Domain comes only from the Domain records.
       setNotes(loaded.map((note) => ({ ...note, category: state.assignments[note.id] ?? null })));
+      setVaults(loadedVaults);
       setNotesScope(scope);
     }
     catch (err) {
@@ -626,7 +641,28 @@ export default function OcredaHome() {
   }, [activeMuse, importProgress, loading, museMeta, notes, notesScope, sampleMode, saving, scope, userId]);
 
   const unsortedNotes = useMemo(() => notes.filter((note) => !cleanCategory(note.category)), [notes]);
-  const isEmpty = !loading && notes.length === 0 && muses.length === 0;
+  const isEmpty = !loading && notes.length === 0 && muses.length === 0 && vaults.length === 0;
+  const sharedNotes = useMemo(() => vaults.flatMap((vault) => vault.notes), [vaults]);
+  const hasSearchableShared = vaults.some((vault) => vault.useInRetrieval && vault.notes.length > 0);
+  const toggleVaultRetrieval = async (vault: Vault) => {
+    const on = !vault.useInRetrieval;
+    const apply = (value: boolean) => setVaults((current) => current.map((item) => item.id === vault.id ? { ...item, useInRetrieval: value } : item));
+    apply(on);
+    try { await setVaultInRetrieval(vault.id, on); }
+    catch (err) { apply(!on); setError(safeErrorMessage(err, 'That vault setting could not be saved.')); }
+  };
+  const deleteVault = async (vault: Vault) => {
+    const count = vault.notes.length;
+    if (!window.confirm(`Remove ${vault.name}’s vault? Its ${count} ${count === 1 ? 'note leaves' : 'notes leave'} your Ocreda. You can add them again from ${vault.name}’s link.`)) return;
+    setSaving(true);
+    try {
+      await removeVault(vault.id);
+      setVaults((current) => current.filter((item) => item.id !== vault.id));
+      setActiveVaultId(null);
+      setActiveSharedNoteId(null);
+    } catch (err) { setError(safeErrorMessage(err, 'The vault could not be removed.')); }
+    finally { setSaving(false); }
+  };
   const flashSaved = () => { setSavedOpen(true); window.setTimeout(() => setSavedOpen(false), 1350); };
   const closeLibrary = useCallback(() => { setActiveMuse(null); setShowUnsorted(false); setView('cortex'); }, []);
   const openMuse = useCallback((title: string) => {
@@ -637,6 +673,8 @@ export default function OcredaHome() {
   const openNewNote = (muse = ORPHANS_MUSE) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
   const openExistingNote = (note: Note, autoSearch = true, fromNoteId: string | null = null) => {
     setError('');
+    // A shared note opens read-only, with no search of its own.
+    if (note.vault_id) { setActiveSharedNoteId(note.id); return; }
     setActiveNoteRetrievalMode('relevant');
     setActiveNoteAutoSearch(autoSearch);
     setPreviousNoteId(fromNoteId);
@@ -916,6 +954,8 @@ export default function OcredaHome() {
   const activeProject = activeProjectId ? projects.find((project) => project.id === activeProjectId) ?? null : null;
   const activePage = activeProject && activePageId ? activeProject.pages.find((page) => page.id === activePageId) ?? null : null;
   const activeNote = activeNoteId ? notes.find((note) => note.id === activeNoteId) ?? null : null;
+  const activeVault = activeVaultId ? vaults.find((vault) => vault.id === activeVaultId) ?? null : null;
+  const activeSharedNote = activeSharedNoteId ? sharedNotes.find((note) => note.id === activeSharedNoteId) ?? null : null;
   const previousNote = previousNoteId ? notes.find((note) => note.id === previousNoteId) ?? null : null;
 
   return (
@@ -925,13 +965,15 @@ export default function OcredaHome() {
         {activeProject && activePage ? <ProjectPageWorkspace key={activePage.id} project={activeProject} page={activePage} notes={notes} muses={muses} projects={projects} saving={saving} onBack={() => setActivePageId(null)} onChange={(page) => updateProjectPage(activeProject.id, page)} onAddNote={() => openNewNote()} onOpenNote={openExistingNote} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onDelete={() => removeProjectPage(activeProject.id, activePage.id)} />
           : activeProject ? <ProjectPagesGrid project={activeProject} onBack={() => { setActiveProjectId(null); setActivePageId(null); }} onAddPage={() => createProjectPage(activeProject.id)} onOpenPage={(page) => setActivePageId(page.id)} onEdit={() => setProjectEditor({ project: activeProject, title: activeProject.title, description: activeProject.description })} onDelete={() => removeProject(activeProject.id)} />
           : isEmpty ? <EmptyWorkspace displayName={displayName} userEmail={user?.email ?? ''} existingDomains={muses} onAddNote={() => openNewNote()} onImport={handleImport} onOpenImport={() => setImportOpen(true)} onTrySamples={user && !sampleMode ? () => setSampleMode(user.id, true) : undefined} importError={importError} progress={importProgress} />
+          : activeVault ? <VaultDetail vault={activeVault} busy={saving} onClose={() => setActiveVaultId(null)} onOpenNote={(note) => setActiveSharedNoteId(note.id)} onToggleRetrieval={() => void toggleVaultRetrieval(activeVault)} onRemove={() => void deleteVault(activeVault)} />
           : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? ORPHANS_MUSE : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? ORPHANS_MUSE : activeMuse ?? ORPHANS_MUSE)} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} onShare={sampleMode || showUnsorted ? undefined : () => void shareNotes(notesByMuse.get(activeMuse ?? '') ?? [])} />
           : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onAddNote={(muse) => openNewNote(muse ?? ORPHANS_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} />
-          : <CortexHome projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} />}
+          : <CortexHome vaults={vaults} onOpenVault={(vault) => setActiveVaultId(vault.id)} onToggleVaultRetrieval={(vault) => void toggleVaultRetrieval(vault)} onRemoveVault={(vault) => void deleteVault(vault)} projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} />}
         {notice && !error && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
-      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} muses={muses} projects={projects} saving={saving} userId={scope ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteAutoSearch(false); setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? ORPHANS_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onCreateDomain={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onDelete={removeReadingNote} onShare={shareNote} onSetDomainGoal={setDomainGoal} />}
+      {activeNote && <NoteReadingWorkspace key={activeNote.id} note={activeNote} previousNote={previousNote} allNotes={notes} sharedNotes={sharedNotes} hasSearchableShared={hasSearchableShared} muses={muses} projects={projects} saving={saving} userId={scope ?? 'local'} initialRetrievalMode={activeNoteRetrievalMode} autoSearch={activeNoteAutoSearch} onClose={() => { setActiveNoteId(null); setPreviousNoteId(null); }} onReturnToPrevious={() => { if (previousNote) { setActiveNoteAutoSearch(false); setActiveNoteId(previousNote.id); setPreviousNoteId(null); } }} onAddNote={() => { setActiveNoteId(null); setPreviousNoteId(null); openNewNote(cleanCategory(activeNote.category) ?? ORPHANS_MUSE); }} onOpenNote={(note, autoSearch) => openExistingNote(note, autoSearch, activeNote.id)} onOpenPage={(project, page) => { setActiveNoteId(null); setPreviousNoteId(null); setActiveProjectId(project.id); setActivePageId(page.id); }} onUpdate={updateReadingNote} onChangeDomain={(category) => void changeReadingNoteDomain(activeNote.id, category)} onCreateDomain={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onDelete={removeReadingNote} onShare={shareNote} onSetDomainGoal={setDomainGoal} />}
+      {activeSharedNote && <SharedNoteView note={activeSharedNote} vault={vaults.find((vault) => vault.id === activeSharedNote.vault_id) ?? null} onClose={() => setActiveSharedNoteId(null)} />}
       {shareNotice && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-[95] flex max-w-[90vw] -translate-x-1/2 items-center gap-3 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl"><span>{shareNotice}</span><Link href="/sharing" className="shrink-0 font-medium text-[#a8c4ff] hover:underline">Make a link</Link><button type="button" onClick={() => setShareNotice('')} aria-label="Dismiss"><X className="h-4 w-4" /></button></div>}
       {noteEditor && <NoteEditor state={noteEditor} muses={muses} notes={notes} saving={saving} error={error} onChange={setNoteEditor} onCreateMuse={createMuseFromEditor} onClose={() => { setNoteEditor(null); setError(''); }} onSave={() => void saveNote()} onFindRelevantNotes={() => void saveNote(true)} onImport={() => { setImportError(''); setImportOpen(true); }} onDelete={noteEditor.note ? () => void removeNote() : undefined} />}
       {museEditor && <MuseEditor state={museEditor} saving={saving} error={error} onChange={setMuseEditor} onClose={() => { setMuseEditor(null); setError(''); }} onSave={() => void saveMuse()} />}
@@ -1043,7 +1085,8 @@ function EmptyWorkspace({ displayName, userEmail, existingDomains, onAddNote, on
   );
 }
 
-function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onTogglePin, onAddMuse, onAddNote, onOpenImport, onOpenPage, onOpenNote }: {
+function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault, projects, muses, pinnedMuseTitles, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onTogglePin, onAddMuse, onAddNote, onOpenImport, onOpenPage, onOpenNote }: {
+  vaults: Vault[]; onOpenVault: (vault: Vault) => void; onToggleVaultRetrieval: (vault: Vault) => void; onRemoveVault: (vault: Vault) => void;
   projects: CortexProject[]; muses: MuseMeta[]; pinnedMuseTitles: string[]; notes: Note[]; notesByMuse: Map<string, Note[]>; userEmail: string; busy: boolean;
   onOpenMuses: () => void; onOpenMuse: (title: string) => void; onTogglePin: (title: string) => void; onAddMuse: () => void; onAddNote: () => void; onOpenImport: () => void;
   onOpenPage: (project: CortexProject, page: ProjectPage) => void; onOpenNote: (note: Note) => void;
@@ -1081,6 +1124,15 @@ function CortexHome({ projects, muses, pinnedMuseTitles, notes, notesByMuse, use
             <button type="button" onClick={onAddMuse} aria-label="Add a Domain" title="Add a Domain" className="flex h-[286px] items-center justify-center rounded-md border border-dashed border-[#dfe3ec] text-[#477bea] transition hover:border-[#8fb1ff] hover:bg-[#f8f9fc]"><FolderPlus className="h-9 w-9 stroke-[1.6]" /></button>
           </div>
         </section>
+        {vaults.length > 0 && <section className="mx-auto mt-14 w-full max-w-[1450px]" aria-label="Shared with me">
+          <div className="mb-6">
+            <h2 className="text-sm font-normal text-[#8d8d92]">Shared with me</h2>
+            <p className="mt-1 text-xs text-[#aaa]">Notes other people shared, one vault each. Ocreda brings them up while you write; they stay as they wrote them.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+            {vaults.map((vault) => <VaultHomeCard key={vault.id} vault={vault} onOpen={() => onOpenVault(vault)} onToggleRetrieval={() => onToggleVaultRetrieval(vault)} onRemove={() => onRemoveVault(vault)} />)}
+          </div>
+        </section>}
       </main>
 
       <button type="button" onClick={onOpenMuses} aria-label="Open Domains and notes" className="absolute bottom-0 left-1/2 z-20 flex h-16 w-[min(88vw,420px)] -translate-x-1/2 items-center justify-center gap-10 rounded-t-[52px] border border-b-0 border-[#e0e0e0] bg-white px-8 text-xs text-[#777] shadow-[0_-4px_16px_rgba(0,0,0,0.10)] transition hover:h-[70px] hover:text-[#222] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
@@ -1303,7 +1355,7 @@ function AddLibraryCard({ layout, onClick }: { layout: LibraryLayout; onClick: (
 function LibraryNoteCard({ note, query, layout, onClick }: { note: Note; query: string; layout: LibraryLayout | 'search'; onClick: () => void }) {
   const content = splitNote(note);
   const isLarge = layout === 'large';
-  return <button type="button" onClick={onClick} title={content.title || undefined} className={`flex flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#7ca2ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${isLarge ? 'h-[440px] p-8' : 'h-[360px] p-7'}`}>{content.hasTitle && <strong className={`line-clamp-2 shrink-0 leading-snug text-[#151515] ${isLarge ? 'text-lg' : 'text-base'}`}><HighlightedText text={defaultNoteTitle(content.title)} query={query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className={`whitespace-pre-wrap text-[15px] leading-[1.55] text-[#777] ${isLarge ? 'line-clamp-[11]' : 'line-clamp-[8]'}`}><HighlightedText text={content.body ? previewNoteText(content.body) : notePreview(note)} query={query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{cleanCategory(note.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(note.created_at)}</span></span><span className="sr-only">{isLarge ? 'large card' : layout} layout</span></button>;
+  return <button type="button" onClick={onClick} title={content.title || undefined} className={`flex flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#7ca2ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${isLarge ? 'h-[440px] p-8' : 'h-[360px] p-7'}`}>{content.hasTitle && <strong className={`line-clamp-2 shrink-0 leading-snug text-[#151515] ${isLarge ? 'text-lg' : 'text-base'}`}><HighlightedText text={defaultNoteTitle(content.title)} query={query} /></strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className={`whitespace-pre-wrap text-[15px] leading-[1.55] text-[#777] ${isLarge ? 'line-clamp-[11]' : 'line-clamp-[8]'}`}><HighlightedText text={content.body ? previewNoteText(content.body) : notePreview(note)} query={query} /></span></span><span className="mt-4 flex shrink-0 items-center justify-between gap-3 text-xs text-[#aaa]"><span className="min-w-0 truncate">{note.shared_by ? `Shared by ${note.shared_by}` : cleanCategory(note.category) || ORPHANS_MUSE}</span><span className="shrink-0">{formatDate(note.created_at)}</span></span><span className="sr-only">{isLarge ? 'large card' : layout} layout</span></button>;
 }
 
 function MuseSelector({ muses, notesByMuse, selected, busy, onClose, onSave, onCreate, onEdit, onDelete }: {
@@ -1360,6 +1412,91 @@ function MuseDetail({ title, notes, isUnsorted, busy, onClose, onAddNote, onOpen
       {!visibleNotes.length && query.trim() && <p className="mt-8 text-center text-sm text-[#999]">No notes contain “{query.trim()}”.</p>}
       {!notes.length && <p className="mt-8 text-center text-sm text-[#999]">This Domain is ready for its first note.</p>}
       </section>
+    </div>
+  );
+}
+
+/** The "Use in my retrieval" switch of a vault. */
+function RetrievalSwitch({ on, disabled = false, onChange }: { on: boolean; disabled?: boolean; onChange: () => void }) {
+  return <button type="button" role="switch" aria-checked={on} aria-label="Use in my retrieval" disabled={disabled} onClick={(event) => { event.stopPropagation(); onChange(); }} className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] disabled:opacity-50 ${on ? 'bg-[#477bea]' : 'bg-[#d4d4d8]'}`}>
+    <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition ${on ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+  </button>;
+}
+
+/** A vault on the home screen: the notes one person shared, apart from your own Domains. */
+function VaultHomeCard({ vault, onOpen, onToggleRetrieval, onRemove }: { vault: Vault; onOpen: () => void; onToggleRetrieval: () => void; onRemove: () => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const preview = vault.notes.slice(0, 3).map((note) => noteLabel(note)).join('\n') || 'Nothing in this vault yet.';
+  const count = vault.notes.length;
+  return (
+    <div className="relative h-[286px]">
+      <button type="button" onClick={onOpen} aria-label={`Open ${vault.name}’s vault`} className="relative flex h-full w-full flex-col overflow-hidden rounded-md border border-[#dfd6f0] bg-[#f7f5fb] p-2 text-left shadow-[0_2px_9px_rgba(0,0,0,0.14)] transition hover:-translate-y-0.5 hover:border-[#b9a4e3] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
+        <span className="block min-h-0 flex-1 overflow-hidden rounded bg-white px-5 py-5 text-sm leading-relaxed text-[#777]"><span className="line-clamp-[9] whitespace-pre-line">{preview}</span></span>
+        <span className="flex h-10 w-full shrink-0 items-center justify-between gap-3 px-3 pr-11 text-xs"><strong className="min-w-0 truncate font-semibold text-[#5c4a85]">{vault.name}</strong><span className="shrink-0 text-[#999]">{count} {count === 1 ? 'entry' : 'entries'}</span></span>
+      </button>
+      {!vault.useInRetrieval && <span className="pointer-events-none absolute right-4 top-4 rounded bg-[#f1f1f3] px-2 py-0.5 text-[11px] text-[#888]">Not searched</span>}
+      <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label={`${vault.name}’s vault options`} aria-expanded={menuOpen} title="Vault options" className="absolute bottom-3 right-3 z-10 flex h-8 w-8 items-center justify-center rounded-md text-[#888] hover:bg-white hover:text-[#5c4a85] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><MoreHorizontal className="h-4 w-4" /></button>
+      {menuOpen && <div className="absolute bottom-12 right-3 z-20 w-64 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5"><span><span className="block text-[#222]">Use in my retrieval</span><span className="block text-xs text-[#999]">Your drafts search these notes</span></span><RetrievalSwitch on={vault.useInRetrieval} onChange={onToggleRetrieval} /></div>
+        <button type="button" onClick={() => { setMenuOpen(false); onRemove(); }} className="block w-full px-4 py-2.5 text-left text-red-600 hover:bg-red-50">Remove vault</button>
+      </div>}
+    </div>
+  );
+}
+
+/** One person's shared notes, read-only. For now a vault is a single Domain. */
+function VaultDetail({ vault, busy, onClose, onOpenNote, onToggleRetrieval, onRemove }: {
+  vault: Vault; busy: boolean; onClose: () => void; onOpenNote: (note: Note) => void; onToggleRetrieval: () => void; onRemove: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const visibleNotes = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return normalized ? vault.notes.filter((note) => note.raw_text.toLowerCase().includes(normalized)) : vault.notes;
+  }, [query, vault.notes]);
+  return (
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#c9c2d6] p-3 sm:p-5">
+      <header className="relative flex h-16 shrink-0 items-center gap-3 px-1 text-white sm:px-2">
+        <label className="flex h-10 w-full max-w-xs items-center rounded-lg bg-white/15 px-3"><Search className="mr-2 h-4 w-4 shrink-0 text-white/80" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${vault.name}’s notes`} aria-label={`Search ${vault.name}’s notes`} className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-white/70" /></label>
+        <h1 className="pointer-events-none absolute left-1/2 hidden max-w-[40vw] -translate-x-1/2 truncate text-sm font-normal text-white/90 sm:block">{vault.name}’s vault</h1>
+        <button type="button" onClick={onClose} aria-label="Close vault and return home" title="Close vault and return home" className="ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-white drop-shadow hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"><X className="h-6 w-6" /></button>
+      </header>
+      <section className="relative min-h-0 flex-1 overflow-y-auto rounded-[28px] bg-white px-5 pb-16 pt-8 shadow-[0_14px_40px_rgba(0,0,0,0.12)] sm:px-10 lg:px-16">
+        <div className="mx-auto flex max-w-[1510px] flex-wrap items-center justify-between gap-4">
+          <p className="text-sm text-[#777]">Shared by {vault.name} · updated {fullNoteDate(vault.acceptedAt)} · {vault.notes.length} {vault.notes.length === 1 ? 'entry' : 'entries'}</p>
+          <div className="flex items-center gap-4 text-sm">
+            <span className="flex items-center gap-2 text-[#555]">Use in my retrieval <RetrievalSwitch on={vault.useInRetrieval} disabled={busy} onChange={onToggleRetrieval} /></span>
+            <button type="button" disabled={busy} onClick={onRemove} className="text-red-600 hover:underline disabled:opacity-50">Remove vault</button>
+          </div>
+        </div>
+        <p className="mx-auto mt-2 max-w-[1510px] text-xs text-[#aaa]">These are {vault.name}’s words, read-only. {vault.useInRetrieval ? 'Your drafts search them for related notes and cards.' : 'Your drafts do not search them while this is off.'}</p>
+        <div className="mx-auto mt-10 grid max-w-[1510px] grid-cols-1 gap-8 sm:grid-cols-2 lg:gap-x-12 lg:gap-y-10 xl:grid-cols-3">
+          {visibleNotes.map((note) => <LibraryNoteCard key={note.id} note={note} query={query} layout="grid" onClick={() => onOpenNote(note)} />)}
+        </div>
+        {!visibleNotes.length && <p className="mt-8 text-center text-sm text-[#999]">{query.trim() ? `No notes contain “${query.trim()}”.` : 'Nothing in this vault.'}</p>}
+      </section>
+    </div>
+  );
+}
+
+/** A note someone shared with you: read-only, with no search of its own. */
+function SharedNoteView({ note, vault, onClose }: { note: Note; vault: Vault | null; onClose: () => void }) {
+  const content = splitNote(note);
+  const name = note.shared_by || vault?.name || 'Someone';
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/25 p-3 backdrop-blur-[5px] sm:p-6" role="dialog" aria-modal="true" aria-label={`Shared note: ${content.title || 'Untitled note'}`} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="mx-auto flex h-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[#d8d8d8] bg-white shadow-xl">
+        <header className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-[#eee] px-5">
+          <p className="min-w-0 truncate text-xs text-[#888]">Shared by <span className="font-medium text-[#5c4a85]">{name}</span> · {fullNoteDate(note.created_at)}</p>
+          <button type="button" onClick={onClose} aria-label="Close shared note" className="flex h-9 w-9 items-center justify-center rounded-md text-[#666] hover:bg-[#f4f4f4]"><X className="h-5 w-5" /></button>
+        </header>
+        <article className="min-h-0 flex-1 overflow-y-auto px-7 py-10 sm:px-12">
+          <div className="mx-auto max-w-2xl">
+            <h1 className="break-words text-2xl font-semibold text-[#171717]">{content.title || 'Untitled note'}</h1>
+            {content.body && <div className="mt-8 text-base leading-[1.7] text-[#2d2d2d]"><FormattedNoteBody text={content.body} /></div>}
+          </div>
+        </article>
+        <footer className="shrink-0 border-t border-[#eee] bg-[#faf9fc] px-5 py-3 text-xs text-[#888]">{name}’s note, read-only. {vault && !vault.useInRetrieval ? 'Your drafts do not search this vault right now.' : 'Ocreda brings it up when it relates to what you write.'}</footer>
+      </div>
     </div>
   );
 }
@@ -1558,8 +1695,12 @@ function RelatedNotePanel({ note, relevance, focusText = '', onClose, onOpenFull
   </div>;
 }
 
-function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, saving, userId, initialRetrievalMode, autoSearch, onClose, onReturnToPrevious, onAddNote, onOpenNote, onOpenPage, onUpdate, onChangeDomain, onCreateDomain, onDelete, onShare, onSetDomainGoal }: {
+function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], hasSearchableShared = false, muses, projects, saving, userId, initialRetrievalMode, autoSearch, onClose, onReturnToPrevious, onAddNote, onOpenNote, onOpenPage, onUpdate, onChangeDomain, onCreateDomain, onDelete, onShare, onSetDomainGoal }: {
   note: Note; previousNote: Note | null; allNotes: Note[]; muses: MuseMeta[]; projects: CortexProject[]; saving: boolean; userId: string; initialRetrievalMode: 'similar' | 'relevant'; autoSearch: boolean;
+  /** Notes others shared with you. Searches may cite them, so cards and links look them up here too. */
+  sharedNotes?: Note[];
+  /** Whether a search reads any shared notes, so a note can be searched with none of your own beside it. */
+  hasSearchableShared?: boolean;
   onClose: () => void; onReturnToPrevious: () => void; onAddNote: () => void; onOpenNote: (note: Note, autoSearch?: boolean) => void; onOpenPage: (project: CortexProject, page: ProjectPage) => void;
   onUpdate: (noteId: string, rawText: string) => Promise<void>; onChangeDomain: (category: string | null) => void; onCreateDomain: () => void; onDelete: (note: Note) => Promise<void>;
   onSetDomainGoal: (domainTitle: string, goal: string) => void;
@@ -1642,13 +1783,15 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   const newerNote = noteIndex > 0 ? orderedNotes[noteIndex - 1] : null;
   const olderNote = noteIndex < orderedNotes.length - 1 ? orderedNotes[noteIndex + 1] : null;
   const noteTooShortForRetrieval = note.raw_text.trim().length < MIN_RELEVANCE_DRAFT_CHARS;
-  const hasOtherNotes = allNotes.some((item) => item.id !== note.id);
+  const hasOtherNotes = hasSearchableShared || allNotes.some((item) => item.id !== note.id);
   const domainGoal = domainGoalFor(note.category, muses);
   // Primitives, so a new muses array with the same content does not rerun the search.
   const domainName = domainGoal?.name ?? '';
   const goalText = domainGoal?.goal ?? '';
-  const retrievalInputsRef = useRef({ note, allNotes, domainName, goalText, aiMode, rawText });
-  retrievalInputsRef.current = { note, allNotes, domainName, goalText, aiMode, rawText };
+  // Your notes and the shared ones together, for finding any note a search names.
+  const lookupNotes = useMemo(() => (sharedNotes.length ? [...allNotes, ...sharedNotes] : allNotes), [allNotes, sharedNotes]);
+  const retrievalInputsRef = useRef({ note, allNotes, lookupNotes, hasSearchableShared, domainName, goalText, aiMode, rawText });
+  retrievalInputsRef.current = { note, allNotes, lookupNotes, hasSearchableShared, domainName, goalText, aiMode, rawText };
 
   useEffect(() => {
     let active = true;
@@ -1666,7 +1809,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     // what the reader shows.
     const searchedText = requestNote.raw_text.trim();
     const requestBody = splitNote(requestNote).body || searchedText;
-    const availableNoteIds = new Set(inputs.allNotes.filter((item) => item.id !== requestNote.id).map((item) => item.id));
+    const availableNoteIds = new Set(inputs.lookupNotes.filter((item) => item.id !== requestNote.id).map((item) => item.id));
     // A saved search costs nothing to show, so it shows even for a note opened
     // only to read it, as long as it still names notes that exist and suits the mode.
     const canShow = (saved: SavedRetrieval | null): saved is SavedRetrieval => Boolean(saved
@@ -1698,7 +1841,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
       // completed searches. Retry instead of leaving the panel blank forever.
       setRetrieval(null);
       const requestTooShort = requestNote.raw_text.trim().length < MIN_RELEVANCE_DRAFT_CHARS;
-      const requestHasOtherNotes = inputs.allNotes.some((item) => item.id !== requestNote.id);
+      const requestHasOtherNotes = inputs.hasSearchableShared || inputs.allNotes.some((item) => item.id !== requestNote.id);
       if (requestTooShort || !requestHasOtherNotes) { setRetrievalLoading(false); return; }
       setRetrievalLoading(true);
       const onProgress = (progress: RelevanceProgress) => {
@@ -1770,11 +1913,11 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
   };
 
   const surfacedNotes = useMemo(() => {
-    const notesById = new Map(allNotes.map((item) => [item.id, item]));
+    const notesById = new Map(lookupNotes.map((item) => [item.id, item]));
     return (retrieval?.results ?? []).map((result) => notesById.get(result.note_id)).filter((item): item is Note => item !== undefined && item.id !== note.id).slice(0, 10);
-  }, [allNotes, note.id, retrieval]);
+  }, [lookupNotes, note.id, retrieval]);
 
-  const noteById = useMemo(() => new Map(allNotes.map((item) => [item.id, item])), [allNotes]);
+  const noteById = useMemo(() => new Map(lookupNotes.map((item) => [item.id, item])), [lookupNotes]);
   const relevanceByNoteId = useMemo(
     () => new Map((retrieval?.results ?? []).map((result) => [result.note_id, result])),
     [retrieval]
@@ -1795,7 +1938,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
     return Boolean(saved?.search.results.some((result) => result.note_id === note.id)
       || saved?.search.insights?.some((itemInsight) => itemInsight.note_ids.includes(note.id)));
   }), [allNotes, note.id, retrieval, usedInElsewhere, userId]);
-  const panelNote = panelNoteId ? allNotes.find((item) => item.id === panelNoteId) ?? null : null;
+  const panelNote = panelNoteId ? lookupNotes.find((item) => item.id === panelNoteId) ?? null : null;
   const displayedBody = body || note.raw_text;
   const noteSections = useMemo(() => noteSectionsFor(displayedBody, retrieval?.sections), [displayedBody, retrieval]);
   /** The relation of an insight's strongest cited note, for cards from servers that predate card kinds. */

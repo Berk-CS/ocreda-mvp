@@ -275,6 +275,7 @@ Deno.serve(async (req: Request) => {
         .select(columns)
         .eq("user_id", userId)
         .eq("is_sample", samples)
+        .is("vault_id", null)
         .order("created_at", { ascending: false })
         .limit(MAX_NOTES);
       if (excludeNoteId) query = query.neq("id", excludeNoteId);
