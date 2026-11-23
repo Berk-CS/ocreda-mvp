@@ -120,6 +120,28 @@ function notePreview(note: Note): string {
     .trim();
 }
 
+/** Markers at the start of a line: headings, quotes, bullets, numbered items. */
+const LINE_MARKER = /^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-+*•][ \t]+|\d+\.[ \t]+)+/gm;
+
+/**
+ * Inline markers only: emphasis, strikethrough, code ticks, and links (their
+ * text kept). A lone * or _ inside a word, as in snake_case, is kept.
+ */
+function stripInlineMarkdown(text: string): string {
+  return text
+    .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, '$1')
+    .replace(/\*\*|__|~~|`/g, '')
+    .replace(/(?<![\p{L}\p{N}])[*_]|[*_](?![\p{L}\p{N}])/gu, '');
+}
+
+/**
+ * A note's words as plain text, for anywhere they are quoted outside the note
+ * body itself (cards, chips, merged text), where markdown would show as symbols.
+ */
+function plainNoteText(text: string): string {
+  return stripInlineMarkdown(text.replace(LINE_MARKER, '')).replace(/[ \t]+/g, ' ').trim();
+}
+
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(new Date(value));
 }
@@ -1396,22 +1418,71 @@ function hasNoteFormatting(text: string): boolean {
   return /(^|\n)#{1,3}\s|(^|\n)(?:[-+*•]\s|\d+\.\s)|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_/.test(text);
 }
 
-/** Render the lightweight formatting inserted by the note toolbar. */
-function FormattedNoteBody({ text }: { text: string }) {
+type NoteMark = { start: number; end: number; label: string; markRef?: React.Ref<HTMLElement> };
+
+/**
+ * A line's text with its bold and italic drawn, and the part inside `mark`
+ * highlighted. `offset` is where the line starts in the note, since the mark's
+ * offsets point into the note's markdown, markers included.
+ */
+function InlineWithMark({ text, offset, mark }: { text: string; offset: number; mark?: NoteMark }) {
+  if (!mark || mark.end <= offset || mark.start >= offset + text.length) return <InlineNoteFormatting text={text} />;
+  // Visible runs of the line, each with where it sits in the note and its style.
+  const runs: { start: number; end: number; strong: boolean; em: boolean }[] = [];
+  const expression = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
+  let cursor = 0;
+  for (const match of text.matchAll(expression)) {
+    const at = match.index ?? 0;
+    const marker = match[0].startsWith('**') || match[0].startsWith('__') ? 2 : 1;
+    if (at > cursor) runs.push({ start: offset + cursor, end: offset + at, strong: false, em: false });
+    runs.push({ start: offset + at + marker, end: offset + at + match[0].length - marker, strong: marker === 2, em: marker === 1 });
+    cursor = at + match[0].length;
+  }
+  if (cursor < text.length) runs.push({ start: offset + cursor, end: offset + text.length, strong: false, em: false });
+  const nodes: React.ReactNode[] = [];
+  let first = true;
+  let lastMarked = -1;
+  runs.forEach((run, index) => {
+    const cuts = [run.start, Math.min(Math.max(mark.start, run.start), run.end), Math.min(Math.max(mark.end, run.start), run.end), run.end];
+    for (let piece = 0; piece < 3; piece++) {
+      const [from, to] = [cuts[piece], cuts[piece + 1]];
+      if (to <= from) continue;
+      const slice = text.slice(from - offset, to - offset);
+      let node: React.ReactNode = run.strong ? <strong>{slice}</strong> : run.em ? <em>{slice}</em> : slice;
+      if (piece === 1) {
+        node = <mark ref={first ? mark.markRef : undefined} className="rounded-sm bg-[#fff4c7] px-0.5 text-inherit underline decoration-[#e5b72f] decoration-2 underline-offset-4 [box-decoration-break:clone]" title={mark.label}>{node}</mark>;
+        first = false;
+      }
+      nodes.push(<Fragment key={`${index}-${piece}`}>{node}</Fragment>);
+      if (piece === 1) lastMarked = nodes.length;
+    }
+  });
+  // The label follows the marked words, on the line where they end.
+  if (lastMarked !== -1 && mark.end <= offset + text.length) nodes.splice(lastMarked, 0, <span key="label" className="ml-1 inline-block rounded bg-[#fff7d8] px-1 align-[1px] text-[10px] font-medium leading-4 text-[#9a7300]">{mark.label}</span>);
+  return <>{nodes}</>;
+}
+
+/** Render the lightweight formatting inserted by the note toolbar, with an optional highlighted passage. */
+function FormattedNoteBody({ text, mark }: { text: string; mark?: NoteMark }) {
+  let lineStart = 0;
   return <div className="space-y-3 break-words">
     {text.split('\n').map((rawLine, index) => {
+      const offset = lineStart;
+      lineStart += rawLine.length + 1;
+      const lineEnd = offset + rawLine.length;
+      const inline = (content: string) => <InlineWithMark text={content} offset={lineEnd - content.length} mark={mark} />;
       const heading = rawLine.match(/^(#{1,3})\s+(.*)$/);
       if (heading) {
         const level = heading[1].length;
         const className = level === 1 ? 'pt-2 text-2xl font-semibold leading-snug' : level === 2 ? 'pt-2 text-xl font-semibold leading-snug' : 'pt-1 text-lg font-semibold leading-snug';
-        return <div key={index} role="heading" aria-level={Math.min(level + 1, 6)} className={className}><InlineNoteFormatting text={heading[2]} /></div>;
+        return <div key={index} role="heading" aria-level={Math.min(level + 1, 6)} className={className}>{inline(heading[2])}</div>;
       }
       const bullet = rawLine.match(/^[-+*•]\s+(.*)$/);
-      if (bullet) return <div key={index} className="flex gap-3 pl-2"><span aria-hidden="true" className="mt-[0.72em] h-1.5 w-1.5 shrink-0 rounded-full bg-current" /><span><InlineNoteFormatting text={bullet[1]} /></span></div>;
+      if (bullet) return <div key={index} className="flex gap-3 pl-2"><span aria-hidden="true" className="mt-[0.72em] h-1.5 w-1.5 shrink-0 rounded-full bg-current" /><span>{inline(bullet[1])}</span></div>;
       const numbered = rawLine.match(/^(\d+)\.\s+(.*)$/);
-      if (numbered) return <div key={index} className="flex gap-3 pl-1"><span className="min-w-5 shrink-0 text-right text-[#777]">{numbered[1]}.</span><span><InlineNoteFormatting text={numbered[2]} /></span></div>;
+      if (numbered) return <div key={index} className="flex gap-3 pl-1"><span className="min-w-5 shrink-0 text-right text-[#777]">{numbered[1]}.</span><span>{inline(numbered[2])}</span></div>;
       if (!rawLine.trim()) return <div key={index} className="h-2" aria-hidden="true" />;
-      return <p key={index} className="whitespace-pre-wrap"><InlineNoteFormatting text={rawLine} /></p>;
+      return <p key={index} className="whitespace-pre-wrap">{inline(rawLine)}</p>;
     })}
   </div>;
 }
@@ -1457,15 +1528,7 @@ function RetrievalMatchedBody({ text, matchedText, label }: { text: string; matc
   const markRef = useRef<HTMLElement>(null);
   const span = matchedText ? findAnchor(text, matchedText) : null;
   useEffect(() => { markRef.current?.scrollIntoView({ block: 'center' }); }, [matchedText]);
-  if (!span) return <FormattedNoteBody text={text} />;
-  return <div className="whitespace-pre-wrap break-words">
-    {text.slice(0, span.start)}
-    <mark ref={markRef} className="rounded-sm bg-[#fff4c7] px-0.5 text-inherit underline decoration-[#e5b72f] decoration-2 underline-offset-4 [box-decoration-break:clone]" title={label}>
-      {text.slice(span.start, span.end)}
-    </mark>
-    <span className="ml-1 inline-block rounded bg-[#fff7d8] px-1 align-[1px] text-[10px] font-medium leading-4 text-[#9a7300]">{label}</span>
-    {text.slice(span.end)}
-  </div>;
+  return <FormattedNoteBody text={text} mark={span ? { ...span, label, markRef } : undefined} />;
 }
 
 function RelatedNotePanel({ note, relevance, focusText = '', onClose, onOpenFull }: {
@@ -2047,9 +2110,9 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, muses, projects, s
       return <span key={key} {...handlers} className={`ml-1.5 inline-block max-w-[16rem] cursor-pointer truncate rounded-full border px-2 align-[2px] text-[11px] font-medium leading-5 hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${style.chip}`}>{label}</span>;
     }
     const words = choice === 'merged'
-      ? view.decision?.text ?? item.answer?.text ?? item.action
-      : choice === 'solved' ? item.answer?.text ?? item.action
-        : item.kind === 'helps' ? `Might help to ${item.action}` : `Might help: “${item.answer?.text ?? item.action}”`;
+      ? plainNoteText(view.decision?.text ?? item.answer?.text ?? item.action)
+      : choice === 'solved' ? plainNoteText(item.answer?.text ?? item.action)
+        : item.kind === 'helps' ? `Might help to ${plainNoteText(item.action)}` : `Might help: “${plainNoteText(item.answer?.text ?? item.action)}”`;
     return <span key={key} {...handlers} className={`my-2 block cursor-pointer rounded-lg border px-3 py-2 text-[15px] leading-relaxed hover:brightness-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${choice === 'merged' ? 'border-y-0 border-r-0 border-l-[3px] border-[#c8acea] bg-[#fbf8ff] text-[#3d2a57]' : `border-dashed ${style.outline} text-[#2d2d2d]`}`}>
       {choice === 'solved' && <span className={`mr-1.5 text-[12px] font-semibold ${style.actionText}`}>Solution:</span>}
       {words}
@@ -2602,7 +2665,15 @@ type TriggerSentence = { before: string; key: string; after: string };
 function triggerSentence(text: string, span: { start: number; end: number }): TriggerSentence {
   const start = sentenceStartBefore(text, span.start);
   const end = sentenceEndAfter(text, span.end);
-  return { before: text.slice(start, span.start), key: text.slice(span.start, span.end), after: text.slice(span.end, end) };
+  // The offsets point into the note's markdown, so each piece is cleaned on its
+  // own: a line marker can only open the sentence, and bold markers can sit on
+  // either side of the highlighted words.
+  const rawBefore = text.slice(start, span.start);
+  const opensLine = start === 0 || text[start - 1] === '\n';
+  const before = stripInlineMarkdown(opensLine ? rawBefore.replace(LINE_MARKER, '') : rawBefore).trimStart();
+  const rawKey = text.slice(span.start, span.end);
+  const key = stripInlineMarkdown(opensLine && !rawBefore.trim() ? rawKey.replace(LINE_MARKER, '') : rawKey);
+  return { before, key, after: stripInlineMarkdown(text.slice(span.end, end)).trimEnd() };
 }
 
 function sentenceCase(text: string): string {
@@ -2615,10 +2686,10 @@ function sentenceCase(text: string): string {
  */
 function InsightSentence({ insight, kind, onOpenSource }: { insight: NoteInsight; kind: SuggestionKind; onOpenSource: (noteId: string, focus?: string) => void }) {
   const quotes = insight.quotes ?? [];
-  if (!quotes.length) return <>{insight.text}</>;
+  if (!quotes.length) return <>{stripInlineMarkdown(insight.text)}</>;
   return <>{insight.text.split(/(\{\d+\})/).map((part, index) => {
     const quote = /^\{\d+\}$/.test(part) ? quotes[Number(part.slice(1, -1)) - 1] : undefined;
-    if (!quote) return <Fragment key={index}>{part}</Fragment>;
+    if (!quote) return <Fragment key={index}>{stripInlineMarkdown(part)}</Fragment>;
     const open = () => onOpenSource(quote.note_id, quote.text);
     // A span, not a button: browsers lay a button out as one block, so a long
     // quote filled the line and pushed the punctuation after it onto its own.
@@ -2635,7 +2706,7 @@ function InsightSentence({ insight, kind, onOpenSource }: { insight: NoteInsight
       }}
       title="Open the note this came from"
       className={`cursor-pointer rounded-sm font-semibold underline decoration-2 underline-offset-4 [box-decoration-break:clone] hover:bg-black/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${SUGGESTION_STYLES[kind].quote}`}
-    >‘{quote.text}’</span>;
+    >‘{plainNoteText(quote.text)}’</span>;
   })}</>;
 }
 
@@ -2703,7 +2774,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
   }
 
   if (kind === 'solution') {
-    const answerText = answer?.text ?? insight.action;
+    const answerText = plainNoteText(answer?.text ?? insight.action);
     if (choice === 'solved') return <div className={box}>
       <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Solved · shown beside your sentence</p>
       <p className="mt-1 text-[14px] leading-relaxed text-[#26467a]">{answerText}</p>
@@ -2723,7 +2794,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
   if (kind === 'helps' && outbound) {
     // This note is the help and the earlier note is where it applies, so the
     // wording says so rather than reading as advice for this note.
-    const idea = sentenceCase(insight.action);
+    const idea = sentenceCase(plainNoteText(insight.action));
     if (choice === 'helped') return <div className={box}>
       <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Marked as helping “{sourceTitle}”</p>
       <p className="mt-1 text-[14px] font-medium leading-relaxed text-[#1f4d2e]">{idea}</p>
@@ -2741,7 +2812,7 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
 
   if (kind === 'helps') {
     // A dismissed solution has no idea of its own, so its answer stands in.
-    const idea = insight.kind === 'helps' ? sentenceCase(insight.action) : `“${answer?.text ?? insight.action}”`;
+    const idea = insight.kind === 'helps' ? sentenceCase(plainNoteText(insight.action)) : `“${plainNoteText(answer?.text ?? insight.action)}”`;
     if (choice === 'helped') return <div className={box}>
       <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Shown beside your sentence</p>
       <p className="mt-1 text-[14px] font-medium leading-relaxed text-[#1f4d2e]">{idea}</p>
@@ -2758,7 +2829,8 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
   }
 
   if (kind === 'extension') {
-    const words = answer?.text ?? insight.action;
+    // Merged words are kept as plain text, so neither the card, the note, nor Edit shows markdown symbols.
+    const words = plainNoteText(answer?.text ?? insight.action);
     if (choice === 'merged') return <div className={box}>
       <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Added below your sentence</p>
       {editing
@@ -2769,8 +2841,8 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
             <button type="button" onClick={(event) => { event.stopPropagation(); setEditing(false); setDraft(decision?.text ?? ''); }} className="text-xs text-[#777] hover:underline">Cancel</button>
           </div>
         </>
-        : <p className="mt-1 whitespace-pre-wrap text-[14px] leading-relaxed text-[#4d3569]">“{decision?.text ?? words}”</p>}
-      {!editing && <div className="mt-2 flex gap-3"><button type="button" onClick={(event) => { event.stopPropagation(); setEditing(true); }} className="text-xs font-medium text-[#7348a7] hover:underline">Edit</button><UndoButton onUndo={() => onChoose(null)} /></div>}
+        : <p className="mt-1 whitespace-pre-wrap text-[14px] leading-relaxed text-[#4d3569]">“{plainNoteText(decision?.text ?? words)}”</p>}
+      {!editing && <div className="mt-2 flex gap-3"><button type="button" onClick={(event) => { event.stopPropagation(); setDraft(plainNoteText(decision?.text ?? words)); setEditing(true); }} className="text-xs font-medium text-[#7348a7] hover:underline">Edit</button><UndoButton onUndo={() => onChoose(null)} /></div>}
     </div>;
     return <div className={`${box} flex items-center gap-3`}>
       <div className="min-w-0 flex-1">
@@ -2811,13 +2883,13 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, outbound
 
   if (choice === 'confirmed') return <div className={box}>
     <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Marked as a pattern</p>
-    <p className="mt-1 text-[14px] font-medium leading-relaxed text-[#4f3f0c]">{insight.action}</p>
+    <p className="mt-1 text-[14px] font-medium leading-relaxed text-[#4f3f0c]">{plainNoteText(insight.action)}</p>
     <div className="mt-2"><UndoButton onUndo={() => onChoose(null)} /></div>
   </div>;
   return <div className={`${box} flex items-center gap-3`}>
     <div className="min-w-0 flex-1">
       <p className={heading}>A pattern in your notes</p>
-      <p className="mt-1 text-[15px] font-semibold leading-relaxed text-[#4f3f0c]">{insight.action}</p>
+      <p className="mt-1 text-[15px] font-semibold leading-relaxed text-[#4f3f0c]">{plainNoteText(insight.action)}</p>
     </div>
     <IconChoice kind={kind} accept={false} label="Not a pattern" onClick={() => onChoose('rejected')} />
     <IconChoice kind={kind} accept label="Yes, a pattern" onClick={() => onChoose('confirmed')} />
@@ -2912,7 +2984,7 @@ function SuggestionCard({ insight, kind, decision, notesById, trigger, outbound 
       </div>
       {(trigger || insight.anchor) && <blockquote className="mt-3 border-l-2 border-[#ddd] pl-3 text-[13px] italic leading-relaxed text-[#777]">“{trigger
         ? <>{trigger.before}<span className={`rounded-sm px-0.5 not-italic text-[#444] ${HIGHLIGHT_STYLES[kind].idle}`}>{trigger.key}</span>{trigger.after}</>
-        : insight.anchor}”</blockquote>}
+        : plainNoteText(insight.anchor)}”</blockquote>}
       <p className={`mt-4 leading-relaxed text-[#222] ${compact ? 'text-[14px]' : 'text-[16px]'}`}><InsightSentence insight={insight} kind={kind} onOpenSource={onOpenSource} /></p>
       {source && <p className="mt-2 text-[11px] text-[#999]">{outbound ? 'The earlier note this helps' : 'From your notes'}: “{sourceTitle}” · {sourceDate}</p>}
       {onChoose
