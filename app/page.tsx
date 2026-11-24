@@ -25,6 +25,7 @@ import { setSampleMode, useSampleMode, workspaceScope } from '@/lib/sample-mode'
 import { isSampleGuide, loadSampleVault, SampleVault } from '@/lib/sample-vault';
 import { copyNotesToPublic } from '@/lib/sharing-api';
 import { listVaults, removeVault, setVaultInRetrieval, Vault } from '@/lib/vaults-api';
+import { FeedbackButton } from '@/components/FeedbackButton';
 
 type MuseMeta = { title: string; description: string; createdAt: string };
 type ProjectPage = { id: string; title: string; content: string; sourceNoteIds: string[]; createdAt: string; updatedAt: string };
@@ -1027,7 +1028,7 @@ function BetaAndAvatar({ email, feedback = false, onOpenImport }: { email: strin
     <div className="flex items-center gap-4">
       <div className="inline-flex overflow-hidden rounded-md border border-[#a8c4ff] text-sm">
         <span className="bg-[#edf3ff] px-4 py-1.5 text-[#477bea]">Beta</span>
-        {feedback && <a href="mailto:feedback@ocreda.com" className="hidden border-l border-[#a8c4ff] px-3 py-1.5 text-[#252525] hover:bg-[#f5f7fb] sm:block">Send feedback</a>}
+        {feedback && <FeedbackButton className="hidden border-l border-[#a8c4ff] sm:block" />}
       </div>
       <Avatar email={email} onOpenImport={onOpenImport} />
     </div>
