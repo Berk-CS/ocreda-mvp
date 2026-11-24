@@ -1958,13 +1958,18 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
    * earlier search, so what they chose stays on the note after a new one.
    */
   const cards = useMemo(() => {
-    const current = (retrieval?.insights ?? []).map((item) => ({ id: insightActionId(item, relationOf(item)), item }));
+    // A solution this note already handed to an earlier note lives on that
+    // note now, so its card leaves this one; only that note can undo it.
+    const handed = incomingDecisions.filter((decision) => isHandedFrom(decision, note.id));
+    const wasHanded = (item: NoteInsight) => item.direction === 'outbound' && Boolean(item.problem)
+      && handed.some((decision) => decision.fromNoteId === item.problem!.note_id && decision.insight.anchor === item.problem!.text);
+    const current = (retrieval?.insights ?? []).filter((item) => !wasHanded(item)).map((item) => ({ id: insightActionId(item, relationOf(item)), item }));
     const currentIds = new Set(current.map((card) => card.id));
     const earlier = Object.entries(decisions)
-      .filter(([id, decision]) => !currentIds.has(id) && decision.choice !== 'rejected')
+      .filter(([id, decision]) => !currentIds.has(id) && decision.choice !== 'rejected' && !wasHanded(decision.insight))
       .map(([id, decision]) => ({ id, item: decision.insight }));
     return [...current, ...earlier];
-  }, [decisions, relationOf, retrieval]);
+  }, [decisions, incomingDecisions, note.id, relationOf, retrieval]);
   const insights = useMemo(() => cards.map((card) => card.item), [cards]);
   const insight = insights[Math.min(selectedInsightIndex, insights.length - 1)] ?? null;
   /**
@@ -2044,10 +2049,35 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
   useEffect(() => {
     let active = true;
     loadCardDecisions(note.id)
-      .then((loaded) => {
+      .then(async (loaded) => {
+        const own = { ...loaded.own };
+        let incoming = [...loaded.incoming];
+        // A Solve saved the earlier way sits on the answering note, aimed at
+        // the earlier note. Whichever of the two opens first moves it onto the
+        // earlier note as that note's own solved card; it is shown either way.
+        for (const [cardId, decision] of Object.entries(loaded.own)) {
+          const handed = isOldHandedSolution(decision) ? handedSolutionCard(decision.insight, note.id) : null;
+          if (!handed) continue;
+          try {
+            await saveCardDecision(handed.problemNoteId, handed.id, handed.decision);
+            await saveCardDecision(note.id, cardId, null);
+            delete own[cardId];
+            incoming.push({ ...handed.decision, cardId: handed.id, fromNoteId: handed.problemNoteId });
+          } catch { /* Kept as it was; it moves the next time. */ }
+        }
+        for (const decision of loaded.incoming) {
+          const handed = isOldHandedSolution(decision) && decision.insight.problem?.note_id === note.id ? handedSolutionCard(decision.insight, decision.fromNoteId) : null;
+          if (!handed) continue;
+          try {
+            await saveCardDecision(note.id, handed.id, handed.decision);
+            await saveCardDecision(decision.fromNoteId, decision.cardId, null);
+            own[handed.id] = handed.decision;
+            incoming = incoming.filter((item) => item !== decision);
+          } catch { /* Kept as it was; it moves the next time. */ }
+        }
         if (!active) return;
-        setDecisions(loaded.own);
-        setIncomingDecisions(loaded.incoming);
+        setDecisions(own);
+        setIncomingDecisions(incoming);
       })
       .catch(() => { if (active) setSaveState('error'); });
     return () => { active = false; };
@@ -2059,8 +2089,18 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
    */
   const decide = (view: (typeof cardLayout.views)[number], choice: CardChoice | null, text?: string) => {
     const previous = decisions[view.id];
-    // Solving an earlier note's problem also marks that earlier note.
-    const target = choice === 'solved' && view.item.direction === 'outbound' ? view.item.problem?.note_id : undefined;
+    // Solving an earlier note's problem hands the solution to that note: it is
+    // saved there as its own solved card, and the card leaves this note.
+    const handed = choice === 'solved' && view.item.direction === 'outbound' && !view.fromNoteId ? handedSolutionCard(view.item, note.id) : null;
+    if (handed) {
+      const marker: IncomingCardDecision = { ...handed.decision, cardId: handed.id, fromNoteId: handed.problemNoteId };
+      setIncomingDecisions((current) => [...current, marker]);
+      saveCardDecision(handed.problemNoteId, handed.id, handed.decision).catch(() => {
+        setIncomingDecisions((current) => current.filter((item) => item !== marker));
+        setSaveState('error');
+      });
+      return;
+    }
     const next: CardDecision | null = choice
       ? {
         choice,
@@ -2068,7 +2108,6 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
         kind: choice === 'downgraded' ? 'helps' : view.kind,
         insight: view.item,
         ...(text !== undefined ? { text } : {}),
-        ...(target ? { targetNoteId: target } : {}),
       }
       : null;
     const apply = (decision: CardDecision | null | undefined) => setDecisions((current) => {
@@ -2181,9 +2220,12 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
   const chooseDesign = (view: CardView, choice: CardChoice | null, text?: string) => {
     decide(view, choice, text);
     if (!choice || choice === 'downgraded') return;
-    // Answering an earlier note leaves nothing on this one, so the panel stays
-    // on the card to say where the answer went, with Undo.
-    if ((choice === 'solved' || choice === 'helped') && (isOutbound(view.item) || view.item.direction === 'outbound')) return;
+    const outbound = isOutbound(view.item) || view.item.direction === 'outbound';
+    // A solution handed to an earlier note leaves this note entirely.
+    if (choice === 'solved' && outbound) { closeDesignPanel(); return; }
+    // Marking this note as helping an earlier one leaves nothing on it, so the
+    // panel stays on the card to say where it went, with Undo.
+    if (choice === 'helped' && outbound) return;
     closeDesignPanel();
     if (choice !== 'rejected') setDropCardId(view.id);
   };
@@ -2937,6 +2979,33 @@ function isPendingCard(decision?: CardDecision): boolean {
 /** Acted on, so its mark shows over the note in place of the highlight. */
 function isActedCard(decision?: CardDecision): boolean {
   return Boolean(decision && decision.choice !== 'downgraded' && decision.choice !== 'rejected');
+}
+
+/**
+ * Solve on a note that answers an earlier note's problem hands the solution to
+ * that earlier note (decided Nov 24). The earlier note gets a solved Solution
+ * card of its own, as if its own search had found the answer: this note's
+ * words as the answer, its own sentence as the problem. It is saved on the
+ * earlier note, and only that note can undo it; the card leaves this note.
+ * `targetNoteId` names the answering note, so that note can tell its card was handed on.
+ */
+function handedSolutionCard(item: NoteInsight, answerNoteId: string): { problemNoteId: string; id: string; decision: CardDecision } | null {
+  const problem = item.problem;
+  const answerText = (item.answer?.text || item.action || '').trim();
+  if (!problem?.note_id || !problem.text.trim() || !answerText) return null;
+  const answer = { note_id: answerNoteId, text: answerText };
+  const insight: NoteInsight = { anchor: problem.text, intent: item.intent, kind: 'solution', text: 'Another note of yours answers this: {1}', quotes: [answer], answer, action: answerText, note_ids: [answerNoteId] };
+  return { problemNoteId: problem.note_id, id: insightActionId(insight, 'solves'), decision: { choice: 'solved', kind: 'solution', insight, targetNoteId: answerNoteId } };
+}
+
+/** A Solve saved the earlier way: on the answering note, aimed at the earlier note's problem. */
+function isOldHandedSolution(decision: CardDecision): boolean {
+  return decision.choice === 'solved' && decision.insight.direction === 'outbound' && Boolean(decision.insight.problem?.note_id) && Boolean(decision.targetNoteId);
+}
+
+/** A solution this note handed to an earlier note, seen from this note: the card it came from leaves. */
+function isHandedFrom(decision: IncomingCardDecision, noteId: string): boolean {
+  return decision.choice === 'solved' && decision.kind === 'solution' && decision.insight.answer?.note_id === noteId && !decision.insight.problem;
 }
 
 function insightActionId(insight: NoteInsight, relation: NoteRelationType | null): string {
