@@ -142,6 +142,11 @@ export interface NoteInsight {
   direction?: NoteDirection;
   /** For an outbound solution: the earlier note's problem, word for word. */
   problem?: InsightQuote | null;
+  /**
+   * For a solution: what to do about the problem, in the model's own words; the
+   * card's headline. Missing from older searches, which show the answer itself.
+   */
+  solution?: string;
   /** The answer's text, the idea for helps, the pattern for a pattern; empty for a contradiction. */
   action: string;
   /** The notes the insight rests on, all of them among the results. */

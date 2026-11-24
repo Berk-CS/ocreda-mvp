@@ -29,6 +29,8 @@ function readInsight(value: unknown, resultIds: Set<string>): NoteInsight | null
     answer,
     direction,
     problem,
+    // A solution's headline in plain words; older servers send none.
+    ...(kind === 'solution' && typeof row.solution === 'string' && row.solution.trim() ? { solution: row.solution.trim() } : {}),
     action,
     note_ids: noteIds,
     ...(typeof row.section_id === 'string' ? { section_id: row.section_id } : {}),

@@ -2431,7 +2431,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
     }
     const words = choice === 'merged'
       ? plainNoteText(view.decision?.text ?? item.answer?.text ?? item.action)
-      : choice === 'solved' ? plainNoteText(item.answer?.text ?? item.action)
+      : choice === 'solved' ? plainNoteText(item.solution || (item.answer?.text ?? item.action))
         : item.kind === 'helps' ? `Might help to ${plainNoteText(item.action)}` : `Might help: “${plainNoteText(item.answer?.text ?? item.action)}”`;
     return <span key={key} {...handlers} className={`my-2 block cursor-pointer rounded-lg border px-3 py-2 text-[15px] leading-relaxed hover:brightness-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] ${choice === 'merged' ? 'border-y-0 border-r-0 border-l-[3px] border-[#c8acea] bg-[#fbf8ff] text-[#3d2a57]' : `border-dashed ${style.outline} text-[#2d2d2d]`}`}>
       {choice === 'solved' && <span className={`mr-1.5 text-[12px] font-semibold ${style.actionText}`}>Solution:</span>}
@@ -2994,7 +2994,7 @@ function handedSolutionCard(item: NoteInsight, answerNoteId: string): { problemN
   const answerText = (item.answer?.text || item.action || '').trim();
   if (!problem?.note_id || !problem.text.trim() || !answerText) return null;
   const answer = { note_id: answerNoteId, text: answerText };
-  const insight: NoteInsight = { anchor: problem.text, intent: item.intent, kind: 'solution', text: 'Another note of yours answers this: {1}', quotes: [answer], answer, action: answerText, note_ids: [answerNoteId] };
+  const insight: NoteInsight = { anchor: problem.text, intent: item.intent, kind: 'solution', text: 'Another note of yours answers this: {1}', quotes: [answer], answer, ...(item.solution ? { solution: item.solution } : {}), action: answerText, note_ids: [answerNoteId] };
   return { problemNoteId: problem.note_id, id: insightActionId(insight, 'solves'), decision: { choice: 'solved', kind: 'solution', insight, targetNoteId: answerNoteId } };
 }
 
@@ -3196,14 +3196,17 @@ function CardAction({ insight, kind, decision, sourceTitle, sourceDate, sharedBy
 
   if (kind === 'solution') {
     const answerText = plainNoteText(answer?.text ?? insight.action);
+    // What to do, in plain words, when the search wrote it; the exact words go under it.
+    const solution = plainNoteText(insight.solution ?? '').trim();
     if (choice === 'solved') return <div className={box}>
       <p className={`flex items-center gap-1.5 ${heading}`}><Check className="h-3.5 w-3.5" /> Solved · shown beside your sentence</p>
-      <p className="mt-1 text-[14px] leading-relaxed text-[#26467a]">{answerText}</p>
+      <p className="mt-1 text-[14px] leading-relaxed text-[#26467a]">{solution || answerText}</p>
       <div className="mt-2"><UndoButton onUndo={() => onChoose(null)} /></div>
     </div>;
     return <div className={box}>
       <p className={heading}>Solution</p>
-      <p className="mt-1 text-[15px] leading-relaxed text-[#26467a]">{answerText}</p>
+      <p className="mt-1 text-[15px] leading-relaxed text-[#26467a]">{solution || answerText}</p>
+      {solution && <p className="mt-1 text-[12px] italic leading-relaxed text-[#5b7fc9]">‘{answerText}’</p>}
       {answer && <button type="button" onClick={(event) => { event.stopPropagation(); openAnswer(); }} className="mt-1 text-[11px] text-[#5b7fc9] hover:underline">From {sharedBy ? `${sharedBy}’s ` : ''}“{sourceTitle}” · {sourceDate} ↗</button>}
       <div className="mt-3 flex gap-2">
         <button type="button" onClick={(event) => { event.stopPropagation(); onChoose('solved'); }} className="rounded-md bg-[#477bea] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">Solved</button>
@@ -3495,9 +3498,14 @@ function designSynthesis(view: CardView, source: DesignSource, citedCount: numbe
   const from = `Synthesis of ${citedCount || 1} of ${whose} notes`;
   const where = `“${source.title}”${source.date ? ` · ${source.date}` : ''}`;
   if (view.kind === 'solution') {
-    if (outbound && item.problem) return { label: `Your new note answers ${where}`, works: `“${plainNoteText(item.problem.text)}”`, from: `The problem, word for word from ${where}`, accept: 'solved', acceptLabel: 'Solve', dismiss: 'rejected' };
+    // The headline is what to do, in plain words; the exact words it rests on go beneath it.
+    const solution = plainNoteText(item.solution ?? '').trim();
+    if (outbound && item.problem) return solution
+      ? { label: `Your new note answers ${where}`, works: solution, from: `The problem there, in your words: ‘${plainNoteText(item.problem.text)}’`, accept: 'solved', acceptLabel: 'Solve', dismiss: 'rejected' }
+      : { label: `Your new note answers ${where}`, works: `“${plainNoteText(item.problem.text)}”`, from: `The problem, word for word from ${where}`, accept: 'solved', acceptLabel: 'Solve', dismiss: 'rejected' };
+    const answer = plainNoteText(item.answer?.text ?? item.action);
     // A dismissed solution carries on as a Helps card, as in the classic view.
-    return { label: 'Solution', works: plainNoteText(item.answer?.text ?? item.action), from, accept: 'solved', acceptLabel: 'Solve', dismiss: 'downgraded' };
+    return { label: 'Solution', works: solution || answer, from: solution ? `${source.sharedBy ? `${source.sharedBy}’s` : 'Your'} words in ${where}: ‘${answer}’` : from, accept: 'solved', acceptLabel: 'Solve', dismiss: 'downgraded' };
   }
   if (view.kind === 'helps') {
     if (outbound) return { label: `Your new note could help ${where}`, works: sentenceCase(plainNoteText(item.action)), from, accept: 'helped', acceptLabel: 'Use this', dismiss: 'rejected' };

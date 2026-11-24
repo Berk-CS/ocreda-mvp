@@ -1198,6 +1198,14 @@ export interface Insight {
   /** For an outbound solution: the earlier note's problem, word for word, which the draft answers. */
   problem: InsightQuote | null;
   /**
+   * For a solution: one sentence in the model's own words saying what to do
+   * about the problem, so the card reads as an answer to it rather than as a
+   * line lifted from another note (decided Nov 24). The past note's own words
+   * stay in `answer` and in the quotes. Empty when the model gave none, and
+   * then the card shows the answer itself.
+   */
+  solution: string;
+  /**
    * What the action box shows: the answer's text for a solution or an
    * extension, the idea for helps (it completes "Might help to ..."), the
    * pattern for a pattern, and nothing for a contradiction.
@@ -1331,6 +1339,7 @@ export function splitNoteTitle(rawText: string): { title: string; text: string }
   return { title: written ? title : "", text: body };
 }
 const MAX_IDEA_CHARS = 160;
+const MAX_SOLUTION_CHARS = 220;
 const MAX_PATTERN_CHARS = 260;
 const MAX_GOAL_SUGGESTION_CHARS = 60;
 const MAX_GOAL_SUGGESTIONS = 3;
@@ -1494,7 +1503,7 @@ GOAL - if they have said what they are working toward in this area, use it to de
 
 ${howMany}
 
-THEIR WORDS, NOT YOURS - a card is their own past words, connected by you. You write only the short sentence that links those words to the note; everything taken from a past note appears inside it exactly as they wrote it, so the card sounds familiar.
+THEIR WORDS, NOT YOURS - a card is their own past words, connected by you. You write only the short sentence that links those words to the note; everything taken from a past note appears inside it exactly as they wrote it, so the card sounds familiar. The one exception is a solution's SOLUTION line, below.
 ${sharedRule}
 For each insight:
 KIND - pick exactly one, by what the past notes actually offer:
@@ -1507,7 +1516,8 @@ ANCHOR - copy, word for word, the key part of the sentence in the note being wri
 TEXT - one short sentence, written by you, with their past words placed inside it as {1}, {2}, ... in the order of QUOTES. Write only the connecting words; the quotes carry the content. Say where or with whom it was if that helps them place it, but never write a date or a day: the card already shows when each note was written. Never put your own paraphrase in quotation marks, and never restate the note being written. Examples: "Your weekend test got {1}, with {2}." / "The same manager told you they {1}. That's a turnover problem too, and you had {2}."
 QUOTES - one entry per placeholder, in order: the ID of the past note and the exact words copied from its Text, 3 to 15 words: only the phrase that carries the point, not the sentence around it. Copy them character for character; never shorten them in the middle, fix them, or reword them. Never quote a Title, and never quote a whole note: the card names the note for them, so a quote only needs the part that matters.
 ANSWER - for "solution" and "extension" only: the exact words from a past note's Text that answer the question or add the detail, copied word for word, with the ID of that note. Take only what answers it, usually one sentence and at most 40 words, never the Title and never the whole note. For a solution this is the answer itself and nothing else.
-IDEA - for "helps" only: a short phrase, in plain words, that completes "Might help to ...", starting with a lowercase verb, such as "say the price and just wait".
+SOLUTION - required on every "solution" card, and only there: one sentence in your own plain words saying what to do about the problem, using what ANSWER says. It is the card's headline, read right under the problem, so it must make sense as the answer to that problem on its own: name their situation and the step to take ("In your next tester calls, ask what they actually did last week instead of whether they would use it."). For an outbound solution, it says what to do about the earlier note's problem. This is the one line you write in your own words: do not copy ANSWER, do not put anything in quotation marks, and add nothing the past note does not support.
+IDEA -for "helps" only: a short phrase, in plain words, that completes "Might help to ...", starting with a lowercase verb, such as "say the price and just wait".
 PATTERN - for "pattern" only: one or two short sentences naming what repeats, such as "Both times, price was what they said. Trust was what they asked about."
 NOTE_IDS - the IDs of the past notes this insight rests on, only from the list given.
 OUTBOUND - when the notes an insight rests on are outbound, the note being written is the lesson and the past note is where it applies. TEXT places that earlier situation with its own words and says the note being written is what helps it, so it can never read as advice for the note being written ("Your new note is the fix for when you were stuck on {1}.").
@@ -1523,8 +1533,8 @@ GOAL_SUGGESTIONS - they have not said what this area is for. Offer 2 or 3 short 
 VOICE - these are their own notes. Speak to them as "you", and when you mention the note being written, call it "your new note", like a friend who remembers everything they have written. Plain words, no jargon. Never say "the user", "the author", or "this note highlights".
 
 OUTPUT - a JSON object and nothing else, in this shape:
-{"intent": "<stuck|planning|deciding|capturing|reflecting|learning>", "insights": [{"kind": "<solution|helps|extension|contradiction|pattern>", "anchor": "<exact words from the note being written>", "text": "<one sentence with {1}, {2}...>", "quotes": [{"note_id": "<id>", "text": "<exact words from that note>"}], "answer": {"note_id": "<id, or this>", "text": "<exact words>"}, "problem": {"note_id": "<id>", "text": "<exact words>"}, "idea": "<helps only>", "pattern": "<pattern only>", "note_ids": ["<id>"]}]${askForGoal ? ', "goal_suggestions": ["<guess>"]' : ""}}
-Leave out "answer", "problem", "idea", and "pattern" where they do not apply. "insights" is [] when nothing clears the bar.
+{"intent": "<stuck|planning|deciding|capturing|reflecting|learning>", "insights": [{"kind": "<solution|helps|extension|contradiction|pattern>", "anchor": "<exact words from the note being written>", "text": "<one sentence with {1}, {2}...>", "quotes": [{"note_id": "<id>", "text": "<exact words from that note>"}], "answer": {"note_id": "<id, or this>", "text": "<exact words>"}, "problem": {"note_id": "<id>", "text": "<exact words>"}, "solution": "<solution only, your own words>", "idea": "<helps only>", "pattern": "<pattern only>", "note_ids": ["<id>"]}]${askForGoal ? ', "goal_suggestions": ["<guess>"]' : ""}}
+Leave out "answer", "problem", "solution", "idea", and "pattern" where they do not apply; a "solution" card always has both "answer" and "solution". "insights" is [] when nothing clears the bar.
 
 ========================================
 
@@ -1707,6 +1717,8 @@ export function parseInsightResponse(
       ? cleanLine(card.idea, MAX_IDEA_CHARS).replace(/^might help(?: to)?[\s:.…-]*/i, "").replace(/^([A-Z])(?![A-Z])/, (letter) => letter.toLowerCase())
       : "";
     const pattern = kind === "pattern" ? cleanLine(card.pattern, MAX_PATTERN_CHARS) : "";
+    // The interface draws no quotation marks around it; drop any the model added.
+    const solution = kind === "solution" ? cleanLine(card.solution, MAX_SOLUTION_CHARS).replace(/^["'‘’“”]+|["'‘’“”]+$/g, "").trim() : "";
     const action = answer?.text ?? (idea || pattern);
     if (kind !== "contradiction" && !action) continue;
 
@@ -1730,6 +1742,7 @@ export function parseInsightResponse(
       answer,
       direction,
       problem,
+      solution,
       action,
       note_ids: noteIds,
       section_id: sectionId,
