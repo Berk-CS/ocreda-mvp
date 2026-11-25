@@ -1719,6 +1719,10 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
   // Mobile starts with the note itself; desktop has room to show suggestions
   // alongside it immediately.
   const [summaryOpen, setSummaryOpen] = useState(false);
+  // Below the width where the note and the panel fit side by side, the design's
+  // phone layout applies: the panel is a sheet that rises over the note.
+  const narrowScreen = useNarrowScreen();
+  const [sheetExpanded, setSheetExpanded] = useState(false);
   // The design's view keeps the panel closed until a passage is clicked, and
   // shows one card at a time; the classic view lists them all.
   const [suggestionsView, setSuggestionsView] = useState<NoteSuggestionsView>(() => readNoteSuggestionsView());
@@ -2201,10 +2205,13 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
   const citedNotesOf = (view: CardView) => view.item.note_ids.map((id) => noteById.get(id)).filter((item): item is Note => item !== undefined);
   // While a card is open, or a result under a passage, the rest of the note fades back.
   // A card this note answered elsewhere has nothing here to focus on, so nothing fades.
-  const designFocus = summaryOpen ? activeCard !== null && !marksOtherNote(activeCard, isOutbound(activeCard.item)) : dropCardId !== null;
+  // The phone layout: a bottom bar opens the panel as a sheet over the note.
+  const sheetMode = designView && narrowScreen;
+  // On a phone the note stays as it is under the sheet, as in the design.
+  const designFocus = sheetMode ? false : summaryOpen ? activeCard !== null && !marksOtherNote(activeCard, isOutbound(activeCard.item)) : dropCardId !== null;
 
   const closeDesignReading = () => { setPanelNoteId(null); setPanelRelevance(null); setPanelFocus(''); };
-  const closeDesignPanel = () => { setSummaryOpen(false); setActiveCardId(null); closeDesignReading(); };
+  const closeDesignPanel = () => { setSummaryOpen(false); setActiveCardId(null); setSheetExpanded(false); closeDesignReading(); };
   const openDesignCard = (cardId: string | null) => { setDropCardId(null); closeDesignReading(); setActiveCardId(cardId); setSummaryOpen(true); };
   /** The panel button: the first card still waiting, or the first at all, or the empty state. */
   const openDesignPanel = () => {
@@ -2224,6 +2231,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
     const outbound = isOutbound(view.item) || view.item.direction === 'outbound';
     // A solution handed to an earlier note leaves this note entirely.
     if (choice === 'solved' && outbound) { closeDesignPanel(); return; }
+    // On a phone the sheet stays on the card and shows what was chosen, as in the design.
+    if (sheetMode) return;
     // Marking this note as helping an earlier one leaves nothing on it, so the
     // panel stays on the card to say where it went, with Undo.
     if (choice === 'helped' && outbound) return;
@@ -2307,12 +2316,16 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
     const lineWidth = selected || (allActed && !summaryOpen) ? 3 : 2;
     const lineColor = selected ? tone.ink : summaryOpen ? tone.soft : allActed ? tone.ink : tone.soft;
     const pick = () => {
-      if (!summaryOpen && allActed) { setDropCardId((id) => (id === lead.id ? null : lead.id)); return; }
+      // On a phone a chosen passage opens its card in the sheet, as in the design.
+      if (!summaryOpen && allActed && !sheetMode) { setDropCardId((id) => (id === lead.id ? null : lead.id)); return; }
       if (selected) { closeDesignPanel(); return; }
       openDesignCard(lead.id);
     };
     const blockStyle: React.CSSProperties = selected
-      ? { background: tone.tint, borderRadius: '10px 0 0 10px', padding: '16px 0', margin: '-16px 0', boxShadow: `0 0 0 100vw ${tone.tint}`, clipPath: 'inset(0 -100vw 0 0)' }
+      ? sheetMode
+        // On a phone the open passage is a tinted box; there is no panel beside it to reach.
+        ? { background: tone.tint, borderRadius: 10, padding: '10px 12px 10px 0', margin: '-10px 0' }
+        : { background: tone.tint, borderRadius: '10px 0 0 10px', padding: '16px 0', margin: '-16px 0', boxShadow: `0 0 0 100vw ${tone.tint}`, clipPath: 'inset(0 -100vw 0 0)' }
       : dropView ? { background: tone.tint, borderRadius: 10, padding: '14px 18px 14px 0', margin: '-14px 0 0' } : {};
     return <section key={section.id} id={`note-${section.id}`} aria-label={`Section ${section.index + 1}`} className="-ml-5 scroll-mt-20">
       <div role="button" tabIndex={0} aria-pressed={Boolean(selected)} title={selected ? 'Close what your notes say' : 'Show what your notes say'} onClick={pick} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(); } }} className="flex cursor-pointer outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[#477bea]/30" style={blockStyle}>
@@ -2323,8 +2336,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
             {here.filter((view) => isActedCard(view.decision)).map((view) => {
               const viewTone = DESIGN_TONES[view.kind];
               const open = !summaryOpen && dropCardId === view.id;
-              return <button key={`pill-${view.id}`} type="button" onClick={(event) => { event.stopPropagation(); if (summaryOpen) openDesignCard(view.id); else setDropCardId((id) => (id === view.id ? null : view.id)); }} className="inline-flex max-w-[22rem] items-center gap-1 truncate whitespace-nowrap rounded-full px-[9px] text-xs font-semibold leading-5 hover:brightness-95" style={{ background: viewTone.tint, color: viewTone.ink }}>
-                ✓ {designChoiceLabel(view.decision?.choice, designSourceOf(view.item, noteById))}{!summaryOpen && <span aria-hidden="true">{open ? ' ▴' : ' ▾'}</span>}
+              return <button key={`pill-${view.id}`} type="button" onClick={(event) => { event.stopPropagation(); if (summaryOpen || sheetMode) openDesignCard(view.id); else setDropCardId((id) => (id === view.id ? null : view.id)); }} className="inline-flex max-w-full items-center gap-1 truncate whitespace-nowrap rounded-full px-[9px] text-xs font-semibold leading-5 hover:brightness-95 sm:max-w-[22rem]" style={{ background: viewTone.tint, color: viewTone.ink }}>
+                ✓ {designChoiceLabel(view.decision?.choice, designSourceOf(view.item, noteById))}{!summaryOpen && !sheetMode && <span aria-hidden="true">{open ? ' ▴' : ' ▾'}</span>}
               </button>;
             })}
           </span>}
@@ -2578,11 +2591,12 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
         </div>
       </header>
 
-      <div className={`grid min-h-0 flex-1 overflow-hidden bg-[#f7f7f9] sm:rounded-xl sm:border sm:border-[#d8d8d8] sm:shadow-[0_2px_9px_rgba(0,0,0,0.13)] ${summaryOpen ? 'xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,.92fr)]' : 'grid-cols-1'}`}>
-        <section className={`relative min-h-0 min-w-0 flex-col overflow-hidden bg-white xl:flex ${summaryOpen ? 'hidden' : 'flex'}`}>
+      <div className={`relative grid min-h-0 flex-1 overflow-hidden bg-[#f7f7f9] sm:rounded-xl sm:border sm:border-[#d8d8d8] sm:shadow-[0_2px_9px_rgba(0,0,0,0.13)] ${summaryOpen && !sheetMode ? 'xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,.92fr)]' : 'grid-cols-1'}`}>
+        {/* On a phone the note stays in view under the sheet. */}
+        <section className={`relative min-h-0 min-w-0 flex-col overflow-hidden bg-white xl:flex ${summaryOpen && !sheetMode ? 'hidden' : 'flex'}`}>
           <div className="absolute right-3 top-3 z-10 flex gap-2 sm:right-4">
             {!editing && <button type="button" onClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} className="h-10 rounded-md border border-[#dedede] bg-white px-3 text-xs font-medium text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] xl:hidden">Edit</button>}
-            {designView ? !summaryOpen && <button type="button" onClick={openDesignPanel} aria-label="Show suggestions panel" title="Show suggestions panel" aria-controls="note-suggestions-panel" className="flex h-10 items-center gap-1.5 rounded-[10px] px-2.5 text-[#55555B] hover:bg-[#f4f4f4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
+            {designView ? !summaryOpen && !sheetMode && <button type="button" onClick={openDesignPanel} aria-label="Show suggestions panel" title="Show suggestions panel" aria-controls="note-suggestions-panel" className="flex h-10 items-center gap-1.5 rounded-[10px] px-2.5 text-[#55555B] hover:bg-[#f4f4f4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
               {retrievalLoading ? <Loader2 className="h-5 w-5 animate-spin text-[#477bea]" /> : <PanelRightOpen className="h-5 w-5 rotate-180" aria-hidden="true" />}
               {!retrievalLoading && designPendingCount > 0 && <span className="text-xs font-medium">{designPendingCount}</span>}
             </button> : <>
@@ -2590,9 +2604,10 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
             {!summaryOpen && <button type="button" onClick={() => setSummaryOpen(true)} aria-controls="note-suggestions-panel" className="rounded-md border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#555] shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">Show suggestions</button>}
             </>}
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-24 pt-14 sm:px-12 sm:pt-12 xl:px-[8%]">
+          {/* Room at the bottom so the end of the note can scroll above the bar or the open sheet. */}
+          <div className={`min-h-0 flex-1 overflow-y-auto px-4 pt-14 sm:px-12 sm:pt-12 xl:px-[8%] ${sheetMode && summaryOpen ? 'pb-[66vh]' : 'pb-24'}`}>
             {editing ? <div className="mx-auto max-w-3xl"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} aria-label="Note title" placeholder={defaultNoteTitle(body) || 'Title (optional)'} className="w-full bg-transparent text-2xl font-semibold outline-none placeholder:font-normal placeholder:text-[#c4c4c6]" /><NoteBodyEditor ref={bodyRef} value={body} onChange={setBody} autoFocus ariaLabel="Note text" onActiveFormatsChange={setActiveFormats} wrapperClassName="mt-10" className="min-h-[520px] w-full bg-transparent text-base leading-[1.7]" /></div> : <article className="relative mx-auto max-w-3xl" onDoubleClick={() => { setEditing(true); requestAnimationFrame(() => bodyRef.current?.focus()); }} title="Double-click to edit">{(title.trim() || body.trim()) && <h1 className="break-words px-2 py-1 text-2xl font-semibold">{plainNoteText(title) || defaultNoteTitle(body)}</h1>}<div className="mt-2 flex flex-wrap gap-x-3 px-2 text-xs text-[#999]" onDoubleClick={(event) => event.stopPropagation()}><NoteDomainPicker category={note.category} muses={muses} saving={saving} onChange={onChangeDomain} showPrefix /><button type="button" onClick={openDate} className="hover:text-[#477bea]">{fullNoteDate(note.created_at)}</button></div>
-              {designView ? <div className="mt-9 flex w-full flex-col gap-[22px] px-2 py-2 text-left text-[19px] leading-[1.65]">
+              {designView ? <div className="mt-9 flex w-full flex-col gap-[18px] px-2 py-2 text-left text-[17px] leading-[1.6] xl:gap-[22px] xl:text-[19px] xl:leading-[1.65]">
                 {noteSections.length ? noteSections.map(renderDesignSection) : <span className="text-left text-base text-[#999]">Double-click to start writing.</span>}
               </div> : <div className="mt-9 w-full rounded-md px-2 py-2 text-left text-base leading-[1.7]">
                 <div className="min-w-0 flex-1 space-y-7">
@@ -2603,9 +2618,18 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
           </div>
           <ReadingFormatBar onFormat={applyReadingFormat} onDone={finishEditing} editing={editing} active={activeFormats} />
           <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
+          {/* The phone's way in: a bar along the bottom saying how many cards wait, as in the design. */}
+          {sheetMode && !summaryOpen && !editing && <button type="button" onClick={openDesignPanel} aria-label="Open what your notes say" aria-controls="note-suggestions-panel" className="absolute inset-x-0 bottom-0 z-20 flex h-16 flex-col items-center justify-start gap-1.5 rounded-t-[20px] bg-[#F7F7F8] pt-2 shadow-[0_-6px_20px_rgba(10,10,20,0.12)]">
+            <span className="h-[5px] w-10 rounded-full bg-[#C9C9CF]" aria-hidden="true" />
+            <span className="flex items-center gap-1.5 text-[13px] text-[#55555B]">{retrievalLoading ? <><Loader2 className="h-3.5 w-3.5 animate-spin text-[#477bea]" /> Finding related notes…</> : designPendingCount > 0 ? `${designPendingCount} from your notes` : 'From your notes'}</span>
+          </button>}
         </section>
 
-        {summaryOpen && designView && <aside id="note-suggestions-panel" aria-label="What works for you" className="relative flex min-h-0 flex-col overflow-hidden border-l border-[#EEEEF0] bg-[#F7F7F8]">
+        {summaryOpen && designView && <aside id="note-suggestions-panel" aria-label="What works for you" className={sheetMode
+          // On a phone the panel is a sheet over the lower part of the note; its handle makes it taller.
+          ? `absolute inset-x-0 bottom-0 z-20 flex min-h-0 flex-col overflow-hidden rounded-t-[20px] bg-[#F7F7F8] shadow-[0_-10px_30px_rgba(10,10,20,0.18)] transition-[height] duration-300 ${sheetExpanded ? 'h-[88%]' : 'h-[62%]'}`
+          : 'relative flex min-h-0 flex-col overflow-hidden border-l border-[#EEEEF0] bg-[#F7F7F8]'}>
+          {sheetMode && <button type="button" onClick={() => setSheetExpanded((expanded) => !expanded)} aria-label={sheetExpanded ? 'Make smaller' : 'Make bigger'} className="flex h-8 shrink-0 items-center justify-center"><span className="h-[5px] w-10 rounded-full bg-[#C9C9CF]" aria-hidden="true" /></button>}
           {panelNote ? (() => {
             // Arrows step through the notes the open card rests on, each at the words it quoted.
             const cited = activeCard ? citedNotesOf(activeCard) : [];
@@ -2634,9 +2658,10 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
             onChoose={(choice, text) => chooseDesign(activeCard, choice, text)}
             onFindOther={() => requestReretrieval('relevant')}
             onOpenSource={showCitedNote}
+            sheet={sheetMode}
           /> : onRelatedPage ? <div className="flex min-h-0 flex-1 flex-col">
-            <DesignPanelBar position={activePosition} total={designPages.length} refreshing={retrievalLoading} onPrev={() => stepDesignCard(-1)} onNext={() => stepDesignCard(1)} onRefresh={() => requestReretrieval()} onHide={closeDesignPanel} />
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-4 sm:px-12">
+            <DesignPanelBar position={activePosition} total={designPages.length} refreshing={retrievalLoading} onPrev={() => stepDesignCard(-1)} onNext={() => stepDesignCard(1)} onRefresh={() => requestReretrieval()} onHide={closeDesignPanel} sheet={sheetMode} />
+            <div className={`min-h-0 flex-1 overflow-y-auto ${sheetMode ? 'px-5 pb-6 pt-2' : 'px-6 pb-10 pt-4 sm:px-12'}`}>
               <div className="max-w-[644px] space-y-4">
                 {failedNotice}
                 {relatedListsHeaded('Also related')}
@@ -2644,12 +2669,12 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
               </div>
             </div>
           </div> : <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex shrink-0 items-center justify-end gap-0.5 px-6 pt-4 sm:px-8">
+            {sheetMode ? <DesignPanelBar position={0} total={0} refreshing={retrievalLoading || isGuide || requiresDomain} onPrev={() => undefined} onNext={() => undefined} onRefresh={() => requestReretrieval()} onHide={closeDesignPanel} sheet /> : <div className="flex shrink-0 items-center justify-end gap-0.5 px-6 pt-4 sm:px-8">
               {aiMode === 'basic' && <Link href="/profile" title="Searching with the cheaper Basic model. Change it in your profile." className="mr-auto rounded-md border border-[#f0d9a8] bg-[#fff8e8] px-2.5 py-1.5 text-xs text-[#8a6100] hover:border-[#e3b341]">Basic AI</Link>}
               <button type="button" onClick={() => requestReretrieval()} disabled={retrievalLoading || isGuide || requiresDomain} aria-label="Refresh suggestions" title="Refresh suggestions" className="flex h-11 w-11 items-center justify-center rounded-xl text-[#55555B] hover:bg-white disabled:opacity-50"><RefreshCw className={`h-[18px] w-[18px] ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
               <button type="button" onClick={closeDesignPanel} aria-label="Hide suggestions panel" title="Hide suggestions panel" className="flex h-11 w-11 items-center justify-center rounded-xl text-[#55555B] hover:bg-white"><PanelRightOpen className="h-[18px] w-[18px]" /></button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 sm:px-12">
+            </div>}
+            <div className={`min-h-0 flex-1 overflow-y-auto ${sheetMode ? 'px-5 pb-6' : 'px-6 pb-10 sm:px-12'}`}>
               <div className="max-w-[644px] space-y-4">
                 {retrievalLoading ? <div className="flex min-h-[360px] items-center justify-center gap-3 text-sm text-[#6B6B70]" role="status"><Loader2 className="h-5 w-5 animate-spin text-[#477bea]" /> Finding related notes{retrievalProgress?.agents_total ? ` · ${retrievalProgress.agents_done}/${retrievalProgress.agents_total}` : '…'}</div>
                   : retrievalError ? <div className="flex min-h-[360px] flex-col items-center justify-center gap-3.5 text-center" role="alert"><span className="text-[15px] text-[#6B6B70]">{retrievalError}</span><button type="button" onClick={() => requestReretrieval('relevant')} className="flex min-h-[40px] items-center gap-2 rounded-[10px] border border-[#D6D6DB] bg-white px-3.5 text-sm font-medium text-[#2B2B2E]"><RefreshCw className="h-4 w-4" /> Try again</button></div>
@@ -3435,6 +3460,19 @@ const NOTE_VIEW_KEY = 'ocreda-note-suggestions-view';
 const RELATED_PAGE = 'related';
 type NoteSuggestionsView = 'design' | 'classic';
 
+/** Whether the screen is narrower than the note-and-panel layout (Tailwind's xl, 1280px). */
+function useNarrowScreen(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 1279.98px)');
+    const update = () => setNarrow(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return narrow;
+}
+
 function readNoteSuggestionsView(): NoteSuggestionsView {
   try { return localStorage.getItem(NOTE_VIEW_KEY) === 'classic' ? 'classic' : 'design'; } catch { return 'design'; }
 }
@@ -3536,7 +3574,7 @@ function DesignEvidence({ view, cited, onOpenSource }: { view: CardView; cited: 
 }
 
 /** The panel's top row: arrows through the note's pages when there is more than one, refresh, and hide. */
-function DesignPanelBar({ position, total, refreshing, onPrev, onNext, onRefresh, onHide }: {
+function DesignPanelBar({ position, total, refreshing, onPrev, onNext, onRefresh, onHide, sheet = false }: {
   position: number;
   total: number;
   refreshing: boolean;
@@ -3544,7 +3582,18 @@ function DesignPanelBar({ position, total, refreshing, onPrev, onNext, onRefresh
   onNext: () => void;
   onRefresh: () => void;
   onHide: () => void;
+  /** On a phone's sheet the row sits under the handle, and closing it lowers the sheet. */
+  sheet?: boolean;
 }) {
+  if (sheet) return <div className="flex shrink-0 items-center justify-end gap-2 pb-1 pl-5 pr-3">
+    {total > 1 && <div className="mr-auto flex items-center">
+      <button type="button" onClick={onPrev} aria-label="Previous suggestion" className="flex h-10 w-9 items-center justify-center text-[#55555B]"><ChevronLeft className="h-4 w-4" /></button>
+      <span className="text-[13px] text-[#55555B]">{position + 1} of {total}</span>
+      <button type="button" onClick={onNext} aria-label="Next suggestion" className="flex h-10 w-9 items-center justify-center text-[#55555B]"><ChevronRight className="h-4 w-4" /></button>
+    </div>}
+    <button type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh suggestions" className="flex h-10 w-10 items-center justify-center rounded-xl text-[#55555B] disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} /></button>
+    <button type="button" onClick={onHide} aria-label="Close suggestions" className="flex h-10 w-10 items-center justify-center rounded-xl text-[#55555B]"><ChevronDown className="h-5 w-5" /></button>
+  </div>;
   return <div className="flex shrink-0 items-center justify-end gap-3 px-6 pt-4 sm:px-8">
     {total > 1 && <div className="mr-auto flex items-center gap-0.5">
       <button type="button" onClick={onPrev} aria-label="Previous suggestion in this note" className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#55555B] hover:bg-white"><ChevronLeft className="h-4 w-4" /></button>
@@ -3559,7 +3608,9 @@ function DesignPanelBar({ position, total, refreshing, onPrev, onNext, onRefresh
 }
 
 /** The panel's view of one card, from the design: its result, what it offers, its evidence, and its buttons. */
-function DesignSuggestionPanel({ view, position, total, notesById, outbound, refreshing, onPrev, onNext, onRefresh, onHide, onChoose, onFindOther, onOpenSource }: {
+function DesignSuggestionPanel({ view, position, total, notesById, outbound, refreshing, onPrev, onNext, onRefresh, onHide, onChoose, onFindOther, onOpenSource, sheet = false }: {
+  /** On a phone the panel is a sheet: smaller type, and the buttons fixed along its bottom. */
+  sheet?: boolean;
   view: CardView;
   position: number;
   total: number;
@@ -3586,15 +3637,20 @@ function DesignSuggestionPanel({ view, position, total, notesById, outbound, ref
   const [bothText, setBothText] = useState(view.decision?.text ?? '');
 
   const sides: { choice: CardChoice; kick: string; label: string }[] = [
-    { choice: 'today', kick: 'Highlighted on the left', label: designChoiceLabel('today', source) },
+    { choice: 'today', kick: sheet ? 'Highlighted above' : 'Highlighted on the left', label: designChoiceLabel('today', source) },
     { choice: 'earlier', kick: `“${source.title}”${source.date ? ` · ${source.date}` : ''}`, label: designChoiceLabel('earlier', source) },
   ];
 
-  return <div className="flex min-h-0 flex-1 flex-col">
-    <DesignPanelBar position={position} total={total} refreshing={refreshing} onPrev={onPrev} onNext={onNext} onRefresh={onRefresh} onHide={onHide} />
+  const buttons = synthesis && !rejected && pending ? <>
+    <button type="button" onClick={() => onChoose(synthesis.accept, synthesis.acceptText)} className={`flex items-center justify-center gap-2 font-semibold text-white hover:brightness-95 ${sheet ? 'min-h-[48px] flex-[2] rounded-xl text-base' : 'min-h-[44px] min-w-[190px] rounded-[10px] px-[22px] text-[15px]'}`} style={{ background: tone.ink }}><Check className="h-4 w-4" strokeWidth={2.6} />{synthesis.acceptLabel}</button>
+    <button type="button" onClick={() => onChoose(synthesis.dismiss)} className={`flex items-center justify-center border border-[#D6D6DB] bg-white font-medium text-[#2B2B2E] hover:border-[#b9b9c0] ${sheet ? 'min-h-[48px] flex-1 rounded-xl text-base' : 'min-h-[44px] min-w-[130px] rounded-[10px] px-[18px] text-[15px]'}`}>Dismiss</button>
+  </> : null;
 
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-4 sm:px-12">
-      <div className="flex max-w-[644px] flex-col gap-8">
+  return <div className="flex min-h-0 flex-1 flex-col">
+    <DesignPanelBar position={position} total={total} refreshing={refreshing} onPrev={onPrev} onNext={onNext} onRefresh={onRefresh} onHide={onHide} sheet={sheet} />
+
+    <div className={`min-h-0 flex-1 overflow-y-auto ${sheet ? 'px-5 pb-6 pt-2' : 'px-6 pb-10 pt-4 sm:px-12'}`}>
+      <div className={`flex max-w-[644px] flex-col ${sheet ? 'gap-5' : 'gap-8'}`}>
         {acted && <div role="status" className="flex min-h-[60px] items-center gap-3.5 rounded-[14px] py-2 pl-[18px] pr-3 text-white shadow-[0_8px_22px_rgba(20,20,30,0.16)]" style={{ background: tone.ink }}>
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white" style={{ color: tone.ink }}><Check className="h-4 w-4" strokeWidth={3} /></span>
           <span className="flex flex-1 flex-col">
@@ -3622,10 +3678,11 @@ function DesignSuggestionPanel({ view, position, total, notesById, outbound, ref
               <span className="text-sm font-semibold" style={{ color: tone.ink }}>Which is true?</span>
               <button type="button" onClick={() => onChoose('rejected')} aria-label="Dismiss this contradiction" title="Dismiss" className="-my-1.5 -mr-1.5 flex h-8 w-8 items-center justify-center rounded-lg hover:bg-white/60" style={{ color: tone.ink }}><X className="h-4 w-4" /></button>
             </div>
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              {sides.map((side) => <button key={side.choice} type="button" onClick={() => onChoose(side.choice)} className="flex min-h-[88px] flex-col justify-between gap-2.5 rounded-xl border-[1.5px] bg-white p-4 text-left text-[#2B2B2E] hover:brightness-[0.98]" style={{ borderColor: tone.soft }}>
-                <span className="truncate text-xs font-semibold" style={{ color: tone.ink }}>{side.kick}</span>
-                <span className="text-base font-semibold leading-snug">{side.label}</span>
+            {/* Side by side on a phone too, as in the design, with smaller type to fit. */}
+            <div className={`grid gap-2.5 ${sheet ? 'grid-cols-2 gap-2' : 'grid-cols-1 sm:grid-cols-2'}`}>
+              {sides.map((side) => <button key={side.choice} type="button" onClick={() => onChoose(side.choice)} className={`flex flex-col justify-between rounded-xl border-[1.5px] bg-white text-left text-[#2B2B2E] hover:brightness-[0.98] ${sheet ? 'min-h-[96px] gap-2 p-3' : 'min-h-[88px] gap-2.5 p-4'}`} style={{ borderColor: tone.soft }}>
+                <span className={`truncate font-semibold ${sheet ? 'text-[11px]' : 'text-xs'}`} style={{ color: tone.ink }}>{side.kick}</span>
+                <span className={`font-semibold leading-snug ${sheet ? 'text-sm' : 'text-base'}`}>{side.label}</span>
               </button>)}
             </div>
             <button type="button" aria-pressed={bothOpen} onClick={() => setBothOpen(true)} className="min-h-[40px] self-center rounded-lg px-3.5 text-sm font-medium" style={bothOpen ? { background: '#FFFFFF', color: tone.ink } : { color: '#55555B' }}>Both are true</button>
@@ -3640,17 +3697,16 @@ function DesignSuggestionPanel({ view, position, total, notesById, outbound, ref
         {synthesis && !rejected && <>
           <section aria-label="Synthesis" className="flex flex-col gap-3 rounded-[14px] border px-6 pb-5 pt-6" style={{ borderColor: tone.soft, background: tone.tint }}>
             <span className="text-[13px] font-semibold" style={{ color: tone.ink }}>{synthesis.label}</span>
-            <p className={`text-[23px] leading-[1.4] tracking-[-0.01em] text-[#111114] ${synthesis.quiet ? 'font-medium' : 'font-semibold'}`}>{choice === 'merged' && view.decision?.text ? plainNoteText(view.decision.text) : synthesis.works}</p>
-            <span className="text-xs text-[#55555B]">{synthesis.from}</span>
+            <p className={`${sheet ? 'text-[19px]' : 'text-[23px] tracking-[-0.01em]'} leading-[1.4] text-[#111114] ${synthesis.quiet ? 'font-medium' : 'font-semibold'}`}>{choice === 'merged' && view.decision?.text ? plainNoteText(view.decision.text) : synthesis.works}</p>
+            <span className={`${sheet ? 'text-[11px]' : 'text-xs'} text-[#55555B]`}>{synthesis.from}</span>
           </section>
           <DesignEvidence view={view} cited={cited} onOpenSource={onOpenSource} />
-          {pending && <div className="flex flex-wrap gap-2 border-t border-[#E2E2E6] pt-6">
-            <button type="button" onClick={() => onChoose(synthesis.accept, synthesis.acceptText)} className="flex min-h-[44px] min-w-[190px] items-center justify-center gap-2 rounded-[10px] px-[22px] text-[15px] font-semibold text-white hover:brightness-95" style={{ background: tone.ink }}><Check className="h-4 w-4" strokeWidth={2.6} />{synthesis.acceptLabel}</button>
-            <button type="button" onClick={() => onChoose(synthesis.dismiss)} className="flex min-h-[44px] min-w-[130px] items-center justify-center rounded-[10px] border border-[#D6D6DB] bg-white px-[18px] text-[15px] font-medium text-[#2B2B2E] hover:border-[#b9b9c0]">Dismiss</button>
-          </div>}
+          {buttons && !sheet && <div className="flex flex-wrap gap-2 border-t border-[#E2E2E6] pt-6">{buttons}</div>}
         </>}
       </div>
     </div>
+    {/* On a phone the buttons stay along the bottom of the sheet while its content scrolls. */}
+    {buttons && sheet && <div className="flex shrink-0 gap-2 border-t border-[#E2E2E6] bg-[#F7F7F8] px-5 pb-7 pt-3">{buttons}</div>}
   </div>;
 }
 
