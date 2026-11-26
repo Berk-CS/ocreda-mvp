@@ -1893,6 +1893,8 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
   // Avoid briefly showing "Not searched yet" before an automatic search starts.
   const [retrievalLoading, setRetrievalLoading] = useState(autoSearch && !isGuide && !requiresDomain);
   const [retrievalProgress, setRetrievalProgress] = useState<RelevanceProgress | null>(null);
+  // Counts searches that finished while the note was open (not saved ones shown on opening).
+  const [searchesFinished, setSearchesFinished] = useState(0);
   const [retrievalError, setRetrievalError] = useState('');
   const [retrievalAttempt, setRetrievalAttempt] = useState(0);
   const [retrievalMode, setRetrievalMode] = useState(initialRetrievalMode);
@@ -2022,7 +2024,7 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
           // next time without searching again. A failed insight step is not
           // saved, so opening the note again retries it.
           if (!response.insight_failed) persistSavedRetrieval(userId, requestNote, inputs.goalText, retrievalMode, response, requestSignature);
-          if (active) setRetrieval(response);
+          if (active) { setRetrieval(response); setSearchesFinished((count) => count + 1); }
         })
         .catch((err) => {
           // Cancelling is expected when the reader leaves or searches again; it is not an error.
@@ -2396,6 +2398,21 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retrieval]);
 
+  // On a computer, a search that just finished with something to show opens
+  // the side panel, so it is not missed (decided Nov 25). Phones keep the
+  // sheet down; their footer says what was found.
+  useEffect(() => {
+    if (!searchesFinished || sheetMode || summaryOpen || !window.matchMedia('(min-width: 1280px)').matches) return;
+    if (designView ? designCards.length > 0 || relatedCount > 0 : Boolean(retrieval?.results.length)) {
+      if (designView) openDesignPanel(); else setSummaryOpen(true);
+    }
+    // Only a newly finished search should open the panel.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchesFinished]);
+
+  /** What a running search says, with how far the readers have got. */
+  const searchingLabel = `Searching your notes${retrievalProgress?.agents_total ? ` · ${retrievalProgress.agents_done}/${retrievalProgress.agents_total}` : '…'}`;
+
   /** Notes the search matched that no card used, by the part of the note they match, then the whole note. */
   const relatedListsHeaded = (lead: 'Related' | 'Also related') => <>
     {noteSections.map((section) => { const results = relatedNotes.forSection(section.id); return results.length ? <RelatedNotesList key={`part-${section.id}`} heading={noteSections.length > 1 ? `${lead} to part ${section.index + 1}` : lead} results={results} notesById={noteById} onOpen={showCitedNote} /> : null; })}
@@ -2761,7 +2778,6 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
               {usedInNotes.map((item) => <button key={item.id} role="menuitem" type="button" onClick={() => { setUsedInMenuOpen(false); void leaveWorkspace(item, false); }} className="block w-full truncate px-4 py-2.5 text-left text-sm text-[#333] hover:bg-[#edf3ff] hover:text-[#315fc5]">{noteLabel(item)}</button>)}
             </div>}
           </div>}
-          <button type="button" disabled={retrievalLoading || isGuide || requiresDomain} onClick={() => requestReretrieval()} aria-label="Reload related notes" title={requiresDomain ? 'Choose a Domain before retrieval' : 'Reload related notes'} className={`${sheetMode ? 'hidden' : 'flex'} h-10 w-10 items-center justify-center rounded-md border border-[#dedede] bg-white shadow-sm hover:border-[#adc3ff] hover:text-[#477bea] disabled:cursor-wait disabled:opacity-50 sm:h-9 sm:w-9`}><RefreshCw className={`h-4 w-4 ${retrievalLoading ? 'animate-spin' : ''}`} /></button>
           <button type="button" disabled={!newerNote} onClick={() => newerNote && void leaveWorkspace(newerNote, false)} aria-label="Newer note" title="Newer note" className="hidden h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25 sm:flex"><ChevronLeft className="h-4 w-4" /></button>
           <button type="button" disabled={!olderNote} onClick={() => olderNote && void leaveWorkspace(olderNote, false)} aria-label="Older note" title="Older note" className="hidden h-9 w-9 items-center justify-center rounded-md hover:bg-[#f4f4f4] disabled:opacity-25 sm:flex"><ChevronRight className="h-4 w-4" /></button>
           <button type="button" onClick={() => setMenuOpen((open) => !open)} aria-label="Note options" aria-expanded={menuOpen} className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f4f4f4] sm:h-9 sm:w-9"><MoreHorizontal className="h-5 w-5" /></button>
@@ -2773,7 +2789,11 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
         {/* On a phone the note stays in view under the sheet. */}
         <section className={`relative min-h-0 min-w-0 flex-col overflow-hidden bg-white xl:flex ${summaryOpen && !sheetMode ? 'hidden' : 'flex'}`}>
           <div className="absolute right-3 top-3 z-10 flex gap-2 sm:right-4">
-            {designView ? !summaryOpen && !sheetMode && <button type="button" onClick={openDesignPanel} aria-label="Show suggestions panel" title="Show suggestions panel" aria-controls="note-suggestions-panel" className="flex h-10 items-center gap-1.5 rounded-[10px] px-2.5 text-[#55555B] hover:bg-[#f4f4f4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
+            {/* While a search runs and the panel is closed, say so loudly: a coloured, moving button (decided Nov 25). */}
+            {retrievalLoading && !summaryOpen && !sheetMode ? <button type="button" onClick={() => (designView ? openDesignPanel() : setSummaryOpen(true))} aria-controls="note-suggestions-panel" className="ocreda-searching flex h-10 items-center gap-2 rounded-full bg-[#477bea] pl-3.5 pr-4 text-[13px] font-medium text-white shadow-[0_6px_18px_rgba(71,123,234,0.4)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /><span role="status">{searchingLabel}</span>
+            </button>
+            : designView ? !summaryOpen && !sheetMode && <button type="button" onClick={openDesignPanel} aria-label="Show suggestions panel" title="Show suggestions panel" aria-controls="note-suggestions-panel" className="flex h-10 items-center gap-1.5 rounded-[10px] px-2.5 text-[#55555B] hover:bg-[#f4f4f4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
               {retrievalLoading ? <Loader2 className="h-5 w-5 animate-spin text-[#477bea]" /> : <PanelRightOpen className="h-5 w-5 rotate-180" aria-hidden="true" />}
               {!retrievalLoading && designPendingCount > 0 && <span className="text-xs font-medium">{designPendingCount}</span>}
             </button> : <>
@@ -2797,9 +2817,10 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
           <span className="absolute bottom-3 right-5 text-[11px] text-[#999]">{saving || saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Save failed' : ''}</span>
           {/* The phone's way in: a bar along the bottom saying how many cards wait, as in the design. */}
           {/* A tap or a swipe on it opens the sheet (decided Nov 25). */}
-          {sheetMode && !summaryOpen && !editing && <button type="button" {...tapOrSwipe(openDesignPanel)} aria-label="Open what your notes say" aria-controls="note-suggestions-panel" className="absolute inset-x-0 bottom-0 z-20 flex h-16 select-none flex-col items-center justify-start gap-2 rounded-t-[20px] bg-[#F7F7F8] pt-2.5 shadow-[0_-6px_20px_rgba(10,10,20,0.12)]">
-            <span className="h-[5px] w-10 rounded-full bg-[#C9C9CF]" aria-hidden="true" />
-            <span className="flex items-center gap-1.5 text-[13px] text-[#55555B]">{retrievalLoading ? <><Loader2 className="h-3.5 w-3.5 animate-spin text-[#477bea]" /> Finding related notes…</> : footerSummary}</span>
+          {/* While a search runs the bar turns blue with a moving sheen, so it is noticed (decided Nov 25). */}
+          {sheetMode && !summaryOpen && !editing && <button type="button" {...tapOrSwipe(openDesignPanel)} aria-label="Open what your notes say" aria-controls="note-suggestions-panel" className={`absolute inset-x-0 bottom-0 z-20 flex h-16 select-none flex-col items-center justify-start gap-2 rounded-t-[20px] pt-2.5 transition-colors duration-300 ${retrievalLoading ? 'ocreda-searching bg-[#477bea] shadow-[0_-6px_22px_rgba(71,123,234,0.45)]' : 'bg-[#F7F7F8] shadow-[0_-6px_20px_rgba(10,10,20,0.12)]'}`}>
+            <span className={`h-[5px] w-10 rounded-full ${retrievalLoading ? 'bg-white/60' : 'bg-[#C9C9CF]'}`} aria-hidden="true" />
+            <span role="status" className={`flex items-center gap-1.5 text-[13px] ${retrievalLoading ? 'font-medium text-white' : 'text-[#55555B]'}`}>{retrievalLoading ? <><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> {searchingLabel}</> : footerSummary}</span>
           </button>}
         </section>
 
