@@ -588,6 +588,37 @@ test('a solution carries its answer word for word from the note, or is dropped',
   assert.strictEqual(first(insightJson({ kind: 'extension' })), undefined, 'an extension needs the words it would merge');
 });
 
+test('each cited note gets its own heading and line, with quotes numbered alongside the card sentence', () => {
+  const insight = first(insightJson({
+    note_ids: ['n1', 'n2'],
+    quotes: [quote('two testers said $10 was the most'), quote('A sample note would have helped', 'n2'), quote('Nobody took $15')],
+    evidence: [
+      { note_id: 'n2', heading: '"What helped Sam":', text: 'Sam found {2}. It came back because your new note has her lost too.' },
+      { note_id: 'n1', heading: 'Your last price test', text: 'In March {1}, and {3}.' },
+      { note_id: 'n1', heading: 'A second entry for the same note', text: 'Again {1}.' },
+    ],
+  }));
+  assert.deepStrictEqual(insight.quotes.map((q) => q.text), ['two testers said $10 was the most', 'A sample note would have helped', 'Nobody took $15']);
+  assert.deepStrictEqual(insight.evidence, [
+    { note_id: 'n2', heading: 'What helped Sam', text: 'Sam found {2}. It came back because your new note has her lost too.' },
+    { note_id: 'n1', heading: 'Your last price test', text: 'In March {1}, and {3}.' },
+  ]);
+});
+
+test('an evidence line that misquotes, quotes nothing or names an uncited note is dropped, not the card', () => {
+  const insight = first(insightJson({
+    quotes: [quote('two testers said $10 was the most'), quote('most people would pay $30')],
+    evidence: [
+      { note_id: 'n1', heading: 'Price test', text: 'You found {2}.' },
+      { note_id: 'n1', heading: 'Price test', text: 'No quote here.' },
+      { note_id: 'n2', heading: 'Sam', text: 'Sam found {1}.' },
+    ],
+  }));
+  assert.ok(insight, 'the card survives');
+  assert.deepStrictEqual(insight.evidence, []);
+  assert.strictEqual(insight.quotes.length, 1);
+});
+
 test('a helps idea completes "Might help to ...", whatever way the model starts it', () => {
   assert.strictEqual(first(insightJson({ idea: 'Might help to: Say the price and just wait' })).action, 'say the price and just wait');
   assert.strictEqual(first(insightJson({ idea: 'AI demos first' })).action, 'AI demos first');

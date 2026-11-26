@@ -122,6 +122,13 @@ export interface InsightQuote {
   text: string;
 }
 
+/** One cited note's part in a card. */
+export interface InsightEvidence {
+  note_id: string;
+  heading: string;
+  text: string;
+}
+
 export interface NoteInsight {
   /** Verbatim passage of the searched text the insight is about. Empty when none could be matched. */
   anchor: string;
@@ -147,6 +154,12 @@ export interface NoteInsight {
    * card's headline. Missing from older searches, which show the answer itself.
    */
   solution?: string;
+  /**
+   * Each cited note's part in the card: a short heading naming its role, and a
+   * sentence around its own words ({1}, {2}, ... index `quotes`) saying why it
+   * came back. Missing from older searches.
+   */
+  evidence?: InsightEvidence[];
   /** The answer's text, the idea for helps, the pattern for a pattern; empty for a contradiction. */
   action: string;
   /** The notes the insight rests on, all of them among the results. */

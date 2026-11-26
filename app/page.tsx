@@ -3771,7 +3771,8 @@ function designSynthesis(view: CardView, source: DesignSource, citedCount: numbe
       : { label: `Your new note answers ${where}`, works: `“${plainNoteText(item.problem.text)}”`, from: `The problem, word for word from ${where}`, accept: 'solved', acceptLabel: 'Solve', dismiss: 'rejected' };
     const answer = plainNoteText(item.answer?.text ?? item.action);
     // A dismissed solution carries on as a Helps card, as in the classic view.
-    return { label: 'Solution', works: solution || answer, from: solution ? `${source.sharedBy ? `${source.sharedBy}’s` : 'Your'} words in ${where}: ‘${answer}’` : from, accept: 'solved', acceptLabel: 'Solve', dismiss: 'downgraded' };
+    // With each note's words shown below, the headline is labelled as what it is: a synthesis.
+    return { label: 'Solution', works: solution || answer, from: solution && !item.evidence?.length ? `${source.sharedBy ? `${source.sharedBy}’s` : 'Your'} words in ${where}: ‘${answer}’` : from, accept: 'solved', acceptLabel: 'Solve', dismiss: 'downgraded' };
   }
   if (view.kind === 'helps') {
     if (outbound) return { label: `Your new note could help ${where}`, works: sentenceCase(plainNoteText(item.action)), from, accept: 'helped', acceptLabel: 'Use this', dismiss: 'rejected' };
@@ -3789,6 +3790,29 @@ function designSynthesis(view: CardView, source: DesignSource, citedCount: numbe
 
 /** "Your words and why it relates": the card's sentence with their quotes, and the notes it rests on. */
 function DesignEvidence({ view, cited, onOpenSource }: { view: CardView; cited: Note[]; onOpenSource: (noteId: string, focus?: string) => void }) {
+  const noteLink = (note: Note) => <button key={note.id} type="button" onClick={(event) => { event.stopPropagation(); onOpenSource(note.id); }} className="text-left text-[13px] text-[#55555B] hover:text-[#1B1B1F] hover:underline">
+    {note.shared_by ? `${note.shared_by}’s ` : ''}{noteLabel(note)} · {formatDate(note.created_at)} ↗
+  </button>;
+  // Each note on its own: what part it plays, its words and why it came back,
+  // then the note itself (decided Nov 26, from the cofounder's card design).
+  const evidence = (view.item.evidence ?? []).flatMap((entry) => {
+    const note = cited.find((item) => item.id === entry.note_id);
+    return note ? [{ entry, note }] : [];
+  });
+  if (evidence.length) {
+    const rest = cited.filter((note) => !evidence.some(({ note: shown }) => shown.id === note.id));
+    return <section className="flex flex-col gap-3">
+      <h2 className="text-[13px] font-normal text-[#6B6B70]">Your words and why it relates</h2>
+      <div className="flex flex-col gap-7">
+        {evidence.map(({ entry, note }) => <div key={note.id} className="flex flex-col gap-2">
+          <h3 className="text-[16px] font-normal italic text-[#2B2B2E]">{entry.heading}</h3>
+          <p className="text-[16px] leading-[1.75] text-[#6E6E74] [&_[role=button]]:text-[#1B1B1F]"><InsightSentence insight={{ ...view.item, text: entry.text }} kind={view.kind} onOpenSource={onOpenSource} /></p>
+          <div className="flex flex-col items-start">{noteLink(note)}</div>
+        </div>)}
+      </div>
+      {rest.length > 0 && <div className="flex flex-col items-start gap-1.5">{rest.map(noteLink)}</div>}
+    </section>;
+  }
   return <section className="flex flex-col gap-3">
     <h2 className="text-[13px] font-normal text-[#6B6B70]">Your words and why it relates</h2>
     <p className="text-[16px] leading-[1.75] text-[#6E6E74] [&_[role=button]]:text-[#1B1B1F]"><InsightSentence insight={view.item} kind={view.kind} onOpenSource={onOpenSource} /></p>
