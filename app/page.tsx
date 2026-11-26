@@ -671,7 +671,25 @@ export default function OcredaHome() {
     setShowUnsorted(false);
     setView('muses');
   }, []);
-  const openNewNote = (muse = ORPHANS_MUSE) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
+  /**
+   * The Domain a new note goes to unless one is picked: the last one used,
+   * meaning the Domain of the note most recently written into or moved into a
+   * real Domain (decided Nov 25). Read from the notes, so it holds on every
+   * device. Orphans only when no note is in a Domain that still exists.
+   */
+  const lastUsedDomain = useMemo(() => {
+    const existing = new Map(muses.map((muse) => [muse.title.toLowerCase(), muse.title]));
+    let latest: { title: string; at: string } | null = null;
+    for (const note of notes) {
+      const domain = cleanCategory(note.category);
+      const title = domain ? existing.get(domain.toLowerCase()) : undefined;
+      if (!title || title.toLowerCase() === ORPHANS_MUSE.toLowerCase()) continue;
+      const at = [note.created_at, note.category_updated_at ?? ''].sort().pop() ?? note.created_at;
+      if (!latest || at > latest.at) latest = { title, at };
+    }
+    return latest?.title ?? ORPHANS_MUSE;
+  }, [muses, notes]);
+  const openNewNote = (muse = lastUsedDomain) => { setError(''); setNoteEditor({ note: null, title: '', body: '', muse, context: 'domain' }); };
   const openExistingNote = (note: Note, autoSearch = true, fromNoteId: string | null = null) => {
     setError('');
     // A shared note opens read-only, with no search of its own.
@@ -969,7 +987,7 @@ export default function OcredaHome() {
           : activeVault ? <VaultDetail vault={activeVault} busy={saving} onClose={() => setActiveVaultId(null)} onOpenNote={(note) => setActiveSharedNoteId(note.id)} onToggleRetrieval={() => void toggleVaultRetrieval(activeVault)} onRemove={() => void deleteVault(activeVault)} />
           : activeMuse || showUnsorted ? <MuseDetail title={showUnsorted ? ORPHANS_MUSE : activeMuse ?? ''} notes={showUnsorted ? unsortedNotes : notesByMuse.get(activeMuse ?? '') ?? []} isUnsorted={showUnsorted} busy={saving} onClose={closeLibrary} onAddNote={() => openNewNote(showUnsorted ? ORPHANS_MUSE : activeMuse ?? ORPHANS_MUSE)} onOpenNote={openExistingNote} onEdit={() => { const meta = muses.find((item) => item.title === activeMuse); if (meta) setMuseEditor({ originalTitle: meta.title, title: meta.title, description: meta.description }); }} onDelete={() => { if (activeMuse) void removeMuse(activeMuse); }} onShare={sampleMode || showUnsorted ? undefined : () => void shareNotes(notesByMuse.get(activeMuse ?? '') ?? [])} />
           : view === 'muses' ? <MuseGrid muses={muses} projects={projects} notes={notes} notesByMuse={notesByMuse} busy={saving} onClose={closeLibrary} onAddNote={(muse) => openNewNote(muse ?? ORPHANS_MUSE)} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onEditMuse={(muse) => setMuseEditor({ originalTitle: muse.title, title: muse.title, description: muse.description })} onDeleteMuse={(title) => void removeMuse(title)} onOpenNote={openExistingNote} />
-          : <CortexHome vaults={vaults} onOpenVault={(vault) => setActiveVaultId(vault.id)} onToggleVaultRetrieval={(vault) => void toggleVaultRetrieval(vault)} onRemoveVault={(vault) => void deleteVault(vault)} projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} />}
+          : <CortexHome vaults={vaults} onOpenVault={(vault) => setActiveVaultId(vault.id)} onToggleVaultRetrieval={(vault) => void toggleVaultRetrieval(vault)} onRemoveVault={(vault) => void deleteVault(vault)} projects={projects} muses={muses} pinnedMuseTitles={pinnedMuseTitles} notes={notes} notesByMuse={notesByMuse} userEmail={user?.email ?? ''} busy={saving} onOpenMuses={() => setView('muses')} onOpenMuse={openMuse} onTogglePin={togglePinnedMuse} onAddMuse={() => setMuseEditor({ originalTitle: null, title: '', description: '' })} onAddNote={() => openNewNote()} onOpenImport={() => setImportOpen(true)} onOpenPage={(project, page) => { setActiveProjectId(project.id); setActivePageId(page.id); }} onOpenNote={openExistingNote} onMoveNote={(noteId, domain) => void changeReadingNoteDomain(noteId, domain)} />}
         {notice && !error && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
         {error && !noteEditor && !museEditor && !projectEditor && <div role="alert" className="fixed bottom-5 left-1/2 z-40 max-w-[90vw] -translate-x-1/2 rounded-lg bg-[#202020] px-4 py-3 text-sm text-white shadow-xl">{error}<button type="button" onClick={() => setError('')} aria-label="Dismiss error" className="ml-4"><X className="inline h-4 w-4" /></button></div>}
       </section>
@@ -1086,13 +1104,124 @@ function EmptyWorkspace({ displayName, userEmail, existingDomains, onAddNote, on
   );
 }
 
-function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault, projects, muses, pinnedMuseTitles, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onTogglePin, onAddMuse, onAddNote, onOpenImport, onOpenPage, onOpenNote }: {
+/** A note with no Domain yet: none at all, or still in Orphans. */
+function isUnsortedNote(note: Note): boolean {
+  const category = cleanCategory(note.category);
+  return !category || category.toLowerCase() === ORPHANS_MUSE.toLowerCase();
+}
+
+/** When something last happened in a note: written, or moved into its Domain. */
+function noteActivity(note: Note): string {
+  const moved = note.category_updated_at ?? '';
+  return moved > note.created_at ? moved : note.created_at;
+}
+
+function shortNoteDate(value: string): string {
+  const date = new Date(value);
+  const today = localDateKey(new Date().toISOString());
+  if (localDateKey(value) === today) return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date);
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return new Intl.DateTimeFormat('en-US', sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+}
+
+/** The lists behind the Home bar's two halves, in a sheet like the note's suggestions. */
+function HomeBarSheet({ kind, muses, notes, notesByMuse, busy, onClose, onOpenMuse, onOpenNote, onManageDomains, onMoveNote }: {
+  kind: 'domains' | 'notes'; muses: MuseMeta[]; notes: Note[]; notesByMuse: Map<string, Note[]>; busy: boolean;
+  onClose: () => void; onOpenMuse: (title: string) => void; onOpenNote: (note: Note) => void; onManageDomains: () => void;
+  onMoveNote: (noteId: string, domain: string) => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const realDomains = muses.filter((muse) => muse.title.toLowerCase() !== ORPHANS_MUSE.toLowerCase());
+  const domainRows = realDomains
+    .map((muse) => {
+      const items = notesByMuse.get(muse.title) ?? [];
+      const last = items.reduce((latest, note) => { const at = noteActivity(note); return at > latest ? at : latest; }, '');
+      return { muse, count: items.length, last };
+    })
+    // Most recently used first; Domains with no notes yet go last, newest first.
+    .sort((a, b) => (b.last || '').localeCompare(a.last || '') || b.muse.createdAt.localeCompare(a.muse.createdAt));
+
+  const unsorted = notes.filter(isUnsortedNote).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const sorted = notes.filter((note) => !isUnsortedNote(note)).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const todayKey = localDateKey(new Date().toISOString());
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const groups: { label: string; items: Note[] }[] = [
+    { label: 'Today', items: sorted.filter((note) => localDateKey(note.created_at) === todayKey) },
+    { label: 'This week', items: sorted.filter((note) => localDateKey(note.created_at) !== todayKey && note.created_at >= weekAgo) },
+    { label: 'Earlier', items: sorted.filter((note) => note.created_at < weekAgo) },
+  ].filter((group) => group.items.length);
+
+  const noteRow = (note: Note) => (
+    <button type="button" onClick={() => onOpenNote(note)} className="flex w-full min-w-0 flex-col gap-0.5 rounded-lg px-3 py-2.5 text-left hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
+      <span className="flex min-w-0 items-baseline gap-3"><span className="min-w-0 flex-1 truncate text-sm font-medium text-[#222]">{noteLabel(note)}</span><span className="shrink-0 text-xs text-[#999]">{shortNoteDate(note.created_at)}</span></span>
+      <span className="truncate text-xs text-[#8d8d92]">{cleanCategory(note.category) || ORPHANS_MUSE}{notePreview(note) && notePreview(note) !== noteLabel(note) ? ` · ${notePreview(note)}` : ''}</span>
+    </button>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50">
+      <button type="button" onClick={onClose} aria-label="Close" tabIndex={-1} className="absolute inset-0 h-full w-full cursor-default bg-black/20" />
+      <section role="dialog" aria-modal="true" aria-label={kind === 'domains' ? 'Your Domains' : 'All notes'} className="absolute inset-x-0 bottom-0 mx-auto flex h-[72%] w-full max-w-[640px] flex-col overflow-hidden rounded-t-[20px] bg-[#F7F7F8] shadow-[0_-10px_30px_rgba(10,10,20,0.18)]">
+        <button type="button" {...tapOrSwipe(onClose)} aria-label="Close list" title="Close" className="flex h-10 shrink-0 select-none items-center justify-center"><span className="h-[5px] w-10 rounded-full bg-[#C9C9CF]" aria-hidden="true" /></button>
+        <h2 className="shrink-0 px-6 pb-2 text-sm font-semibold text-[#222]">{kind === 'domains' ? `${realDomains.length} ${realDomains.length === 1 ? 'Domain' : 'Domains'}` : `${notes.length} ${notes.length === 1 ? 'Note' : 'Notes'}`}</h2>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-8">
+          {kind === 'domains' ? <>
+            {domainRows.length === 0 && <p className="px-3 py-6 text-sm text-[#8d8d92]">No Domains yet.</p>}
+            <ul>
+              {domainRows.map(({ muse, count, last }) => <li key={muse.title}>
+                <button type="button" onClick={() => onOpenMuse(muse.title)} className="flex w-full min-w-0 items-center gap-3 rounded-lg px-3 py-3 text-left hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
+                  <Layers3 className="h-4 w-4 shrink-0 text-[#477bea]" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-[#222]">{muse.title}</span>
+                    <span className="block truncate text-xs text-[#8d8d92]">{count} {count === 1 ? 'note' : 'notes'}{last ? ` · last used ${shortNoteDate(last)}` : ''}</span>
+                  </span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-[#bbb]" />
+                </button>
+              </li>)}
+            </ul>
+            <button type="button" onClick={onManageDomains} className="mt-3 px-3 text-sm text-[#477bea] hover:text-[#315fc5]">Manage Domains</button>
+          </> : <>
+            {unsorted.length > 0 && <section aria-label="Notes that need a Domain" className="mb-4 rounded-xl border border-[#f3d3b4] bg-[#fff7ef] p-2">
+              <h3 className="px-3 pb-1 pt-2 text-xs font-semibold text-[#b4570f]">{unsorted.length} {unsorted.length === 1 ? 'note needs' : 'notes need'} a Domain</h3>
+              <ul>
+                {unsorted.map((note) => <li key={note.id} className="flex min-w-0 items-center gap-2">
+                  <div className="min-w-0 flex-1">{noteRow(note)}</div>
+                  {realDomains.length > 0 && <select aria-label={`Move “${noteLabel(note)}” to a Domain`} value="" disabled={busy} onChange={(event) => { if (event.target.value) onMoveNote(note.id, event.target.value); }} className="h-9 max-w-[42%] shrink-0 rounded-md border border-[#e0e0e0] bg-white px-2 text-xs text-[#477bea] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] disabled:opacity-50">
+                    <option value="">Move to…</option>
+                    {realDomains.map((muse) => <option key={muse.title} value={muse.title}>{muse.title}</option>)}
+                  </select>}
+                </li>)}
+              </ul>
+            </section>}
+            {groups.map((group) => <section key={group.label} aria-label={group.label} className="mb-3">
+              <h3 className="px-3 pb-1 pt-2 text-xs font-normal text-[#8d8d92]">{group.label}</h3>
+              <ul>{group.items.map((note) => <li key={note.id}>{noteRow(note)}</li>)}</ul>
+            </section>)}
+            {notes.length === 0 && <p className="px-3 py-6 text-sm text-[#8d8d92]">No notes yet.</p>}
+          </>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault, projects, muses, pinnedMuseTitles, notes, notesByMuse, userEmail, busy, onOpenMuses, onOpenMuse, onTogglePin, onAddMuse, onAddNote, onOpenImport, onOpenPage, onOpenNote, onMoveNote }: {
   vaults: Vault[]; onOpenVault: (vault: Vault) => void; onToggleVaultRetrieval: (vault: Vault) => void; onRemoveVault: (vault: Vault) => void;
   projects: CortexProject[]; muses: MuseMeta[]; pinnedMuseTitles: string[]; notes: Note[]; notesByMuse: Map<string, Note[]>; userEmail: string; busy: boolean;
   onOpenMuses: () => void; onOpenMuse: (title: string) => void; onTogglePin: (title: string) => void; onAddMuse: () => void; onAddNote: () => void; onOpenImport: () => void;
   onOpenPage: (project: CortexProject, page: ProjectPage) => void; onOpenNote: (note: Note) => void;
+  onMoveNote: (noteId: string, domain: string) => void;
 }) {
   const [searchOpen, setSearchOpen] = useState(false);
+  const [barSheet, setBarSheet] = useState<'domains' | 'notes' | null>(null);
+  const unsortedCount = notes.filter(isUnsortedNote).length;
+  // Orphans is counted as unsorted notes, not as a Domain.
+  const domainCount = muses.filter((muse) => muse.title.toLowerCase() !== ORPHANS_MUSE.toLowerCase()).length;
   const pinnedMuses = pinnedMuseTitles.map((title) => muses.find((muse) => muse.title.toLowerCase() === title.toLowerCase())).filter((muse): muse is MuseMeta => Boolean(muse));
   const unpinnedMuses = muses.filter((muse) => !pinnedMuseTitles.some((title) => title.toLowerCase() === muse.title.toLowerCase()));
 
@@ -1122,7 +1251,6 @@ function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault
           </div>
           <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {unpinnedMuses.map((muse) => <MuseHomeCard key={muse.title} muse={muse} notes={notesByMuse.get(muse.title) ?? []} pinned={false} onClick={() => onOpenMuse(muse.title)} onTogglePin={() => onTogglePin(muse.title)} />)}
-            <button type="button" onClick={onAddMuse} aria-label="Add a Domain" title="Add a Domain" className="flex h-[286px] items-center justify-center rounded-md border border-dashed border-[#dfe3ec] text-[#477bea] transition hover:border-[#8fb1ff] hover:bg-[#f8f9fc]"><FolderPlus className="h-9 w-9 stroke-[1.6]" /></button>
           </div>
         </section>
         {vaults.length > 0 && <section className="mx-auto mt-14 w-full max-w-[1450px]" aria-label="Shared with me">
@@ -1136,10 +1264,19 @@ function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault
         </section>}
       </main>
 
-      <button type="button" onClick={onOpenMuses} aria-label="Open Domains and notes" className="absolute bottom-0 left-1/2 z-20 flex h-16 w-[min(88vw,420px)] -translate-x-1/2 items-center justify-center gap-10 rounded-t-[52px] border border-b-0 border-[#e0e0e0] bg-white px-8 text-xs text-[#777] shadow-[0_-4px_16px_rgba(0,0,0,0.10)] transition hover:h-[70px] hover:text-[#222] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">
-        <span className="flex items-center gap-2"><Layers3 className="h-4 w-4 text-[#477bea]" /> {muses.length} {muses.length === 1 ? 'Domain' : 'Domains'}</span>
-        <span>{notes.length} {notes.length === 1 ? 'Note' : 'Notes'}</span>
-      </button>
+      {/* Each half opens its own list (decided Nov 25); the Notes half also counts notes still waiting for a Domain. */}
+      <div className="absolute bottom-0 left-1/2 z-20 flex h-16 w-[min(88vw,420px)] -translate-x-1/2 items-stretch overflow-hidden rounded-t-[52px] border border-b-0 border-[#e0e0e0] bg-white text-xs text-[#777] shadow-[0_-4px_16px_rgba(0,0,0,0.10)] transition hover:h-[70px]">
+        <button type="button" onClick={() => setBarSheet('domains')} aria-label={`Open your ${domainCount} Domains`} className="flex flex-1 items-center justify-center gap-2 pl-6 hover:text-[#222] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#477bea]">
+          <Layers3 className="h-4 w-4 text-[#477bea]" /> {domainCount} {domainCount === 1 ? 'Domain' : 'Domains'}
+        </button>
+        <span className="my-4 w-px bg-[#ececef]" aria-hidden="true" />
+        <button type="button" onClick={() => setBarSheet('notes')} aria-label={`Open all ${notes.length} notes${unsortedCount ? `, ${unsortedCount} ${unsortedCount === 1 ? 'needs' : 'need'} a Domain` : ''}`} className="flex flex-1 items-center justify-center gap-1.5 pr-6 hover:text-[#222] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#477bea]">
+          <span>{notes.length} {notes.length === 1 ? 'Note' : 'Notes'}</span>
+          {unsortedCount > 0 && <span className="flex items-center gap-1 text-[#b4570f]"><span aria-hidden="true">·</span><span className="h-1.5 w-1.5 rounded-full bg-[#e8892f]" aria-hidden="true" />{unsortedCount} unsorted</span>}
+        </button>
+      </div>
+
+      {barSheet && <HomeBarSheet kind={barSheet} muses={muses} notes={notes} notesByMuse={notesByMuse} busy={busy} onClose={() => setBarSheet(null)} onOpenMuse={(title) => { setBarSheet(null); onOpenMuse(title); }} onOpenNote={(note) => { setBarSheet(null); onOpenNote(note); }} onManageDomains={() => { setBarSheet(null); onOpenMuses(); }} onMoveNote={onMoveNote} />}
 
       {searchOpen && <KnowledgeSearchOverlay request={{ query: '' }} notes={notes} sharedNotes={vaults.flatMap((vault) => vault.notes)} muses={muses} projects={projects} hideProjectColumn onClose={() => setSearchOpen(false)} onOpenPage={(project, page) => { setSearchOpen(false); onOpenPage(project, page); }} onOpenNote={(note) => { setSearchOpen(false); onOpenNote(note); }} />}
     </div>
@@ -3503,7 +3640,16 @@ function tapOrSwipe(action: () => void) {
       // Capturing only helps a swipe that leaves the bar; the bar works without it.
       try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* No active pointer to capture. */ }
     },
-    onPointerUp: (event: React.PointerEvent<HTMLElement>) => { event.preventDefault(); action(); },
+    onPointerUp: (event: React.PointerEvent<HTMLElement>) => {
+      event.preventDefault();
+      // The bar usually disappears with the action, so the click that follows
+      // this tap would land on whatever was under it (a Domain card, the note's
+      // text) and open it. Swallow that one click.
+      const swallow = (click: MouseEvent) => { click.preventDefault(); click.stopPropagation(); };
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      window.setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 400);
+      action();
+    },
     onClick: (event: React.MouseEvent) => { if (event.detail === 0) action(); },
     style: { touchAction: 'none' } as React.CSSProperties,
   };
