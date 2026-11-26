@@ -2390,10 +2390,15 @@ function NoteReadingWorkspace({ note, previousNote, allNotes, sharedNotes = [], 
   };
 
   // A search that finishes while the panel shows nothing opens its first card.
+  // So does one that replaced the open card: a card's id comes from its
+  // wording, and a new search rewords it, so the old id finds nothing and the
+  // panel said "Nothing to act on" over cards it had (fixed Nov 26).
   useEffect(() => {
-    if (!designView || !summaryOpen || activeCardId || panelNoteId) return;
+    if (!designView || !summaryOpen || panelNoteId) return;
+    if (activeCardId && designPages.includes(activeCardId)) return;
     const first = designCards.find((view) => isPendingCard(view.decision));
     if (first) setActiveCardId(first.id);
+    else if (activeCardId) setActiveCardId(designCards.find((view) => view.decision?.choice !== 'rejected')?.id ?? (hasRelatedPage ? RELATED_PAGE : null));
     // Only a new search should move the panel on its own.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retrieval]);
@@ -3332,9 +3337,13 @@ function sentenceCase(text: string): string {
 function InsightSentence({ insight, kind, onOpenSource }: { insight: NoteInsight; kind: SuggestionKind; onOpenSource: (noteId: string, focus?: string) => void }) {
   const quotes = insight.quotes ?? [];
   if (!quotes.length) return <>{stripInlineMarkdown(insight.text)}</>;
-  return <>{insight.text.split(/(\{\d+\})/).map((part, index) => {
-    const quote = /^\{\d+\}$/.test(part) ? quotes[Number(part.slice(1, -1)) - 1] : undefined;
-    if (!quote) return <Fragment key={index}>{stripInlineMarkdown(part)}</Fragment>;
+  const parts = insight.text.split(/(\{\d+\})/);
+  const quoteAt = (part: string) => /^\{\d+\}$/.test(part) ? quotes[Number(part.slice(1, -1)) - 1] : undefined;
+  return <>{parts.map((part, index) => {
+    const quote = quoteAt(part);
+    // A quote that ends a sentence already has its stop, so the sentence's own
+    // stop or comma right after it would double up ("okay.'.").
+    if (!quote) return <Fragment key={index}>{stripInlineMarkdown(index > 0 && /[.!?]$/.test(plainNoteText(quoteAt(parts[index - 1])?.text ?? '').trim()) ? part.replace(/^[.,;:]/, '') : part)}</Fragment>;
     const open = () => onOpenSource(quote.note_id, quote.text);
     // A span, not a button: browsers lay a button out as one block, so a long
     // quote filled the line and pushed the punctuation after it onto its own.
