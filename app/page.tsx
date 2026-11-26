@@ -1104,6 +1104,18 @@ function EmptyWorkspace({ displayName, userEmail, existingDomains, onAddNote, on
   );
 }
 
+/**
+ * Writing a note is the main thing people do, so it has one labelled button
+ * in the same corner of Home and of every Domain (decided Nov 25).
+ */
+function NewNoteButton({ onClick, label, className }: { onClick: () => void; label: string; className: string }) {
+  return (
+    <button type="button" onClick={onClick} aria-label={label} title={label} className={`absolute z-30 flex h-14 items-center gap-2 rounded-full bg-[#477bea] pl-5 pr-6 text-[15px] font-medium text-white shadow-[0_8px_24px_rgba(71,123,234,0.45)] transition hover:-translate-y-0.5 hover:bg-[#3d6ed7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea] focus-visible:ring-offset-2 ${className}`}>
+      <Plus className="h-5 w-5" /> New note
+    </button>
+  );
+}
+
 /** A note with no Domain yet: none at all, or still in Orphans. */
 function isUnsortedNote(note: Note): boolean {
   const category = cleanCategory(note.category);
@@ -1229,7 +1241,6 @@ function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-white">
       <header className="relative z-20 flex h-[88px] shrink-0 items-center border-b border-[#eeeeef] px-5 sm:px-8">
         <div className="flex items-center gap-2 text-[#222]">
-          <button type="button" onClick={onAddNote} className="flex h-10 items-center gap-2 rounded-md px-2 text-sm hover:bg-[#f5f5f6]" title="Add a note"><span className="flex h-7 w-16 items-center justify-center rounded-md bg-[#477bea] text-white"><Plus className="h-4 w-4" /></span><span className="hidden sm:inline">Add a note</span></button>
           <button type="button" onClick={() => setSearchOpen(true)} aria-label="Search notes, pages, and Domains" title="Search notes, pages, and Domains" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Search className="h-5 w-5" /></button>
           <button type="button" onClick={onOpenImport} aria-label="Import notes" title="Import notes" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-[#f5f5f6]"><Upload className="h-5 w-5" /></button>
         </div>
@@ -1237,7 +1248,7 @@ function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault
         <div className="ml-auto"><BetaAndAvatar email={userEmail} feedback onOpenImport={onOpenImport} /></div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-28 pt-10 sm:px-10 lg:px-16">
+      <main className="min-h-0 flex-1 overflow-y-auto px-5 pb-40 pt-10 md:pb-28 sm:px-10 lg:px-16">
         {pinnedMuses.length > 0 && <section className="mx-auto mb-14 w-full max-w-[1450px]" aria-label="Pinned Domains">
           <h2 className="mb-6 text-sm font-normal text-[#8d8d92]">Pinned Domains</h2>
           <div className="grid grid-cols-1 gap-x-12 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
@@ -1275,6 +1286,9 @@ function CortexHome({ vaults, onOpenVault, onToggleVaultRetrieval, onRemoveVault
           {unsortedCount > 0 && <span className="flex items-center gap-1 text-[#b4570f]"><span aria-hidden="true">·</span><span className="h-1.5 w-1.5 rounded-full bg-[#e8892f]" aria-hidden="true" />{unsortedCount} unsorted</span>}
         </button>
       </div>
+
+      {/* On a phone the bar spans the width, so the button sits just above it. */}
+      <NewNoteButton onClick={onAddNote} label="Write a new note" className="bottom-[84px] right-4 md:bottom-6 md:right-8" />
 
       {barSheet && <HomeBarSheet kind={barSheet} muses={muses} notes={notes} notesByMuse={notesByMuse} busy={busy} onClose={() => setBarSheet(null)} onOpenMuse={(title) => { setBarSheet(null); onOpenMuse(title); }} onOpenNote={(note) => { setBarSheet(null); onOpenNote(note); }} onManageDomains={() => { setBarSheet(null); onOpenMuses(); }} onMoveNote={onMoveNote} />}
 
@@ -1516,40 +1530,37 @@ function MuseDetail({ title, notes, isUnsorted, busy, onClose, onAddNote, onOpen
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [newestFirst, setNewestFirst] = useState(true);
   const [compact, setCompact] = useState(false);
+  // Always newest first: older notes are a scroll away (sort button removed Nov 25).
   const visibleNotes = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     const filtered = normalized ? notes.filter((note) => note.raw_text.toLowerCase().includes(normalized)) : notes;
-    return [...filtered].sort((left, right) => newestFirst
-      ? right.created_at.localeCompare(left.created_at)
-      : left.created_at.localeCompare(right.created_at));
-  }, [newestFirst, notes, query]);
+    return [...filtered].sort((left, right) => right.created_at.localeCompare(left.created_at));
+  }, [notes, query]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#bdbdbd] p-3 sm:p-5">
       <header className="relative flex h-16 shrink-0 items-center px-1 text-white sm:px-2">
         <div className="flex items-center gap-1">
-          <button type="button" onClick={onAddNote} aria-label={`Add a note to ${title}`} title="Add a note" className="mr-2 flex h-8 w-24 items-center justify-center rounded-md bg-[#477bea] shadow-sm hover:bg-[#3d6ed7]"><Plus className="h-5 w-5" /></button>
           <button type="button" onClick={() => { setSearchOpen((open) => !open); if (searchOpen) setQuery(''); }} aria-label="Search this Domain" title="Search this Domain" className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-white/10"><Search className="h-5 w-5" /></button>
-          <button type="button" onClick={() => setNewestFirst((value) => !value)} aria-label={newestFirst ? 'Show oldest notes first' : 'Show newest notes first'} title={newestFirst ? 'Newest first' : 'Oldest first'} aria-pressed={!newestFirst} className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-white/10"><Filter className="h-5 w-5" /></button>
-          <button type="button" onClick={() => setCompact((value) => !value)} aria-label={compact ? 'Use spacious card view' : 'Use compact card view'} title={compact ? 'Spacious cards' : 'Compact cards'} aria-pressed={compact} className="flex h-10 w-10 items-center justify-center rounded-md hover:bg-white/10"><Grid2X2 className="h-5 w-5" /></button>
+          {/* Compact only changes the widest layout (four columns instead of three), so it is shown only there. */}
+          <button type="button" onClick={() => setCompact((value) => !value)} aria-label={compact ? 'Use spacious card view' : 'Use compact card view'} title={compact ? 'Spacious cards' : 'Compact cards'} aria-pressed={compact} className="hidden h-10 w-10 items-center justify-center rounded-md hover:bg-white/10 xl:flex"><Grid2X2 className="h-5 w-5" /></button>
         </div>
         <h1 className="pointer-events-none absolute left-1/2 hidden max-w-[40vw] -translate-x-1/2 truncate text-sm font-normal text-white/90 sm:block">{title}</h1>
         <button type="button" onClick={onClose} aria-label="Close Domain and return home" title="Close Domain and return home" className="ml-auto flex h-10 w-10 items-center justify-center rounded-md text-white drop-shadow hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"><X className="h-6 w-6" /></button>
       </header>
 
-      <section className="relative min-h-0 flex-1 overflow-y-auto rounded-[28px] bg-white px-5 pb-16 pt-9 shadow-[0_14px_40px_rgba(0,0,0,0.12)] sm:px-10 lg:px-16">
+      <section className="relative min-h-0 flex-1 overflow-y-auto rounded-[28px] bg-white px-5 pb-28 pt-9 shadow-[0_14px_40px_rgba(0,0,0,0.12)] sm:px-10 lg:px-16">
       <p className="text-center text-sm font-normal text-[#b2b2b7]">{visibleNotes.length} {visibleNotes.length === 1 ? 'entry' : 'entries'}</p>
       {searchOpen && <label className="mx-auto mt-6 flex h-11 w-full max-w-md items-center rounded-xl bg-[#f7f7f9] px-4 shadow-sm"><Search className="mr-3 h-4 w-4 text-[#aaa]" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${title}`} className="min-w-0 flex-1 bg-transparent text-sm text-[#222] outline-none placeholder:text-[#aaa]" /></label>}
       {!isUnsorted && <div className="absolute right-5 top-4 sm:right-8"><button type="button" onClick={() => setMenuOpen((value) => !value)} aria-label="Domain options" aria-expanded={menuOpen} className="flex h-10 w-10 items-center justify-center rounded-md text-[#222] hover:bg-[#f4f4f4]"><MoreHorizontal className="h-5 w-5" /></button>{menuOpen && <div className="absolute right-0 top-11 z-10 w-60 overflow-hidden rounded-lg border border-[#ddd] bg-white py-1 text-sm shadow-xl"><button type="button" onClick={() => { setMenuOpen(false); onEdit(); }} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f5f5]">Edit Domain</button>{onShare && notes.length > 0 && <button type="button" disabled={busy} onClick={() => { setMenuOpen(false); onShare(); }} className="block w-full px-4 py-2.5 text-left hover:bg-[#f5f5f5]">Copy all {notes.length} to public notes</button>}<button type="button" disabled={busy} onClick={() => { setMenuOpen(false); onDelete(); }} className="block w-full px-4 py-2.5 text-left text-red-600 hover:bg-red-50">Delete Domain</button></div>}</div>}
       <div className={`mx-auto mt-14 grid max-w-[1510px] grid-cols-1 gap-8 sm:grid-cols-2 lg:gap-x-12 lg:gap-y-10 ${compact ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
         {visibleNotes.map((note) => { const content = splitNote(note); return <button key={note.id} type="button" onClick={() => onOpenNote(note)} title={content.title || undefined} className="flex h-[360px] min-w-0 flex-col overflow-hidden rounded-lg border border-[#e3e3e5] bg-white p-7 text-left shadow-[0_2px_8px_rgba(0,0,0,0.1)] transition hover:-translate-y-0.5 hover:border-[#7ca2ff] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]">{content.hasTitle && <strong className="line-clamp-2 shrink-0 text-base leading-snug text-[#151515]">{defaultNoteTitle(content.title)}</strong>}<span className="mt-4 block min-h-0 flex-1 overflow-hidden"><span className="line-clamp-[8] whitespace-pre-wrap text-[15px] leading-[1.55] text-[#777]">{content.body ? previewNoteText(content.body) : notePreview(note)}</span></span><span className="mt-4 shrink-0 text-right text-xs text-[#aaa]">{formatDate(note.created_at)}</span></button>; })}
-        <button type="button" onClick={onAddNote} aria-label={`Add a note to ${title}`} className="relative flex h-[360px] items-start rounded-lg border border-[#e1e1e3] bg-white p-8 text-[#477bea] shadow-[0_3px_12px_rgba(0,0,0,0.15)] transition hover:-translate-y-0.5 hover:border-[#a9c0f5] hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#477bea]"><span className="flex items-center gap-2"><Plus className="h-5 w-5" /> Add</span><span className="absolute inset-x-5 bottom-6 text-center text-sm italic text-[#b4b4b8]">You can always add more</span></button>
       </div>
       {!visibleNotes.length && query.trim() && <p className="mt-8 text-center text-sm text-[#999]">No notes contain “{query.trim()}”.</p>}
       {!notes.length && <p className="mt-8 text-center text-sm text-[#999]">This Domain is ready for its first note.</p>}
       </section>
+      <NewNoteButton onClick={onAddNote} label={`Write a new note in ${title}`} className="bottom-6 right-6 sm:bottom-9 sm:right-10" />
     </div>
   );
 }
